@@ -2460,6 +2460,104 @@ function connectFacebook() {
   }).catch(e => toast(e.message, 'err'));
 }
 
+/* ---------------- Native Android integration (Capacitor APK) ---------------- */
+// When the native PhoneStateReceiver fires a call event, it calls this function.
+window.onLeadCRMCallEvent = function (event, number) {
+  try {
+    console.log('[leadcrm] native call event:', event, number);
+    if (!CRM.user) return;
+    // Find matching lead by phone
+    const digits = String(number || '').replace(/\D/g, '');
+    const lead = (CRM.cache.lastLeads || []).find(l =>
+      digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
+    );
+
+    if (event === 'incoming_ringing' && !lead && digits) {
+      // Unknown number calling — prompt save as lead
+      promptSaveAsLead(number);
+    } else if (event === 'call_ended') {
+      if (lead) {
+        CRM.pendingCall = { lead, startedAt: 0 }; // fire modal immediately
+        setTimeout(() => openAfterCallModal(lead), 500);
+      } else if (digits) {
+        // No existing lead — prompt to save this new contact
+        promptSaveAsLead(number);
+      }
+    } else if (event === 'recording_saved') {
+      const [path, num] = String(number || '').split('|');
+      toast('📁 Call recording saved on device: ' + path.split('/').pop());
+      // Store in lead's notes or open upload modal
+      const digits2 = String(num || '').replace(/\D/g, '');
+      const lead2 = (CRM.cache.lastLeads || []).find(l =>
+        digits2 && String(l.phone || '').replace(/\D/g, '').endsWith(digits2.slice(-10))
+      );
+      if (lead2) {
+        api('api_leads_addRemark', lead2.id, { remark: '📼 Call recording: ' + path });
+      }
+    }
+  } catch (e) { console.error('[leadcrm] callEvent handler:', e); }
+};
+
+// Shared-intent handler — when user shares a phone number into the app
+window.onLeadCRMSharedLead = function (text) {
+  if (!CRM.user) return;
+  const phoneMatch = String(text).match(/(\+?\d[\d\s\-\(\)]{6,})/);
+  const phone = phoneMatch ? phoneMatch[1].replace(/[\s\-\(\)]/g, '') : '';
+  const name = String(text).replace(phone, '').trim() || 'Shared Contact';
+  setTimeout(() => {
+    // Open lead modal with name + phone pre-filled
+    const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+      h('h3', {}, '📥 Save as lead?'),
+      h('p', { class: 'muted' }, 'Received from another app:'),
+      h('pre', { class: 'code-block' }, text),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Dismiss'),
+        h('button', { class: 'btn primary', onclick: () => {
+          modal.remove();
+          // Open new lead modal and pre-fill
+          openLeadModal();
+          setTimeout(() => {
+            const f = $('#lead-form'); if (f) {
+              if (f.name) f.name.value = name;
+              if (f.phone) f.phone.value = phone;
+              if (f.whatsapp) f.whatsapp.value = phone;
+            }
+          }, 200);
+        } }, '+ Save as lead')
+      )
+    ));
+    document.body.appendChild(modal);
+  }, 300);
+};
+
+function promptSaveAsLead(number) {
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' }, h('h3', {}, '📞 Unknown number'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+    h('p', {}, 'Incoming/outgoing call with ', h('b', {}, number)),
+    h('p', { class: 'muted' }, 'This number isn\'t in your CRM. Save as a new lead?'),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Later'),
+      h('button', { class: 'btn primary', onclick: () => {
+        modal.remove();
+        openLeadModal();
+        setTimeout(() => {
+          const f = $('#lead-form'); if (f) {
+            if (f.phone) f.phone.value = number;
+            if (f.whatsapp) f.whatsapp.value = number;
+            if (f.source) {
+              // Add "Incoming Call" as source if not present
+              const opt = [...f.source.options].find(o => o.value === 'Incoming Call');
+              if (opt) f.source.value = 'Incoming Call';
+            }
+            if (f.name) f.name.focus();
+          }
+        }, 200);
+      } }, '+ Save as lead')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
 /* ---------------- Notifications + follow-up popup ---------------- */
 let followupPollTimer = null;
 function startFollowupPolling() {
