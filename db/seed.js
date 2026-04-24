@@ -65,7 +65,8 @@ const DEFAULT_SOURCES = [
     console.error('✗ Seed failed:', e);
     process.exitCode = 1;
   } finally {
-    await db.pool.end();
-    process.exit(process.exitCode || 0);
+    // Fire-and-forget pool.end() — don't let it block process exit.
+    db.pool.end().catch(() => {});
+    setImmediate(() => process.exit(process.exitCode || 0));
   }
 })();

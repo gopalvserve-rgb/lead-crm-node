@@ -8,19 +8,27 @@ const { pool } = require('./pg');
 
 (async () => {
   const sql = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
-  const client = await pool.connect();
+  let exitCode = 0;
   try {
-    await client.query('BEGIN');
-    await client.query(sql);
-    await client.query('COMMIT');
-    console.log('✓ Schema applied successfully.');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(sql);
+      await client.query('COMMIT');
+      console.log('✓ Schema applied successfully.');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      console.error('✗ Migration failed:', e.message);
+      exitCode = 1;
+    } finally {
+      client.release();
+    }
   } catch (e) {
-    await client.query('ROLLBACK');
-    console.error('✗ Migration failed:', e.message);
-    process.exitCode = 1;
-  } finally {
-    client.release();
-    await pool.end();
-    process.exit(process.exitCode || 0);
+    console.error('✗ Migration connection failed:', e.message);
+    exitCode = 1;
   }
+  // Don't await pool.end() — it can hang on some managed Postgres providers.
+  // Fire-and-forget and exit immediately so the `&&` chain can continue.
+  pool.end().catch(() => {});
+  setImmediate(() => process.exit(exitCode));
 })();
