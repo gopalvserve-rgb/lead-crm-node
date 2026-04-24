@@ -94,9 +94,78 @@ app.get('*', (req, res) => {
 });
 
 const PORT = Number(process.env.PORT) || 3000;
-app.listen(PORT, () => {
-  console.log('================================================');
-  console.log(`Lead CRM running on http://localhost:${PORT}`);
-  console.log('API dispatcher methods:', Object.keys(API).length);
-  console.log('================================================');
-});
+const HOST = process.env.HOST || '0.0.0.0';
+
+// Optional bootstrap: apply schema + seed defaults on first boot.
+// Set SKIP_BOOTSTRAP=1 to disable.
+async function bootstrap() {
+  if (String(process.env.SKIP_BOOTSTRAP || '') === '1') {
+    console.log('[boot] SKIP_BOOTSTRAP=1 — skipping schema+seed.');
+    return;
+  }
+  try {
+    console.log('[boot] applying schema...');
+    const fs = require('fs');
+    const sql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
+    await db.query(sql);
+    console.log('[boot] schema applied.');
+
+    console.log('[boot] seeding defaults...');
+    const bcrypt = require('bcryptjs');
+    const adminEmail = process.env.SEED_ADMIN_EMAIL || 'admin@crm.local';
+    const adminPass  = process.env.SEED_ADMIN_PASSWORD || 'admin123';
+    const adminName  = process.env.SEED_ADMIN_NAME || 'Admin';
+    const existing = await db.findOneBy('users', 'email', adminEmail).catch(() => null);
+    if (!existing) {
+      await db.insert('users', {
+        name: adminName, email: adminEmail, role: 'admin',
+        password_hash: bcrypt.hashSync(adminPass, 10),
+        is_active: 1, created_at: db.nowIso()
+      });
+      console.log(`[boot] admin user created: ${adminEmail} / ${adminPass}`);
+    } else {
+      console.log(`[boot] admin user exists (${adminEmail}) — skipping.`);
+    }
+
+    const statusCount = (await db.getAll('statuses')).length;
+    if (statusCount === 0) {
+      const defaults = [
+        { name: 'New',         color: '#3b82f6', sort_order: 10,  is_final: 0 },
+        { name: 'Contacted',   color: '#06b6d4', sort_order: 20,  is_final: 0 },
+        { name: 'Qualified',   color: '#8b5cf6', sort_order: 30,  is_final: 0 },
+        { name: 'Proposal',    color: '#f59e0b', sort_order: 40,  is_final: 0 },
+        { name: 'Negotiation', color: '#ef4444', sort_order: 50,  is_final: 0 },
+        { name: 'Won',         color: '#10b981', sort_order: 90,  is_final: 1 },
+        { name: 'Lost',        color: '#6b7280', sort_order: 100, is_final: 1 }
+      ];
+      for (const s of defaults) await db.insert('statuses', s);
+      console.log(`[boot] inserted ${defaults.length} default statuses.`);
+    }
+
+    const sourceCount = (await db.getAll('sources')).length;
+    if (sourceCount === 0) {
+      const defaults = ['Website', 'Facebook Lead Ad', 'Instagram Lead Ad',
+                        'WhatsApp', 'Referral', 'Cold Call', 'Walk-in', 'Other'];
+      for (const n of defaults) await db.insert('sources', { name: n, is_active: 1 });
+      console.log(`[boot] inserted ${defaults.length} default sources.`);
+    }
+  } catch (e) {
+    console.error('[boot] bootstrap error:', e.message);
+    console.error(e.stack);
+    // Don't crash — start the server anyway so /config.json responds and we
+    // get useful error messages via /api or the UI.
+  }
+}
+
+(async () => {
+  console.log(`[boot] starting Lead CRM on ${HOST}:${PORT} (node ${process.version})`);
+  console.log(`[boot] DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
+  console.log(`[boot] JWT_SECRET set: ${!!process.env.JWT_SECRET}`);
+  await bootstrap();
+  app.listen(PORT, HOST, () => {
+    console.log('================================================');
+    console.log(`Lead CRM running on http://${HOST}:${PORT}`);
+    console.log('API dispatcher methods:', Object.keys(API).length);
+    console.log('================================================');
+  });
+})();
