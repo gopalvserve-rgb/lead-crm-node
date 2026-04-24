@@ -13,7 +13,17 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const multer = require('multer');
 const db = require('./db/pg');
+const { authUser } = require('./utils/auth');
+const { _findLeadByPhone } = require('./routes/recordings');
+
+// Use memory storage so we can write the bytes straight into the
+// lead_recordings.audio_bytes BYTEA column.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB max
+});
 
 const routes = {
   auth:        require('./routes/auth'),
@@ -31,7 +41,8 @@ const routes = {
   fb:          require('./routes/fb'),
   automations: require('./routes/automations'),
   whatsapp:    require('./routes/whatsapp'),
-  permissions: require('./routes/permissions')
+  permissions: require('./routes/permissions'),
+  recordings:  require('./routes/recordings')
 };
 const webhooks = require('./routes/webhooks');
 
@@ -60,6 +71,89 @@ app.post('/api', async (req, res) => {
   } catch (e) {
     console.error('[api]', fn, e.message, e.stack?.split('\n').slice(0, 5).join('\n'));
     res.status(400).json({ error: e.message || String(e) });
+  }
+});
+
+// -----------------------------------------------------------------
+// Call recordings: multipart upload + audio streaming
+// -----------------------------------------------------------------
+function _tokenFrom(req) {
+  return (req.headers['x-auth-token'] ||
+          req.query.token ||
+          (req.body && req.body.token) || '').toString();
+}
+
+// POST /api/recordings
+// multipart/form-data fields:
+//   audio:       the .m4a file
+//   phone:       called number
+//   direction:   'out' | 'in' | 'missed'
+//   duration_s:  numeric seconds
+//   lead_id:     optional — if missing we look up by phone
+//   device_path: original path on device (kept as a hint)
+//   started_at:  ISO timestamp of when the call started
+app.post('/api/recordings', upload.single('audio'), async (req, res) => {
+  try {
+    const token = _tokenFrom(req);
+    const me = await authUser(token);
+    if (!req.file) return res.status(400).json({ error: 'audio file required' });
+
+    const phone = (req.body.phone || '').toString();
+    let leadId = Number(req.body.lead_id) || null;
+    if (!leadId) {
+      const lead = await _findLeadByPhone(phone);
+      if (lead) leadId = lead.id;
+    }
+    const id = await db.insert('lead_recordings', {
+      lead_id: leadId,
+      user_id: me.id,
+      phone,
+      direction: req.body.direction || 'out',
+      duration_s: Number(req.body.duration_s) || 0,
+      device_path: (req.body.device_path || '').toString(),
+      mime_type: req.file.mimetype || 'audio/m4a',
+      size_bytes: req.file.size || 0,
+      audio_bytes: req.file.buffer,
+      started_at: req.body.started_at || db.nowIso(),
+      created_at: db.nowIso()
+    });
+    // Link into the call_events timeline
+    await db.insert('call_events', {
+      lead_id: leadId,
+      user_id: me.id,
+      phone,
+      direction: req.body.direction || 'out',
+      event: 'recording_saved',
+      duration_s: Number(req.body.duration_s) || 0,
+      recording_id: id,
+      created_at: db.nowIso()
+    });
+    res.json({ ok: true, id, lead_id: leadId });
+  } catch (e) {
+    console.error('[/api/recordings]', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// GET /api/recordings/:id/audio  — streams audio bytes (token required)
+app.get('/api/recordings/:id/audio', async (req, res) => {
+  try {
+    const token = _tokenFrom(req);
+    await authUser(token);
+    const id = Number(req.params.id);
+    const { rows } = await db.query(
+      'SELECT mime_type, audio_bytes, size_bytes FROM lead_recordings WHERE id = $1',
+      [id]
+    );
+    if (!rows[0] || !rows[0].audio_bytes) return res.status(404).end();
+    res.setHeader('Content-Type', rows[0].mime_type || 'audio/m4a');
+    res.setHeader('Content-Length', rows[0].audio_bytes.length);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.setHeader('Accept-Ranges', 'none');
+    res.end(rows[0].audio_bytes);
+  } catch (e) {
+    console.error('[/api/recordings/:id/audio]', e.message);
+    res.status(400).json({ error: e.message });
   }
 });
 
@@ -120,7 +214,7 @@ app.get('/install', (req, res) => {
       <div class="icon">🎯</div>
       <div>
         <h1>Lead CRM</h1>
-        <div class="muted">Android app · 873 KB · v1.0</div>
+        <div class="muted">Android app · 2.9 MB · v3 (in-app dialer + recordings)</div>
       </div>
     </div>
     <a class="btn" href="/LeadCRM.apk" download>⬇️ Download APK</a>

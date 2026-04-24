@@ -561,3 +561,114 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
 
 /* Topbar — hide menu button on desktop */
 @media (min-width: 781px) { .topbar-mobile-menu { display: none !important; } }
+
+/* ============================================================
+   Dialer view (TeleCRM-style)
+   ============================================================ */
+.dialer-shell {
+  max-width: 480px;
+  margin: 0 auto;
+  background: var(--bg-card, #fff);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm, 0 1px 3px rgba(0,0,0,.08));
+}
+.dialer-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  background: var(--bg-alt, #f8fafc);
+}
+.dialer-tab {
+  flex: 1; padding: .85rem .25rem; border: none; background: transparent;
+  color: var(--text-muted, #64748b); font-weight: 600; cursor: pointer;
+  border-bottom: 3px solid transparent; font-size: .9rem;
+}
+.dialer-tab.active { color: var(--brand, #6366f1); border-bottom-color: var(--brand, #6366f1); }
+
+.dialer-body { padding: 1rem; min-height: 60vh; }
+
+/* Dialpad */
+.dialpad-wrap { display: flex; flex-direction: column; gap: .75rem; }
+.dialpad-display {
+  width: 100%; padding: 1rem; font-size: 1.6rem; text-align: center;
+  border: 2px solid var(--border, #e5e7eb); border-radius: var(--radius);
+  background: var(--bg-alt, #f8fafc); letter-spacing: .12em;
+  font-family: -apple-system, "SF Mono", Menlo, monospace;
+}
+.dialpad-display:focus { border-color: var(--brand, #6366f1); outline: none; }
+
+.dialpad-matches { display: flex; flex-direction: column; gap: .35rem; max-height: 180px; overflow-y: auto; }
+.dialpad-match {
+  text-align: left; padding: .5rem .75rem; border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius); background: var(--bg-card, #fff); cursor: pointer;
+  font-size: .9rem; line-height: 1.3;
+}
+.dialpad-match:hover { background: var(--brand-soft, #eef2ff); border-color: var(--brand, #6366f1); }
+.dialpad-match.new { color: var(--brand, #6366f1); font-weight: 600; }
+
+.dialpad-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem;
+  max-width: 320px; margin: 0 auto;
+}
+.dialpad-key {
+  aspect-ratio: 1.4; border: none; border-radius: 50%;
+  background: var(--bg-alt, #f1f5f9); cursor: pointer;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  font-family: -apple-system, "SF Mono", Menlo, monospace;
+  transition: background .15s;
+}
+.dialpad-key:hover { background: var(--brand-soft, #eef2ff); }
+.dialpad-key:active { background: var(--brand, #6366f1); color: #fff; }
+.dialpad-d { font-size: 1.7rem; font-weight: 500; line-height: 1; }
+.dialpad-sub { font-size: .55rem; color: var(--text-muted, #94a3b8); letter-spacing: .15em; margin-top: .15rem; }
+
+.dialpad-actions {
+  display: flex; align-items: center; justify-content: center; gap: 1.5rem;
+  margin-top: .5rem;
+}
+.dialpad-call {
+  width: 64px; height: 64px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--ok, #10b981); color: #fff; font-size: 1.8rem;
+  box-shadow: 0 4px 14px rgba(16, 185, 129, .35);
+  transition: transform .15s, box-shadow .15s;
+}
+.dialpad-call:hover { transform: scale(1.05); box-shadow: 0 6px 20px rgba(16, 185, 129, .45); }
+.dialpad-call:active { transform: scale(0.95); }
+.dialpad-back {
+  width: 48px; height: 48px; border-radius: 50%; border: none; cursor: pointer;
+  background: var(--bg-alt, #f1f5f9); color: var(--text-muted, #64748b); font-size: 1.2rem;
+}
+.dialpad-back:hover { background: var(--bg-card, #e2e8f0); }
+
+/* Call history list */
+.dialer-history { display: flex; flex-direction: column; gap: .35rem; }
+.hist-item {
+  background: var(--bg-card, #fff); border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius); padding: .65rem .85rem;
+}
+.hist-row { display: flex; align-items: center; gap: .75rem; }
+.hist-icon { font-size: 1.4rem; flex-shrink: 0; }
+.hist-meta { flex: 1; min-width: 0; line-height: 1.3; }
+.hist-meta .muted { font-size: .8rem; }
+.hist-redial { background: var(--ok, #10b981); color: #fff !important; }
+.hist-redial:hover { background: #059669; }
+.hist-audio { width: 100%; margin-top: .5rem; height: 32px; }
+
+/* Recordings block inside lead modal */
+.recordings-block { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border, #e5e7eb); }
+.recordings-block h4 { margin: 0 0 .5rem; font-size: 1rem; }
+.rec-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .5rem; }
+.rec-item {
+  background: var(--bg-alt, #f8fafc); border-radius: var(--radius);
+  padding: .55rem .75rem;
+}
+.rec-meta { font-size: .9rem; margin-bottom: .35rem; }
+.rec-dir { margin-right: .35rem; }
+.rec-item audio { width: 100%; height: 32px; }
+
+@media (max-width: 780px) {
+  .dialer-shell { box-shadow: none; border-radius: 0; }
+  .dialpad-display { font-size: 1.4rem; padding: .85rem; }
+  .dialpad-grid { max-width: 100%; }
+  .dialpad-call { width: 72px; height: 72px; font-size: 2rem; }
+}

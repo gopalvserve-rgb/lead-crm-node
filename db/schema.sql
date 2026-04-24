@@ -317,3 +317,37 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   is_granted INTEGER NOT NULL DEFAULT 1,
   UNIQUE (role, permission)
 );
+
+-- v7: in-app dialer + call recordings
+CREATE TABLE IF NOT EXISTS lead_recordings (
+  id           SERIAL PRIMARY KEY,
+  lead_id      INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  phone        TEXT,
+  direction    TEXT,             -- 'out' | 'in' | 'missed'
+  duration_s   INTEGER DEFAULT 0,
+  device_path  TEXT,              -- original path on the device
+  mime_type    TEXT,               -- e.g. audio/m4a
+  size_bytes   INTEGER DEFAULT 0,
+  audio_bytes  BYTEA,              -- the actual audio file (stored inline in PG)
+  started_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lead_rec_lead    ON lead_recordings(lead_id);
+CREATE INDEX IF NOT EXISTS idx_lead_rec_user    ON lead_recordings(user_id);
+CREATE INDEX IF NOT EXISTS idx_lead_rec_created ON lead_recordings(created_at);
+
+-- Call events timeline (every call_start / call_end logged, even without audio)
+CREATE TABLE IF NOT EXISTS call_events (
+  id           SERIAL PRIMARY KEY,
+  lead_id      INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  phone        TEXT,
+  direction    TEXT,            -- out | in | missed
+  event        TEXT,            -- outgoing_call | incoming_ringing | call_answered | call_ended
+  duration_s   INTEGER DEFAULT 0,
+  recording_id INTEGER REFERENCES lead_recordings(id) ON DELETE SET NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_call_events_lead ON call_events(lead_id);
+CREATE INDEX IF NOT EXISTS idx_call_events_user ON call_events(user_id, created_at);

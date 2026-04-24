@@ -140,6 +140,17 @@ const SCHEMA = {
   role_permissions: {
     columns: ['role', 'permission', 'scope', 'is_granted'],
     json: []
+  },
+  lead_recordings: {
+    columns: ['lead_id', 'user_id', 'phone', 'direction', 'duration_s',
+              'device_path', 'mime_type', 'size_bytes', 'audio_bytes',
+              'started_at', 'created_at'],
+    json: []
+  },
+  call_events: {
+    columns: ['lead_id', 'user_id', 'phone', 'direction', 'event',
+              'duration_s', 'recording_id', 'created_at'],
+    json: []
   }
 };
 

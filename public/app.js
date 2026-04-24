@@ -188,6 +188,7 @@ function renderLogin() {
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',    icon: '📊' },
   { id: 'leads',      label: 'Leads',        icon: '🎯' },
+  { id: 'dialer',     label: 'Dialer',       icon: '📞' },
   { id: 'pipeline',   label: 'Pipeline',     icon: '📈' },
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
@@ -237,7 +238,7 @@ function renderShell() {
   const nav = $('#nav');
   const mobileNav = $('#bottom-nav');
   // Mobile bottom bar: 4 main + More
-  const mobilePrimary = ['dashboard', 'leads', 'kanban', 'followups'];
+  const mobilePrimary = ['dashboard', 'leads', 'dialer', 'followups'];
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
     const a = h('a', { href: '#/' + item.id, 'data-view': item.id }, h('span', { class: 'nav-icon' }, item.icon), h('span', {}, item.label));
@@ -582,28 +583,40 @@ function renderLeadsMobile(rows) {
 }
 
 /** Click-to-call with after-call modal. Stores the lead being called so the
- *  Page Visibility handler can fire the follow-up prompt when user returns. */
+ *  Page Visibility handler can fire the follow-up prompt when user returns
+ *  from a real call (>10s away). On native (Capacitor) the 'call_ended' event
+ *  from PhoneStateReceiver will fire the modal directly. */
 function callLead(lead) {
-  CRM.pendingCall = { lead, startedAt: Date.now() };
-  // Open tel: — on Android opens the dialer / on desktop nothing
-  const digits = String(lead.phone || '').replace(/\D/g, '');
+  const raw = String(lead.phone || '');
+  const digits = raw.replace(/\D/g, '');
   if (!digits) return toast('No phone number', 'warn');
+  CRM.pendingCall = { lead, startedAt: Date.now() };
+  // Preserve a leading + only if the original phone started with one.
+  const hasPlus = raw.trim().startsWith('+');
+  const telTarget = (hasPlus ? '+' : '') + digits;
+  // On Capacitor / Android, use window.open to trigger the native dialer
+  // without leaving the webview for too long on desktop.
   const a = document.createElement('a');
-  a.href = 'tel:+' + digits;
+  a.href = 'tel:' + telTarget;
   a.click();
-  // Safety net: if tel: doesn't fire (desktop), show the modal after 1s
-  setTimeout(() => { if (document.visibilityState === 'visible') openAfterCallModal(lead); }, 1200);
+  // NOTE: no safety-net setTimeout — the after-call modal should fire ONLY on
+  // real call end. Desktop users see no modal. On Android, either:
+  //   (a) the Capacitor native bridge fires onLeadCRMCallEvent('call_ended',...),
+  //   (b) or the visibilitychange listener below fires when returning from the
+  //       system dialer after a genuine (≥10s) call.
 }
 
-// Fire after-call modal when user returns from the dialer
+// Fire after-call modal when user returns from the dialer, but only if they
+// were actually away for >= 10 seconds (a real conversation, not a misfire).
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && CRM.pendingCall) {
     const { lead, startedAt } = CRM.pendingCall;
-    CRM.pendingCall = null;
-    // Only if we were gone for >3s (actual call, not just accidental)
-    if (Date.now() - startedAt > 3000) {
+    // Only if we were gone for >=10s — a real call, not an accidental open
+    if (Date.now() - startedAt >= 10000) {
+      CRM.pendingCall = null;
       openAfterCallModal(lead);
     }
+    // If <10s, keep pendingCall armed in case the user navigates away again
   }
 });
 
@@ -905,6 +918,7 @@ async function openLeadModal(id) {
 
   body.appendChild(form);
   if (id) body.appendChild(remarksBlock(remarks, id));
+  if (id) body.appendChild(recordingsBlock(id));
   body.appendChild(h('div', { class: 'actions' },
     h('button', { type: 'button', class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
     h('button', { type: 'submit', form: 'lead-form', class: 'btn primary' }, id ? 'Save changes' : 'Create lead')
@@ -976,6 +990,43 @@ function customFieldInput(cf, val) {
   return h('div', { class: 'f-row' }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
 }
 
+function recordingsBlock(leadId) {
+  const wrap = h('div', { class: 'recordings-block' }, h('h4', {}, '📼 Call recordings'));
+  const list = h('ul', { class: 'rec-list' }, h('li', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(list);
+  api('api_leads_recordings', leadId).then(rows => {
+    list.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      list.appendChild(h('li', { class: 'muted' }, 'No recordings yet.'));
+      return;
+    }
+    rows.forEach(r => list.appendChild(renderRecordingItem(r)));
+  }).catch(e => {
+    list.innerHTML = '';
+    list.appendChild(h('li', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function renderRecordingItem(r) {
+  const dur = Number(r.duration_s) || 0;
+  const mm = Math.floor(dur / 60), ss = (dur % 60).toString().padStart(2, '0');
+  const dirIcon = r.direction === 'in' ? '📲' : r.direction === 'missed' ? '⚠️' : '📞';
+  const audio = h('audio', {
+    controls: true,
+    preload: 'none',
+    src: '/api/recordings/' + r.id + '/audio?token=' + encodeURIComponent(CRM.token || '')
+  });
+  return h('li', { class: 'rec-item' },
+    h('div', { class: 'rec-meta' },
+      h('span', { class: 'rec-dir' }, dirIcon),
+      h('b', {}, r.lead_name || r.phone || '—'),
+      h('span', { class: 'muted' }, ' · ' + fmtDate(r.created_at, 'relative') + ' · ' + mm + ':' + ss)
+    ),
+    audio
+  );
+}
+
 function remarksBlock(rs, leadId) {
   const list = h('ul', { class: 'remarks-list' });
   (rs || []).forEach(r => list.appendChild(h('li', {},
@@ -1038,6 +1089,236 @@ async function openDuplicateHistory(leadId) {
     );
     document.body.appendChild(modal);
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------- Dialer (TeleCRM-style) ---------------- */
+let _dialerState = null;
+
+VIEWS.dialer = async (view) => {
+  // Tab state: 'pad' (dialpad) | 'history' (call log) | 'recordings' (audio list)
+  _dialerState = { tab: 'pad', digits: '', view };
+
+  view.innerHTML = '';
+  const tabs = h('div', { class: 'dialer-tabs' },
+    tabBtn('pad', '📟 Dialpad'),
+    tabBtn('history', '🕒 History'),
+    tabBtn('recordings', '📼 Recordings')
+  );
+  const body = h('div', { class: 'dialer-body' });
+  view.appendChild(h('div', { class: 'dialer-shell' }, tabs, body));
+
+  function tabBtn(id, label) {
+    return h('button', {
+      class: 'dialer-tab' + (_dialerState.tab === id ? ' active' : ''),
+      onclick: () => { _dialerState.tab = id; renderDialerTab(); }
+    }, label);
+  }
+
+  function renderDialerTab() {
+    [...tabs.children].forEach(c => c.classList.toggle('active',
+      c.textContent.toLowerCase().includes(_dialerState.tab)));
+    body.innerHTML = '';
+    if (_dialerState.tab === 'pad') body.appendChild(renderDialpad());
+    else if (_dialerState.tab === 'history') body.appendChild(renderHistory());
+    else body.appendChild(renderRecordingsList());
+  }
+
+  renderDialerTab();
+};
+
+function renderDialpad() {
+  const wrap = h('div', { class: 'dialpad-wrap' });
+
+  // Number display + lead-match dropdown
+  const display = h('input', {
+    type: 'tel',
+    class: 'dialpad-display',
+    placeholder: 'Enter number or name…',
+    value: _dialerState.digits,
+    oninput: ev => { _dialerState.digits = ev.target.value; renderMatches(); }
+  });
+  const matches = h('div', { class: 'dialpad-matches' });
+
+  function renderMatches() {
+    matches.innerHTML = '';
+    const q = _dialerState.digits.trim();
+    if (!q) return;
+    const isDigits = /^[\d+\-\s]+$/.test(q);
+    const ql = q.toLowerCase();
+    const found = (CRM.cache.lastLeads || []).filter(l => {
+      if (isDigits) {
+        const d = String(l.phone || '').replace(/\D/g, '');
+        return d.includes(q.replace(/\D/g, ''));
+      }
+      return String(l.name || '').toLowerCase().includes(ql);
+    }).slice(0, 6);
+    found.forEach(l => matches.appendChild(h('button', {
+      class: 'dialpad-match',
+      onclick: () => {
+        display.value = l.phone || '';
+        _dialerState.digits = l.phone || '';
+        callLead(l);
+      }
+    },
+      h('div', {}, h('b', {}, l.name || '—')),
+      h('div', { class: 'muted' }, l.phone || '')
+    )));
+    // If no match and digits look like a phone, offer "Save & Call"
+    if (found.length === 0 && isDigits && q.replace(/\D/g, '').length >= 6) {
+      matches.appendChild(h('button', {
+        class: 'dialpad-match new',
+        onclick: () => {
+          openLeadModal();
+          setTimeout(() => {
+            const f = $('#lead-form');
+            if (f && f.phone) f.phone.value = q;
+          }, 150);
+        }
+      }, '+ Save "' + q + '" as new lead'));
+    }
+  }
+
+  // Dialpad keys
+  const keys = [
+    ['1', ''], ['2', 'ABC'], ['3', 'DEF'],
+    ['4', 'GHI'], ['5', 'JKL'], ['6', 'MNO'],
+    ['7', 'PQRS'], ['8', 'TUV'], ['9', 'WXYZ'],
+    ['*', ''], ['0', '+'], ['#', '']
+  ];
+  const grid = h('div', { class: 'dialpad-grid' },
+    ...keys.map(([d, sub]) => h('button', {
+      class: 'dialpad-key',
+      onclick: () => {
+        // Long-press on 0 = "+"
+        if (d === '0' && _dialerLongPress0) {
+          _dialerState.digits += '+';
+        } else {
+          _dialerState.digits += d;
+        }
+        display.value = _dialerState.digits;
+        renderMatches();
+      },
+      onmousedown: () => { if (d === '0') _dialerLongPress0Timer = setTimeout(() => { _dialerLongPress0 = true; }, 600); },
+      onmouseup: () => { clearTimeout(_dialerLongPress0Timer); setTimeout(() => { _dialerLongPress0 = false; }, 50); },
+      ontouchstart: () => { if (d === '0') _dialerLongPress0Timer = setTimeout(() => { _dialerLongPress0 = true; }, 600); },
+      ontouchend: () => { clearTimeout(_dialerLongPress0Timer); setTimeout(() => { _dialerLongPress0 = false; }, 50); }
+    },
+      h('span', { class: 'dialpad-d' }, d),
+      sub ? h('span', { class: 'dialpad-sub' }, sub) : null
+    ))
+  );
+
+  const callBtn = h('button', {
+    class: 'dialpad-call',
+    onclick: () => {
+      const raw = _dialerState.digits.trim();
+      if (!raw) return toast('Type a number first', 'warn');
+      const digits = raw.replace(/\D/g, '');
+      // Look up matching lead
+      const lead = (CRM.cache.lastLeads || []).find(l =>
+        digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
+      ) || { id: null, name: '', phone: raw };
+      callLead(lead);
+    }
+  }, '📞');
+
+  const back = h('button', {
+    class: 'dialpad-back',
+    onclick: () => {
+      _dialerState.digits = _dialerState.digits.slice(0, -1);
+      display.value = _dialerState.digits;
+    }
+  }, '⌫');
+
+  wrap.appendChild(display);
+  wrap.appendChild(matches);
+  wrap.appendChild(grid);
+  wrap.appendChild(h('div', { class: 'dialpad-actions' }, back, callBtn));
+  return wrap;
+}
+let _dialerLongPress0 = false;
+let _dialerLongPress0Timer = null;
+
+function renderHistory() {
+  const wrap = h('div', { class: 'dialer-history' }, h('div', { class: 'muted' }, 'Loading call history…'));
+  api('api_call_history', 100).then(rows => {
+    wrap.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'No calls yet.'));
+      return;
+    }
+    rows.forEach(r => wrap.appendChild(renderHistoryItem(r)));
+  }).catch(e => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function renderHistoryItem(r) {
+  const dur = Number(r.duration_s || r.rec_duration) || 0;
+  const mm = Math.floor(dur / 60), ss = (dur % 60).toString().padStart(2, '0');
+  const dirIcon = r.direction === 'in' ? '📲' :
+                  r.event === 'recording_saved' ? '📼' :
+                  r.event === 'call_ended' ? '✅' :
+                  r.event === 'incoming_ringing' ? '📲' : '📞';
+  const item = h('div', { class: 'hist-item' },
+    h('div', { class: 'hist-row' },
+      h('span', { class: 'hist-icon' }, dirIcon),
+      h('div', { class: 'hist-meta' },
+        h('div', {}, h('b', {}, r.lead_name || r.phone || 'Unknown')),
+        h('div', { class: 'muted' }, (r.lead_name ? r.phone + ' · ' : '') + fmtDate(r.created_at, 'relative') + (dur ? ' · ' + mm + ':' + ss : ''))
+      ),
+      r.phone ? h('button', {
+        class: 'btn icon hist-redial',
+        onclick: () => {
+          const lead = (CRM.cache.lastLeads || []).find(l =>
+            String(l.phone || '').replace(/\D/g, '').endsWith(String(r.phone).replace(/\D/g, '').slice(-10))
+          ) || { name: r.lead_name || '', phone: r.phone };
+          callLead(lead);
+        }
+      }, '📞') : null,
+      r.lead_id ? h('button', {
+        class: 'btn icon',
+        title: 'Open lead',
+        onclick: () => openLeadModal(r.lead_id)
+      }, '📂') : null
+    )
+  );
+  // Inline audio player if there's a recording attached
+  if (r.recording_id || r.rec_id) {
+    const recId = r.recording_id || r.rec_id;
+    item.appendChild(h('audio', {
+      controls: true, preload: 'none',
+      class: 'hist-audio',
+      src: '/api/recordings/' + recId + '/audio?token=' + encodeURIComponent(CRM.token || '')
+    }));
+  }
+  return item;
+}
+
+function renderRecordingsList() {
+  const wrap = h('div', { class: 'dialer-history' }, h('div', { class: 'muted' }, 'Loading recordings…'));
+  api('api_my_recordings', 200).then(rows => {
+    wrap.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'No recordings yet.'));
+      return;
+    }
+    rows.forEach(r => wrap.appendChild(renderRecordingItem(r)));
+  }).catch(e => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function refreshDialerHistory() {
+  if (!_dialerState || !_dialerState.view) return;
+  if (location.hash !== '#/dialer') return;
+  // Re-render the active tab
+  const fn = VIEWS.dialer;
+  if (typeof fn === 'function') fn(_dialerState.view);
 }
 
 /* ---------------- Pipeline ---------------- */
@@ -2461,6 +2742,42 @@ function connectFacebook() {
 }
 
 /* ---------------- Native Android integration (Capacitor APK) ---------------- */
+// Native MainActivity calls this after stopRecording. We hand off to the
+// LeadCRMNative bridge which streams the file to /api/recordings.
+window.__uploadRecordingFromPath = function (path, number, direction, durationS) {
+  try {
+    if (!window.LeadCRMNative || typeof LeadCRMNative.uploadRecording !== 'function') {
+      console.warn('[leadcrm] no native bridge — recording stays on device:', path);
+      return;
+    }
+    const baseUrl = location.origin;
+    const token = CRM.token || localStorage.getItem('crm_token') || '';
+    // Find a matching lead by phone, if any (so the recording is auto-linked)
+    const digits = String(number || '').replace(/\D/g, '');
+    const match = (CRM.cache && CRM.cache.lastLeads || []).find(l =>
+      digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
+    );
+    const leadId = match ? String(match.id) : '';
+    LeadCRMNative.uploadRecording(
+      path, baseUrl, token, number || '', direction || 'out',
+      Number(durationS) || 0, leadId, '__onRecordingUploaded'
+    );
+    toast('📤 Uploading recording…');
+  } catch (e) {
+    console.error('[leadcrm] upload trigger failed:', e);
+  }
+};
+
+window.__onRecordingUploaded = function (ok, detail) {
+  if (ok) {
+    toast('✅ Recording uploaded to CRM');
+    // If the dialer view is visible, refresh its history
+    if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+  } else {
+    toast('⚠️ Upload failed: ' + detail, 'warn');
+  }
+};
+
 // When the native PhoneStateReceiver fires a call event, it calls this function.
 window.onLeadCRMCallEvent = function (event, number) {
   try {
@@ -2472,28 +2789,27 @@ window.onLeadCRMCallEvent = function (event, number) {
       digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
     );
 
+    // Log the event in our call_events timeline (best-effort, non-blocking)
+    if (event !== 'recording_saved' && digits) {
+      const direction = (event === 'incoming_ringing') ? 'in' : 'out';
+      api('api_call_logEvent', { phone: number, direction, event }).catch(() => {});
+    }
+
     if (event === 'incoming_ringing' && !lead && digits) {
-      // Unknown number calling — prompt save as lead
       promptSaveAsLead(number);
     } else if (event === 'call_ended') {
       if (lead) {
-        CRM.pendingCall = { lead, startedAt: 0 }; // fire modal immediately
+        CRM.pendingCall = null;
+        // Native already verified the call ended — open modal directly
         setTimeout(() => openAfterCallModal(lead), 500);
       } else if (digits) {
-        // No existing lead — prompt to save this new contact
         promptSaveAsLead(number);
       }
+      if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
     } else if (event === 'recording_saved') {
-      const [path, num] = String(number || '').split('|');
-      toast('📁 Call recording saved on device: ' + path.split('/').pop());
-      // Store in lead's notes or open upload modal
-      const digits2 = String(num || '').replace(/\D/g, '');
-      const lead2 = (CRM.cache.lastLeads || []).find(l =>
-        digits2 && String(l.phone || '').replace(/\D/g, '').endsWith(digits2.slice(-10))
-      );
-      if (lead2) {
-        api('api_leads_addRemark', lead2.id, { remark: '📼 Call recording: ' + path });
-      }
+      const [path] = String(number || '').split('|');
+      toast('📁 Recording saved: ' + path.split('/').pop() + ' — uploading…');
+      // Actual upload is triggered separately by __uploadRecordingFromPath
     }
   } catch (e) { console.error('[leadcrm] callEvent handler:', e); }
 };
