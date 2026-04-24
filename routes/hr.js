@@ -19,7 +19,7 @@ function haversine(lat1, lon1, lat2, lon2) {
 
 // ---- Attendance -----------------------------------------------------
 
-async function api_attendance_checkIn(token, lat, lng) {
+async function api_attendance_checkIn(token, lat, lng, deviceInfo) {
   const me = await authUser(token);
   const date = todayIso();
 
@@ -39,24 +39,27 @@ async function api_attendance_checkIn(token, lat, lng) {
   if (existing && existing.check_in) throw new Error('Already checked in today');
 
   const now = db.nowIso();
+  const d = deviceInfo || {};
+  const device_info = d.summary || '';
+  const user_agent = d.user_agent || '';
+  const payload = {
+    check_in: now,
+    check_in_lat: lat || null,
+    check_in_lng: lng || null,
+    status: 'present',
+    device_info, user_agent
+  };
   if (existing) {
-    await db.update('attendance', existing.id, {
-      check_in: now,
-      check_in_lat: lat || null,
-      check_in_lng: lng || null,
-      status: 'present'
-    });
+    await db.update('attendance', existing.id, payload);
     return { id: existing.id, check_in: now };
   }
-  const id = await db.insert('attendance', {
-    user_id: me.id, date, check_in: now,
-    check_in_lat: lat || null, check_in_lng: lng || null,
-    status: 'present'
-  });
+  const id = await db.insert('attendance', Object.assign({
+    user_id: me.id, date
+  }, payload));
   return { id, check_in: now };
 }
 
-async function api_attendance_checkOut(token, lat, lng) {
+async function api_attendance_checkOut(token, lat, lng, deviceInfo) {
   const me = await authUser(token);
   const date = todayIso();
   const row = (await db.getAll('attendance'))
@@ -65,10 +68,13 @@ async function api_attendance_checkOut(token, lat, lng) {
   if (!row) throw new Error('No check-in found for today');
   if (row.check_out) throw new Error('Already checked out');
   const now = db.nowIso();
+  const d = deviceInfo || {};
   await db.update('attendance', row.id, {
     check_out: now,
     check_out_lat: lat || null,
-    check_out_lng: lng || null
+    check_out_lng: lng || null,
+    device_info: d.summary || row.device_info,
+    user_agent: d.user_agent || row.user_agent
   });
   return { id: row.id, check_out: now };
 }
@@ -81,6 +87,70 @@ async function api_attendance_mine(token, from, to) {
   if (to)   rows = rows.filter(a => String(a.date).slice(0, 10) <= to);
   rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
   return rows;
+}
+
+/**
+ * Monthly attendance report grid: rows = users, columns = dates.
+ * Returns { month, dates[], users[], matrix[uid][date] = { in, out, hours, status } }
+ */
+async function api_attendance_report(token, month, userId) {
+  const me = await authUser(token);
+  if (!['admin', 'manager', 'team_leader'].includes(me.role)) throw new Error('Forbidden');
+  const visible = await getVisibleUserIds(me);
+
+  const [year, mm] = String(month || new Date().toISOString().slice(0, 7)).split('-').map(Number);
+  const first = new Date(year, mm - 1, 1);
+  const last = new Date(year, mm, 0);
+  const dates = [];
+  for (let d = 1; d <= last.getDate(); d++) {
+    dates.push(`${year}-${String(mm).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+  }
+
+  const [users, att] = await Promise.all([db.getAll('users'), db.getAll('attendance')]);
+  let userList = users.filter(u => Number(u.is_active) === 1);
+  if (me.role !== 'admin') userList = userList.filter(u => visible.includes(Number(u.id)));
+  if (userId) userList = userList.filter(u => Number(u.id) === Number(userId));
+
+  const byUser = {};
+  userList.forEach(u => { byUser[Number(u.id)] = { id: u.id, name: u.name, role: u.role, department: u.department || '' }; });
+
+  const matrix = {};
+  const totals = {};
+  userList.forEach(u => { matrix[u.id] = {}; totals[u.id] = { present: 0, absent: 0, hours: 0 }; });
+
+  att.forEach(r => {
+    if (!byUser[Number(r.user_id)]) return;
+    const d = String(r.date).slice(0, 10);
+    if (!d.startsWith(`${year}-${String(mm).padStart(2, '0')}`)) return;
+    const cell = {
+      in: r.check_in,
+      out: r.check_out,
+      status: r.status || 'present',
+      hours: (r.check_in && r.check_out) ? ((new Date(r.check_out) - new Date(r.check_in)) / 3600000) : 0,
+      device: r.device_info || '',
+      has_location: !!(r.check_in_lat && r.check_in_lng)
+    };
+    matrix[r.user_id][d] = cell;
+    if (cell.status === 'present') totals[r.user_id].present++;
+    totals[r.user_id].hours += cell.hours;
+  });
+
+  // Absent days: any date <= today with no cell
+  const todayStr = new Date().toISOString().slice(0, 10);
+  Object.keys(matrix).forEach(uid => {
+    dates.forEach(d => {
+      if (d > todayStr) return;
+      if (!matrix[uid][d]) totals[uid].absent++;
+    });
+  });
+
+  return {
+    month: `${year}-${String(mm).padStart(2, '0')}`,
+    dates,
+    users: Object.values(byUser),
+    matrix,
+    totals
+  };
 }
 
 async function api_attendance_team(token, from, to, userId) {
@@ -202,6 +272,64 @@ async function api_tasks_complete(token, id) {
   return { ok: true };
 }
 
+/** "What did I get done today" — tasks completed today, grouped by user for managers. */
+async function api_tasks_doneToday(token, dateOverride) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const target = dateOverride || todayIso();
+
+  const [tasks, users] = await Promise.all([db.getAll('tasks'), db.getAll('users')]);
+  const byUser = {}; users.forEach(u => { byUser[Number(u.id)] = u; });
+
+  const done = tasks.filter(t =>
+    t.status === 'done' &&
+    t.completed_at &&
+    String(t.completed_at).slice(0, 10) === target
+  );
+
+  const mineToday = done
+    .filter(t => Number(t.assigned_to) === Number(me.id))
+    .map(t => Object.assign({}, t, {
+      completed_at_label: new Date(t.completed_at).toLocaleTimeString()
+    }));
+
+  // Team view (managers/admin): group by assignee they can see
+  let teamToday = [];
+  if (me.role === 'admin' || me.role === 'manager' || me.role === 'team_leader') {
+    const teamTasks = done.filter(t => visible.includes(Number(t.assigned_to)) && Number(t.assigned_to) !== Number(me.id));
+    const grouped = {};
+    teamTasks.forEach(t => {
+      const uid = Number(t.assigned_to);
+      if (!grouped[uid]) grouped[uid] = { user: byUser[uid], tasks: [] };
+      grouped[uid].tasks.push(t);
+    });
+    teamToday = Object.values(grouped).map(g => ({
+      user_id: g.user?.id,
+      user_name: g.user?.name || '—',
+      user_role: g.user?.role || '',
+      count: g.tasks.length,
+      tasks: g.tasks
+    }));
+  }
+
+  // Also include follow-ups marked done today (nice to see in daily report)
+  const followupsDoneToday = (await db.getAll('followups'))
+    .filter(f => Number(f.is_done) === 1 && f.done_at && String(f.done_at).slice(0, 10) === target)
+    .filter(f => Number(f.user_id) === Number(me.id));
+
+  return {
+    date: target,
+    my_tasks_done: mineToday,
+    my_followups_done: followupsDoneToday,
+    team_done: teamToday,
+    totals: {
+      my_tasks: mineToday.length,
+      my_followups: followupsDoneToday.length,
+      team_tasks: teamToday.reduce((s, g) => s + g.count, 0)
+    }
+  };
+}
+
 // ---- Salary ---------------------------------------------------------
 
 async function api_salary_mine(token) {
@@ -237,10 +365,107 @@ async function api_salary_save(token, sal) {
     net_pay: base + allowances - deductions,
     notes: sal.notes || ''
   };
-  if (sal.id) { await db.update('salaries', sal.id, payload); return { id: Number(sal.id) }; }
+  // Upsert: update if a row for this user+month already exists
+  const existing = (await db.getAll('salaries')).find(s =>
+    Number(s.user_id) === Number(sal.user_id) && s.month === sal.month
+  );
+  if (sal.id || existing) {
+    const id = sal.id || existing.id;
+    await db.update('salaries', id, payload);
+    return { id: Number(id) };
+  }
   payload.created_at = db.nowIso();
   const id = await db.insert('salaries', payload);
   return { id };
+}
+
+/** Save multiple salary rows in one call. rows: [{user_id, month, base, allowances, deductions, notes}] */
+async function api_salary_bulkSave(token, rows) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const saved = [];
+  for (const r of (rows || [])) {
+    try { saved.push(await api_salary_save(token, r)); }
+    catch (e) { saved.push({ error: e.message, row: r }); }
+  }
+  return { saved: saved.length, results: saved };
+}
+
+/** Monthly report: totals + per-user breakdown for a specific month. */
+async function api_salary_report(token, month) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
+  const visible = await getVisibleUserIds(me);
+  const users = await db.getAll('users');
+  const byId = {}; users.forEach(u => { byId[Number(u.id)] = u; });
+  let rows = (await db.getAll('salaries')).filter(s => s.month === month);
+  if (me.role !== 'admin') rows = rows.filter(s => visible.includes(Number(s.user_id)));
+  const hydrated = rows.map(s => Object.assign({}, s, {
+    user_name: byId[Number(s.user_id)]?.name || '',
+    user_role: byId[Number(s.user_id)]?.role || ''
+  }));
+  const totals = hydrated.reduce((acc, r) => ({
+    base: acc.base + Number(r.base || 0),
+    allowances: acc.allowances + Number(r.allowances || 0),
+    deductions: acc.deductions + Number(r.deductions || 0),
+    net_pay: acc.net_pay + Number(r.net_pay || 0)
+  }), { base: 0, allowances: 0, deductions: 0, net_pay: 0 });
+  return { month, rows: hydrated, totals };
+}
+
+/** Generate an HTML payslip for a single salary record. Returns a blob-ready HTML. */
+async function api_salary_payslip(token, salaryId) {
+  const me = await authUser(token);
+  const s = await db.findById('salaries', salaryId);
+  if (!s) throw new Error('Salary record not found');
+  if (me.role !== 'admin' && Number(s.user_id) !== Number(me.id)) throw new Error('Forbidden');
+  const u = await db.findById('users', s.user_id);
+  const bank = await db.findOneBy('bank_details', 'user_id', s.user_id);
+  const company = (await db.getConfig('COMPANY_NAME', process.env.COMPANY_NAME)) || 'Lead CRM';
+  const maskedAcc = bank?.account_number ? '****' + String(bank.account_number).slice(-4) : '';
+  const fmt = n => '₹ ' + Number(n || 0).toFixed(2);
+  const [year, mm] = String(s.month).split('-');
+  const monthLabel = new Date(Number(year), Number(mm) - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Payslip — ${u?.name || ''} — ${s.month}</title>
+<style>body{font-family:-apple-system,Segoe UI,sans-serif;max-width:720px;margin:2rem auto;padding:1rem;color:#0f172a}
+h1{margin:0 0 .2rem;color:#6366f1}
+h2{font-size:1rem;color:#475569;font-weight:600;margin:0 0 1.2rem}
+table{width:100%;border-collapse:collapse;margin:1rem 0}
+th,td{text-align:left;padding:.5rem .75rem;border-bottom:1px solid #e2e8f0}
+.right{text-align:right}
+.totals td{font-weight:700;background:#f1f5f9}
+.note{color:#64748b;font-size:.85rem;margin-top:1rem}
+@media print{body{margin:0}}
+</style></head><body>
+<h1>${company}</h1>
+<h2>Payslip — ${monthLabel}</h2>
+<table>
+  <tr><th>Employee</th><td>${u?.name || ''}</td><th>Role</th><td>${u?.role || ''}</td></tr>
+  <tr><th>Department</th><td>${u?.department || '—'}</td><th>Designation</th><td>${u?.designation || '—'}</td></tr>
+  <tr><th>Month</th><td>${s.month}</td><th>Generated</th><td>${new Date().toLocaleDateString()}</td></tr>
+  ${bank ? `<tr><th>Bank</th><td>${bank.bank_name || '—'}</td><th>A/c</th><td>${maskedAcc}</td></tr>` : ''}
+</table>
+<table>
+  <thead><tr><th>Earnings</th><th class="right">Amount</th><th>Deductions</th><th class="right">Amount</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Base salary</td><td class="right">${fmt(s.base)}</td>
+      <td>Total deductions</td><td class="right">${fmt(s.deductions)}</td>
+    </tr>
+    <tr>
+      <td>Allowances</td><td class="right">${fmt(s.allowances)}</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="totals">
+      <td>Gross pay</td><td class="right">${fmt(Number(s.base) + Number(s.allowances))}</td>
+      <td>Net pay</td><td class="right">${fmt(s.net_pay)}</td>
+    </tr>
+  </tbody>
+</table>
+${s.notes ? `<p class="note"><b>Notes:</b> ${s.notes}</p>` : ''}
+<p class="note">This is a system-generated payslip.</p>
+</body></html>`;
+  return { html, filename: `payslip-${u?.name || 'user'}-${s.month}.html` };
 }
 
 // ---- Bank Details ---------------------------------------------------
@@ -288,9 +513,10 @@ async function api_bank_list(token) {
 
 module.exports = {
   api_attendance_checkIn, api_attendance_checkOut,
-  api_attendance_mine, api_attendance_team,
+  api_attendance_mine, api_attendance_team, api_attendance_report,
   api_leaves_mine, api_leaves_apply, api_leaves_pending, api_leaves_decide,
-  api_tasks_list, api_tasks_save, api_tasks_complete,
+  api_tasks_list, api_tasks_save, api_tasks_complete, api_tasks_doneToday,
   api_salary_mine, api_salary_list, api_salary_save,
+  api_salary_bulkSave, api_salary_report, api_salary_payslip,
   api_bank_mine, api_bank_save, api_bank_list
 };

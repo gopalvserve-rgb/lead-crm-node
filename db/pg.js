@@ -91,7 +91,7 @@ const SCHEMA = {
   attendance: {
     columns: ['user_id', 'date', 'check_in', 'check_out',
               'check_in_lat', 'check_in_lng', 'check_out_lat', 'check_out_lng',
-              'status', 'notes'],
+              'status', 'notes', 'device_info', 'user_agent', 'ip'],
     json: []
   },
   leaves: {
@@ -135,6 +135,10 @@ const SCHEMA = {
   automation_log: {
     columns: ['automation_id', 'lead_id', 'event', 'channel',
               'recipient', 'status', 'detail', 'created_at'],
+    json: []
+  },
+  role_permissions: {
+    columns: ['role', 'permission', 'scope', 'is_granted'],
     json: []
   }
 };

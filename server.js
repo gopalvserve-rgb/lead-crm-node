@@ -29,7 +29,9 @@ const routes = {
   reports:     require('./routes/reports'),
   hr:          require('./routes/hr'),
   fb:          require('./routes/fb'),
-  automations: require('./routes/automations')
+  automations: require('./routes/automations'),
+  whatsapp:    require('./routes/whatsapp'),
+  permissions: require('./routes/permissions')
 };
 const webhooks = require('./routes/webhooks');
 

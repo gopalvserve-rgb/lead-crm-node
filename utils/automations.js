@@ -41,7 +41,7 @@ async function fire(event, ctx) {
         const subject  = _render(a.subject || '', ctx);
         let result;
         if (a.channel === 'email')        result = await _sendEmail(recipient, subject, rendered);
-        else if (a.channel === 'whatsapp') result = await _sendWhatsApp(recipient, rendered);
+        else if (a.channel === 'whatsapp') result = await _sendWhatsApp(recipient, rendered, ctx, a);
         else if (a.channel === 'webhook')  result = await _sendWebhook(rendered, ctx);
         else                               result = { ok: false, error: 'unknown channel: ' + a.channel };
 
@@ -131,21 +131,42 @@ async function _sendEmail(to, subject, html) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
-async function _sendWhatsApp(to, body) {
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-  const token   = process.env.WHATSAPP_ACCESS_TOKEN;
+async function _sendWhatsApp(to, body, ctx, automation) {
+  const phoneId = await db.getConfig('WHATSAPP_PHONE_NUMBER_ID', process.env.WHATSAPP_PHONE_NUMBER_ID);
+  const token   = await db.getConfig('WHATSAPP_ACCESS_TOKEN', process.env.WHATSAPP_ACCESS_TOKEN);
   if (!phoneId || !token) return { ok: false, error: 'WhatsApp not configured' };
+
+  // If the automation.subject starts with "template:" we send a Meta-approved template
+  // Format:  subject="template:my_template_name:en_US"  template="{{lead.name}}|{{lead.phone}}"
+  //                                                                 ↑ pipe-separated body params
   try {
     const fetch = require('node-fetch');
+    const phone = String(to).replace(/\D/g, '');
+    let payload;
+    const subj = String(automation?.subject || '');
+    if (subj.startsWith('template:')) {
+      const parts = subj.split(':');
+      const name = parts[1];
+      const lang = parts[2] || 'en_US';
+      const paramsText = _render(body || '', ctx).split('|').map(s => s.trim()).filter(Boolean);
+      const components = paramsText.length > 0 ? [{
+        type: 'body',
+        parameters: paramsText.map(text => ({ type: 'text', text }))
+      }] : [];
+      payload = {
+        messaging_product: 'whatsapp', to: phone, type: 'template',
+        template: { name, language: { code: lang }, components }
+      };
+    } else {
+      payload = {
+        messaging_product: 'whatsapp', to: phone, type: 'text',
+        text: { body: String(body) }
+      };
+    }
     const r = await fetch(`https://graph.facebook.com/v19.0/${phoneId}/messages`, {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: String(to).replace(/\D/g, ''),
-        type: 'text',
-        text: { body: String(body) }
-      })
+      body: JSON.stringify(payload)
     });
     const j = await r.json();
     if (j.error) return { ok: false, error: j.error.message };

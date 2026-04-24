@@ -302,3 +302,18 @@ CREATE TABLE IF NOT EXISTS automation_log (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_auto_log_lead ON automation_log(lead_id);
+
+-- v6: device + IP columns for attendance
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS device_info TEXT;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS user_agent TEXT;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS ip TEXT;
+
+-- v6: role permissions
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id         SERIAL PRIMARY KEY,
+  role       TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  scope      TEXT,          -- 'global' | 'team' | 'self' | null
+  is_granted INTEGER NOT NULL DEFAULT 1,
+  UNIQUE (role, permission)
+);

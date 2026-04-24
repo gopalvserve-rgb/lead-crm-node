@@ -884,71 +884,141 @@ async function openDuplicateHistory(leadId) {
 
 /* ---------------- Pipeline ---------------- */
 VIEWS.pipeline = async (view) => {
-  const [funnel, summary] = await Promise.all([
+  const [funnel, summary, pipeline] = await Promise.all([
     api('api_reports_funnel', {}),
-    api('api_reports_summary', {})
+    api('api_reports_summary', {}),
+    api('api_leads_pipeline')
   ]);
   const total = summary.totals.total || 1;
   view.innerHTML = '';
-  view.append(
-    h('div', { class: 'card' },
-      h('h3', {}, 'Sales funnel'),
-      h('div', { class: 'funnel' },
-        ...funnel.map((s, i) => {
-          const pct = Math.round((s.count / total) * 100);
-          const width = Math.max(20, pct);
-          const prev = i > 0 ? funnel[i - 1].count : total;
-          const conv = prev > 0 ? Math.round((s.count / prev) * 100) : 0;
-          return h('div', { class: 'funnel-row' },
-            h('div', { class: 'funnel-label' }, s.name),
-            h('div', { class: 'funnel-bar-wrap' },
-              h('div', { class: 'funnel-bar', style: { width: width + '%', background: s.color } },
-                h('span', { class: 'funnel-count' }, s.count),
-                h('span', { class: 'funnel-pct' }, pct + '%')
-              )
-            ),
-            h('div', { class: 'funnel-conv' }, i === 0 ? '—' : conv + '% conv')
-          );
-        })
-      )
+
+  // Funnel summary card
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, 'Sales funnel'),
+    h('div', { class: 'funnel' },
+      ...funnel.map((s, i) => {
+        const pct = Math.round((s.count / total) * 100);
+        const width = Math.max(20, pct);
+        const prev = i > 0 ? funnel[i - 1].count : total;
+        const conv = prev > 0 ? Math.round((s.count / prev) * 100) : 0;
+        return h('div', { class: 'funnel-row' },
+          h('div', { class: 'funnel-label' }, s.name),
+          h('div', { class: 'funnel-bar-wrap' },
+            h('div', { class: 'funnel-bar', style: { width: width + '%', background: s.color } },
+              h('span', { class: 'funnel-count' }, s.count),
+              h('span', { class: 'funnel-pct' }, pct + '%')
+            )
+          ),
+          h('div', { class: 'funnel-conv' }, i === 0 ? '—' : conv + '% conv')
+        );
+      })
     )
-  );
+  ));
+
+  // Leads per stage (expandable sections)
+  view.appendChild(h('h3', { style: { marginTop: '1.25rem' } }, 'Leads by stage'));
+  const wrap = h('div', { class: 'pipeline-stages' });
+  view.appendChild(wrap);
+
+  funnel.forEach(s => {
+    const entry = pipeline.find(p => Number(p.id) === Number(s.id));
+    const leads = entry?.leads || [];
+    const details = h('details', { class: 'pipeline-stage-card', style: { borderTopColor: s.color } },
+      h('summary', {},
+        h('span', { class: 'ps-dot', style: { background: s.color } }),
+        h('span', { class: 'ps-name' }, s.name),
+        h('span', { class: 'ps-count' }, leads.length),
+        h('span', { class: 'ps-hint muted' }, leads.length > 0 ? 'click to expand' : 'no leads')
+      ),
+      leads.length > 0
+        ? h('div', { class: 'ps-body' },
+            h('table', { class: 'mini-table' },
+              h('thead', {}, h('tr', {},
+                h('th', {}, 'Name'), h('th', {}, 'Phone'),
+                h('th', {}, 'Source'), h('th', {}, 'Assignee'),
+                h('th', {}, 'Follow-up'), h('th', {})
+              )),
+              h('tbody', {}, ...leads.map(l => h('tr', {},
+                h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—')),
+                h('td', {},
+                  l.phone || '',
+                  l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: () => { navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
+                  l.phone ? h('a', { class: 'btn icon', href: `https://wa.me/${String(l.phone).replace(/\D/g,'')}`, target: '_blank', title: 'WhatsApp' }, '💬') : null
+                ),
+                h('td', {}, l.source || ''),
+                h('td', {}, l.assigned_name || '—'),
+                h('td', { class: l.next_followup_at && new Date(l.next_followup_at) < new Date() ? 'overdue' : '' },
+                  l.next_followup_at ? fmtDate(l.next_followup_at, 'relative') : '—'),
+                h('td', {}, h('button', { class: 'btn sm', onclick: () => openLeadModal(l.id) }, '✎'))
+              )))
+            )
+          )
+        : null
+    );
+    // Auto-expand first non-empty stage
+    if (leads.length > 0 && !wrap.querySelector('details[open]')) details.open = true;
+    wrap.appendChild(details);
+  });
 };
 
-/* ---------------- Kanban ---------------- */
+/* ---------------- Kanban (drag & drop, stable handlers) ---------------- */
 VIEWS.kanban = async (view) => {
   if (!CRM.cache.statuses) await warmCache();
   const statuses = CRM.cache.statuses;
   const kanban = await api('api_leads_pipeline');
   view.innerHTML = '';
   const wrap = h('div', { class: 'kanban' });
+
   statuses.forEach(s => {
-    const col = h('div', { class: 'kanban-col', 'data-status': s.id,
-      ondragover: ev => { ev.preventDefault(); col.classList.add('drop-hover'); },
-      ondragleave: () => col.classList.remove('drop-hover'),
-      ondrop: async ev => {
-        ev.preventDefault();
-        col.classList.remove('drop-hover');
-        const leadId = Number(ev.dataTransfer.getData('text/plain'));
-        if (!leadId) return;
-        try { await api('api_leads_update', leadId, { status_id: Number(s.id) }); toast('Moved'); navigateTo('kanban'); }
-        catch (e) { toast(e.message, 'err'); }
-      }
+    const col = h('div', { class: 'kanban-col' });
+    col.dataset.statusId = s.id;
+
+    // Use addEventListener so handlers survive and stopPropagation works
+    col.addEventListener('dragover', ev => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      col.classList.add('drop-hover');
     });
+    col.addEventListener('dragleave', () => col.classList.remove('drop-hover'));
+    col.addEventListener('drop', async ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      col.classList.remove('drop-hover');
+      const leadId = Number(ev.dataTransfer.getData('text/plain') || ev.dataTransfer.getData('application/lead-id'));
+      if (!leadId) return;
+      const newStatusId = Number(col.dataset.statusId);
+      try {
+        await api('api_leads_update', leadId, { status_id: newStatusId });
+        toast('Status updated');
+        navigateTo('kanban');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+
     col.appendChild(h('h4', { class: 'kanban-head', style: { borderTopColor: s.color } },
       h('span', {}, s.name),
       h('span', { class: 'kanban-count' }, (kanban.find(k => Number(k.id) === Number(s.id))?.leads || []).length)
     ));
+
     (kanban.find(k => Number(k.id) === Number(s.id))?.leads || []).forEach(l => {
-      col.appendChild(h('div', {
-        class: 'kanban-card', draggable: true,
-        ondragstart: ev => ev.dataTransfer.setData('text/plain', String(l.id)),
-        onclick: () => openLeadModal(l.id)
-      },
+      const card = h('div', { class: 'kanban-card', draggable: 'true' });
+      card.dataset.leadId = l.id;
+      card.addEventListener('dragstart', ev => {
+        ev.dataTransfer.setData('text/plain', String(l.id));
+        ev.dataTransfer.setData('application/lead-id', String(l.id));
+        ev.dataTransfer.effectAllowed = 'move';
+        card.classList.add('dragging');
+      });
+      card.addEventListener('dragend', () => card.classList.remove('dragging'));
+      card.addEventListener('click', ev => {
+        // Only open modal on click, not after drag
+        if (!card.classList.contains('was-dragged')) openLeadModal(l.id);
+      });
+      card.append(
         h('div', { class: 'kc-name' }, l.name || '—'),
         h('div', { class: 'kc-meta' }, (l.phone || ''), l.source ? ' · ' + l.source : ''),
         l.next_followup_at ? h('div', { class: 'kc-fu' }, '⏰ ' + fmtDate(l.next_followup_at, 'relative')) : null
-      ));
+      );
+      col.appendChild(card);
     });
     wrap.appendChild(col);
   });
@@ -1099,6 +1169,7 @@ VIEWS.admin = async (view) => {
     { id: 'statuses',     label: 'Statuses' },
     { id: 'customfields', label: 'Custom Fields' },
     { id: 'rules',        label: 'Auto-assign Rules' },
+    { id: 'permissions',  label: '🔐 Permissions' },
     { id: 'duplicates',   label: 'Duplicates' },
     { id: 'smtp',         label: 'SMTP' }
   ];
@@ -1124,6 +1195,7 @@ async function showAdminTab(id) {
     if (id === 'statuses') body.replaceChildren(await adminStatuses());
     if (id === 'customfields') body.replaceChildren(await adminCustomFields());
     if (id === 'rules')    body.replaceChildren(await adminRules());
+    if (id === 'permissions') body.replaceChildren(await adminPermissions());
     if (id === 'duplicates') body.replaceChildren(await adminDuplicates());
     if (id === 'smtp')     body.replaceChildren(await adminSmtp());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
@@ -1250,12 +1322,22 @@ function openAutomationModal(existing) {
           h('label', {}, 'Condition (optional)'),
           h('input', { name: 'condition', value: a.condition || '', placeholder: 'e.g. status=Qualified   or   source=Website   or   tag:vip' })
         ),
-        h('div', { class: 'f-row full' },
+        h('div', { class: 'f-row full', id: 'auto-subject-row' },
           h('label', {}, 'Email subject (email only)'),
           h('input', { name: 'subject', value: a.subject || '', placeholder: 'New lead: {{lead.name}}' })
         ),
+        h('div', { class: 'f-row full', id: 'auto-wa-template-row', hidden: true },
+          h('label', {}, 'WhatsApp template (from Meta)'),
+          h('div', { class: 'toolbar' },
+            h('select', { id: 'wa-template-select', style: { flex: 1 } },
+              h('option', { value: '' }, '— free-form text (session message, 24h window) —')
+            ),
+            h('button', { type: 'button', class: 'btn', onclick: loadWATemplates }, '🔄 Refresh')
+          ),
+          h('small', { class: 'muted' }, 'Pick an APPROVED template to send outside the 24h window. For a template with {{1}}, {{2}} body params, list them pipe-separated in the Template field below, e.g. "{{lead.name}}|{{lead.phone}}".')
+        ),
         h('div', { class: 'f-row full' },
-          h('label', {}, 'Template (supports {{lead.name}}, {{lead.phone}}, {{lead.status_name}}, {{user.name}}, {{new_status.name}}, {{date}})'),
+          h('label', {}, 'Template / body (supports {{lead.name}}, {{lead.phone}}, {{lead.status_name}}, {{user.name}}, {{new_status.name}}, {{date}})'),
           h('textarea', { name: 'template', rows: 5, placeholder: 'Hi {{lead.name}}, your status is now {{new_status.name}}. We\'ll get back to you shortly.' }, a.template || '')
         )
       ),
@@ -1263,10 +1345,16 @@ function openAutomationModal(existing) {
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
           const f = $('#auto-form');
+          let subject = f.subject.value;
+          const waSel = $('#wa-template-select');
+          if (f.channel.value === 'whatsapp' && waSel && waSel.value) {
+            const opt = waSel.options[waSel.selectedIndex];
+            subject = 'template:' + waSel.value + ':' + (opt.dataset.lang || 'en_US');
+          }
           const payload = { id: a.id,
             name: f.name.value, event: f.event.value, channel: f.channel.value,
             recipient: f.recipient.value, condition: f.condition.value,
-            subject: f.subject.value, template: f.template.value, is_active: 1 };
+            subject, template: f.template.value, is_active: 1 };
           try { await api('api_automations_save', payload); toast('Saved'); modal.remove(); showAdminTab('automations'); }
           catch (e) { toast(e.message, 'err'); }
         } }, 'Save')
@@ -1274,6 +1362,54 @@ function openAutomationModal(existing) {
     )
   );
   document.body.appendChild(modal);
+  // Wire channel change to reveal/hide subject vs WA template row
+  const chSel = modal.querySelector('select[name="channel"]');
+  if (chSel) chSel.addEventListener('change', () => toggleChannelUI(chSel.value));
+  toggleChannelUI(a.channel);
+  // Pre-fill WA template dropdown on edit
+  if (a.channel === 'whatsapp' && String(a.subject || '').startsWith('template:')) {
+    loadWATemplates().then(() => {
+      const parts = a.subject.split(':');
+      const sel = $('#wa-template-select');
+      if (sel) sel.value = parts[1] || '';
+    });
+  }
+}
+
+function toggleChannelUI(channel) {
+  const sub = $('#auto-subject-row');
+  const wa  = $('#auto-wa-template-row');
+  if (sub) sub.hidden = channel !== 'email';
+  if (wa)  wa.hidden  = channel !== 'whatsapp';
+  if (channel === 'whatsapp') loadWATemplates();
+}
+
+async function loadWATemplates() {
+  const sel = $('#wa-template-select');
+  if (!sel) return;
+  // Preserve existing selection
+  const current = sel.value;
+  sel.innerHTML = '<option value="">Loading…</option>';
+  try {
+    const { templates, error } = await api('api_whatsapp_templates');
+    sel.innerHTML = '';
+    sel.appendChild(h('option', { value: '' }, '— free-form text (session message, 24h window) —'));
+    if (error) {
+      sel.appendChild(h('option', { value: '', disabled: true }, 'Error: ' + error));
+      return;
+    }
+    if (!templates.length) {
+      sel.appendChild(h('option', { value: '', disabled: true }, 'No templates — add WABA ID + token in Settings → WhatsApp'));
+      return;
+    }
+    templates.forEach(t => {
+      const label = `${t.name} (${t.language}${t.body_params ? ', ' + t.body_params + ' params' : ''}) — ${t.status}`;
+      sel.appendChild(h('option', { value: t.name, 'data-lang': t.language }, label));
+    });
+    if (current) sel.value = current;
+  } catch (e) {
+    sel.innerHTML = '<option value="" disabled>Error: ' + e.message + '</option>';
+  }
 }
 async function adminFb() {
   const [cfg, status] = await Promise.all([api('api_admin_getConfig'), api('api_fb_status').catch(() => ({ connected: false }))]);
@@ -1472,6 +1608,60 @@ function openRuleModal(existing) {
   );
   document.body.appendChild(modal);
 }
+async function adminPermissions() {
+  const { catalog, matrix } = await api('api_permissions_get');
+  const roles = ['admin', 'manager', 'team_leader', 'sales'];
+  const card = h('div', { class: 'card' },
+    h('h4', {}, '🔐 Role permissions'),
+    h('p', { class: 'muted' }, 'For scoped permissions (view/edit/delete leads), pick a scope: Self, Team, or Global. Admin always has full access.')
+  );
+  // Build matrix table
+  const thead = h('thead', {}, h('tr', {}, h('th', {}, 'Permission'),
+    ...roles.map(r => h('th', { style: { textTransform: 'capitalize' } }, r.replace('_', ' ')))));
+  const tbody = h('tbody', {});
+  catalog.forEach(p => {
+    const row = h('tr', {}, h('td', {}, p.label, p.scoped ? h('span', { class: 'muted' }, ' (scoped)') : null));
+    roles.forEach(role => {
+      const current = matrix[role]?.[p.key];
+      const cell = h('td', {});
+      if (p.scoped) {
+        const sel = h('select', { 'data-role': role, 'data-perm': p.key },
+          h('option', { value: '0',       selected: !current ? 'selected' : null }, '— no —'),
+          h('option', { value: 'self',    selected: current === 'self' ? 'selected' : null }, 'Self only'),
+          h('option', { value: 'team',    selected: current === 'team' ? 'selected' : null }, 'Team'),
+          h('option', { value: 'global',  selected: current === 'global' ? 'selected' : null }, 'Everyone')
+        );
+        cell.appendChild(sel);
+      } else {
+        const cb = h('input', { type: 'checkbox', 'data-role': role, 'data-perm': p.key,
+          checked: current ? 'checked' : null });
+        cell.appendChild(h('label', { class: 'switch' }, cb, h('span', { class: 'slider' })));
+      }
+      row.appendChild(cell);
+    });
+    tbody.appendChild(row);
+  });
+  card.appendChild(h('div', { class: 'table-wrap scroll-x' }, h('table', { class: 'perm-matrix' }, thead, tbody)));
+  card.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      const out = {};
+      roles.forEach(r => { out[r] = {}; });
+      $$('[data-role][data-perm]', card).forEach(el => {
+        const r = el.dataset.role;
+        const k = el.dataset.perm;
+        if (el.type === 'checkbox') out[r][k] = el.checked ? 1 : 0;
+        else {
+          const v = el.value;
+          out[r][k] = v === '0' ? 0 : v;
+        }
+      });
+      try { await api('api_permissions_save', out); toast('Permissions saved'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, '💾 Save permissions')
+  ));
+  return card;
+}
+
 async function adminDuplicates() {
   const cfg = await api('api_admin_getConfig');
   return configForm(cfg, ['DUPLICATE_POLICY', 'DUPLICATE_WINDOW_HOURS', 'DUPLICATE_MATCH_FIELDS'], {
@@ -1572,19 +1762,97 @@ async function openUserModal(u) {
 
 /* ---------------- HR views ---------------- */
 VIEWS.tasks = async (view) => {
-  const rows = await api('api_tasks_list', {});
   view.innerHTML = '';
-  view.append(
-    h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', onclick: () => openTaskModal() }, '+ New task')),
-    h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, h('th', {}, 'Title'), h('th', {}, 'Assigned'), h('th', {}, 'Due'), h('th', {}, 'Status'), h('th', {}))),
-      h('tbody', {}, ...rows.map(t => h('tr', {},
-        h('td', {}, t.title), h('td', {}, t.assigned_name || ''),
-        h('td', {}, fmtDate(t.due_at)), h('td', {}, t.status),
-        h('td', {}, t.status !== 'done' ? h('button', { class: 'btn sm', onclick: async () => { await api('api_tasks_complete', t.id); navigateTo('tasks'); } }, '✓') : null)
-      )))
-    ))
+  // Two-tab view: All tasks + Done today
+  const tabs = h('div', { class: 'subtabs' },
+    h('button', { class: 'subtab active', onclick: ev => switchTab(ev, 'all') }, 'All tasks'),
+    h('button', { class: 'subtab', onclick: ev => switchTab(ev, 'today') }, "✅ What I did today")
   );
+  const content = h('div', { id: 'task-content' });
+  view.append(tabs, content);
+  renderAllTasks();
+
+  function switchTab(ev, which) {
+    $$('.subtab', tabs).forEach(b => b.classList.remove('active'));
+    ev.target.classList.add('active');
+    if (which === 'all')   renderAllTasks();
+    if (which === 'today') renderTodayTasks();
+  }
+
+  async function renderAllTasks() {
+    content.innerHTML = '<div class="loading">Loading…</div>';
+    const rows = await api('api_tasks_list', {});
+    content.innerHTML = '';
+    content.append(
+      h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', onclick: () => openTaskModal() }, '+ New task')),
+      h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, h('th', {}, 'Title'), h('th', {}, 'Assigned'), h('th', {}, 'Due'), h('th', {}, 'Status'), h('th', {}))),
+        h('tbody', {}, ...rows.map(t => h('tr', {},
+          h('td', {}, t.title), h('td', {}, t.assigned_name || ''),
+          h('td', {}, fmtDate(t.due_at)), h('td', {}, t.status),
+          h('td', {}, t.status !== 'done' ? h('button', { class: 'btn sm', onclick: async () => { await api('api_tasks_complete', t.id); toast('Done'); renderAllTasks(); } }, '✓') : null)
+        )))
+      ))
+    );
+  }
+
+  async function renderTodayTasks() {
+    content.innerHTML = '<div class="loading">Loading…</div>';
+    const d = await api('api_tasks_doneToday');
+    content.innerHTML = '';
+    content.append(
+      h('div', { class: 'cards' },
+        h('div', { class: 'card stat ok' },
+          h('div', { class: 'stat-icon' }, '✅'),
+          h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Tasks done today'),
+            h('div', { class: 'stat-value' }, d.totals.my_tasks))),
+        h('div', { class: 'card stat accent' },
+          h('div', { class: 'stat-icon' }, '🔔'),
+          h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Follow-ups done today'),
+            h('div', { class: 'stat-value' }, d.totals.my_followups))),
+        d.totals.team_tasks > 0 ? h('div', { class: 'card stat' },
+          h('div', { class: 'stat-icon' }, '👥'),
+          h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Team tasks today'),
+            h('div', { class: 'stat-value' }, d.totals.team_tasks))) : null
+      ),
+      h('div', { class: 'card' },
+        h('h3', {}, '🎯 My completed tasks'),
+        d.my_tasks_done.length === 0
+          ? h('p', { class: 'muted' }, 'Nothing ticked off yet today — let\'s get to it!')
+          : h('ul', { class: 'done-list' },
+              ...d.my_tasks_done.map(t => h('li', {},
+                h('span', { class: 'check' }, '✓'),
+                h('div', { class: 'done-body' },
+                  h('div', { class: 'done-title' }, t.title),
+                  t.description ? h('div', { class: 'muted' }, t.description) : null
+                ),
+                h('span', { class: 'done-time muted' }, t.completed_at_label)
+              ))
+            )
+      ),
+      d.my_followups_done.length > 0 ? h('div', { class: 'card' },
+        h('h3', {}, '🔔 Follow-ups closed today'),
+        h('ul', { class: 'done-list' }, ...d.my_followups_done.map(f => h('li', {},
+          h('span', { class: 'check' }, '✓'),
+          h('div', { class: 'done-body' },
+            h('div', { class: 'done-title' }, 'Follow-up #' + f.id),
+            f.note ? h('div', { class: 'muted' }, f.note) : null)
+        )))
+      ) : null,
+      d.team_done && d.team_done.length > 0 ? h('div', { class: 'card' },
+        h('h3', {}, '👥 Team activity today'),
+        ...d.team_done.map(g => h('div', { class: 'team-group' },
+          h('h4', {}, g.user_name, ' ', h('small', { class: 'muted' }, g.user_role, ' — ', g.count, ' done')),
+          h('ul', { class: 'done-list' }, ...g.tasks.map(t => h('li', {},
+            h('span', { class: 'check' }, '✓'), h('div', { class: 'done-body' }, h('div', { class: 'done-title' }, t.title))
+          )))
+        ))
+      ) : null
+    );
+  }
 };
 async function openTaskModal() {
   const users = CRM.cache.users || await api('api_users_list');
@@ -1609,25 +1877,176 @@ async function openTaskModal() {
 }
 
 VIEWS.attendance = async (view) => {
-  const rows = await api('api_attendance_mine');
   view.innerHTML = '';
-  view.append(
+  const canReport = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const tabs = [{ id: 'mine', label: 'My attendance' }];
+  if (canReport) tabs.push({ id: 'report', label: 'Team report' });
+  const nav = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'mine' ? ' active' : ''),
+      onclick: ev => showAttTab(ev, t.id) }, t.label))
+  );
+  view.append(nav, h('div', { id: 'att-body' }));
+  showAttTab(null, 'mine');
+};
+async function showAttTab(ev, id) {
+  if (ev) { $$('.subtab').forEach(b => b.classList.remove('active')); ev.target.classList.add('active'); }
+  const body = $('#att-body');
+  body.innerHTML = '<div class="loading">…</div>';
+  if (id === 'mine')   body.replaceChildren(await renderMyAttendance());
+  if (id === 'report') body.replaceChildren(await renderAttendanceReport());
+}
+async function renderMyAttendance() {
+  const rows = await api('api_attendance_mine');
+  const card = h('div', {});
+  card.append(
     h('div', { class: 'toolbar' },
       h('button', { class: 'btn primary', onclick: () => checkInOut('checkIn') }, '🕘 Check in'),
       h('button', { class: 'btn', onclick: () => checkInOut('checkOut') }, '🕔 Check out')
     ),
     h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, h('th', {}, 'Date'), h('th', {}, 'In'), h('th', {}, 'Out'), h('th', {}, 'Status'))),
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Date'), h('th', {}, 'In'), h('th', {}, 'Out'),
+        h('th', {}, 'Location'), h('th', {}, 'Device'), h('th', {}, 'Status')
+      )),
       h('tbody', {}, ...rows.map(r => h('tr', {},
-        h('td', {}, r.date), h('td', {}, fmtDate(r.check_in, 'time')),
-        h('td', {}, fmtDate(r.check_out, 'time')), h('td', {}, r.status || '')
+        h('td', {}, r.date),
+        h('td', {}, fmtDate(r.check_in, 'time')),
+        h('td', {}, fmtDate(r.check_out, 'time')),
+        h('td', {}, (r.check_in_lat && r.check_in_lng)
+          ? h('a', { href: '#', onclick: ev => { ev.preventDefault(); openAttendanceMap(r); } }, '🗺️ Map')
+          : h('span', { class: 'muted' }, '—')),
+        h('td', { class: 'muted' }, r.device_info || '—'),
+        h('td', {}, r.status || '')
       )))
     ))
   );
-};
+  return card;
+}
+async function renderAttendanceReport() {
+  const month = new Date().toISOString().slice(0, 7);
+  const users = CRM.cache.users || [];
+  const monthInput = h('input', { type: 'month', id: 'ar-month', value: month });
+  const userSel = h('select', { id: 'ar-user' },
+    h('option', { value: '' }, 'All users'),
+    ...users.map(u => h('option', { value: u.id }, u.name))
+  );
+  const out = h('div', { id: 'ar-out' });
+  const card = h('div', {},
+    h('div', { class: 'toolbar' },
+      h('label', {}, 'Month'), monthInput,
+      h('label', {}, 'User'), userSel,
+      h('button', { class: 'btn primary', onclick: load }, 'Load')
+    ),
+    out
+  );
+  await load();
+  return card;
+
+  async function load() {
+    out.innerHTML = '<div class="loading">…</div>';
+    try {
+      const r = await api('api_attendance_report', monthInput.value, userSel.value || undefined);
+      out.innerHTML = '';
+      if (!r.users.length) { out.innerHTML = '<p class="muted">No users in scope.</p>'; return; }
+
+      // Summary cards per user
+      out.append(h('div', { class: 'cards' }, ...r.users.slice(0, 4).map(u => {
+        const t = r.totals[u.id];
+        return h('div', { class: 'card stat' },
+          h('div', { class: 'stat-icon' }, '🕒'),
+          h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, u.name),
+            h('div', { class: 'stat-value' }, t.present + ' days'),
+            h('div', { class: 'muted' }, Math.round(t.hours) + 'h worked · ' + t.absent + ' absent')
+          )
+        );
+      })));
+
+      // Matrix table
+      const thead = h('thead', {},
+        h('tr', {},
+          h('th', {}, 'User'),
+          ...r.dates.map(d => h('th', { class: 'day-col', title: d }, d.slice(-2))),
+          h('th', {}, 'Present'),
+          h('th', {}, 'Hours')
+        )
+      );
+      const tbody = h('tbody', {},
+        ...r.users.map(u => {
+          const t = r.totals[u.id];
+          return h('tr', {},
+            h('td', {}, h('b', {}, u.name), h('br'), h('span', { class: 'muted' }, u.role)),
+            ...r.dates.map(d => {
+              const c = r.matrix[u.id][d];
+              if (!c) return h('td', { class: 'day-cell absent', title: d + ' absent' }, '');
+              const hours = c.hours ? c.hours.toFixed(1) : '';
+              const title = `${d} · in ${c.in ? new Date(c.in).toLocaleTimeString() : '—'} · out ${c.out ? new Date(c.out).toLocaleTimeString() : '—'} · ${hours}h · ${c.device}`;
+              return h('td', { class: 'day-cell present', title }, '✓');
+            }),
+            h('td', { class: 'cell-ok' }, t.present),
+            h('td', {}, t.hours.toFixed(1) + 'h')
+          );
+        })
+      );
+      out.append(h('div', { class: 'table-wrap scroll-x' }, h('table', { class: 'att-matrix' }, thead, tbody)));
+    } catch (e) { out.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+  }
+}
+
+async function ensureLeaflet() {
+  if (window.L) return;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+    s.crossOrigin = '';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function openAttendanceMap(r) {
+  await ensureLeaflet();
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } },
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' }, h('h3', {}, `🗺️ ${r.date} — attendance trail`), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+      h('div', { id: 'att-map', style: { height: '400px', borderRadius: '8px' } }),
+      h('div', { class: 'att-meta' },
+        r.device_info ? h('div', {}, h('b', {}, 'Device: '), r.device_info) : null,
+        r.user_agent ? h('div', { class: 'muted' }, h('b', {}, 'UA: '), r.user_agent) : null,
+        h('div', {}, h('b', {}, 'Check in: '), fmtDate(r.check_in), '  ·  ',
+          r.check_in_lat ? `${Number(r.check_in_lat).toFixed(5)}, ${Number(r.check_in_lng).toFixed(5)}` : '—'),
+        r.check_out ? h('div', {}, h('b', {}, 'Check out: '), fmtDate(r.check_out), '  ·  ',
+          r.check_out_lat ? `${Number(r.check_out_lat).toFixed(5)}, ${Number(r.check_out_lng).toFixed(5)}` : '—') : null
+      )
+    )
+  );
+  document.body.appendChild(modal);
+  setTimeout(() => {
+    const map = L.map('att-map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap', maxZoom: 19
+    }).addTo(map);
+    const pts = [];
+    if (r.check_in_lat && r.check_in_lng) {
+      const c = [Number(r.check_in_lat), Number(r.check_in_lng)];
+      L.marker(c).addTo(map).bindPopup('🕘 Check in<br>' + fmtDate(r.check_in));
+      pts.push(c);
+    }
+    if (r.check_out_lat && r.check_out_lng) {
+      const c = [Number(r.check_out_lat), Number(r.check_out_lng)];
+      L.marker(c).addTo(map).bindPopup('🕔 Check out<br>' + fmtDate(r.check_out));
+      pts.push(c);
+    }
+    if (pts.length === 2) L.polyline(pts, { color: '#6366f1', weight: 3 }).addTo(map);
+    if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 16 });
+    else map.setView([20, 78], 4);
+  }, 50);
+}
+
 async function checkInOut(which) {
+  const device = _collectDevice();
   const call = async (lat, lng) => {
-    try { await api('api_attendance_' + which, lat, lng); toast(which === 'checkIn' ? 'Checked in' : 'Checked out'); navigateTo('attendance'); }
+    try { await api('api_attendance_' + which, lat, lng, device); toast(which === 'checkIn' ? 'Checked in' : 'Checked out'); navigateTo('attendance'); }
     catch (e) { toast(e.message, 'err'); }
   };
   if (!navigator.geolocation) return call(null, null);
@@ -1635,6 +2054,22 @@ async function checkInOut(which) {
     p => call(p.coords.latitude, p.coords.longitude),
     () => call(null, null)
   );
+}
+
+function _collectDevice() {
+  const ua = navigator.userAgent || '';
+  const uad = navigator.userAgentData || {};
+  // Try to parse a friendly summary
+  const isMobile = /Mobile|Android|iPhone|iPad/i.test(ua);
+  const osMatch = ua.match(/Windows NT [\d.]+|Mac OS X [\d_.]+|Android [\d.]+|iPhone OS [\d_]+|iPad; CPU OS [\d_]+|Linux/);
+  const browserMatch = ua.match(/(Edg|Chrome|Safari|Firefox|OPR)\/([\d.]+)/);
+  const modelMatch = ua.match(/;\s*([A-Z][\w\-]+ [\w\-]+(?: [\w\-]+)?)[);]/i) || ua.match(/\(Linux; Android [\d.]+; ([^)]+)\)/);
+  const os      = osMatch ? osMatch[0].replace(/_/g, '.') : 'unknown';
+  const browser = browserMatch ? browserMatch[1] + ' ' + browserMatch[2] : 'unknown';
+  const model   = modelMatch ? modelMatch[1] : (uad.mobile ? 'mobile' : 'desktop');
+  const summary = [isMobile ? '📱' : '💻', model, '·', os, '·', browser,
+    screen.width + '×' + screen.height].join(' ').trim();
+  return { summary, user_agent: ua };
 }
 
 VIEWS.leaves = async (view) => {
@@ -1667,17 +2102,165 @@ function openLeaveModal() {
 }
 
 VIEWS.salary = async (view) => {
-  const rows = await api('api_salary_mine');
   view.innerHTML = '';
-  view.append(h('div', { class: 'table-wrap' }, h('table', {},
-    h('thead', {}, h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Base'), h('th', {}, 'Allowances'), h('th', {}, 'Deductions'), h('th', {}, 'Net'))),
-    h('tbody', {}, ...rows.map(s => h('tr', {}, h('td', {}, s.month),
-      h('td', {}, Number(s.base).toFixed(2)),
-      h('td', {}, Number(s.allowances).toFixed(2)),
-      h('td', {}, Number(s.deductions).toFixed(2)),
-      h('td', {}, Number(s.net_pay).toFixed(2)))))
-  )));
+  const isAdminOrMgr = ['admin', 'manager'].includes(CRM.user.role);
+  const tabs = [{ id: 'my', label: 'My salary' }];
+  if (isAdminOrMgr) tabs.push({ id: 'report', label: 'Monthly report' });
+  if (CRM.user.role === 'admin') tabs.push({ id: 'bulk', label: '✎ Bulk entry' });
+
+  const nav = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'my' ? ' active' : ''), 'data-tab': t.id,
+      onclick: ev => showSalaryTab(ev, t.id) }, t.label))
+  );
+  view.append(nav, h('div', { id: 'salary-content' }));
+  showSalaryTab(null, 'my');
 };
+
+async function showSalaryTab(ev, id) {
+  if (ev) {
+    $$('.subtab').forEach(b => b.classList.remove('active'));
+    ev.target.classList.add('active');
+  }
+  const body = $('#salary-content');
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  if (id === 'my')     body.replaceChildren(await renderMySalary());
+  if (id === 'report') body.replaceChildren(await renderSalaryReport());
+  if (id === 'bulk')   body.replaceChildren(await renderSalaryBulk());
+}
+
+async function renderMySalary() {
+  const rows = await api('api_salary_mine');
+  const card = h('div', {});
+  if (!rows.length) {
+    card.appendChild(h('p', { class: 'muted' }, 'No salary records yet.'));
+    return card;
+  }
+  card.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {}, h('th', {}, 'Month'), h('th', {}, 'Base'), h('th', {}, 'Allowances'), h('th', {}, 'Deductions'), h('th', {}, 'Net'), h('th', {}))),
+    h('tbody', {}, ...rows.map(s => h('tr', {},
+      h('td', {}, s.month),
+      h('td', {}, '₹ ' + Number(s.base).toFixed(2)),
+      h('td', {}, '₹ ' + Number(s.allowances).toFixed(2)),
+      h('td', {}, '₹ ' + Number(s.deductions).toFixed(2)),
+      h('td', {}, '₹ ' + Number(s.net_pay).toFixed(2)),
+      h('td', {}, h('button', { class: 'btn sm', onclick: () => downloadPayslip(s.id) }, '📄 Payslip'))
+    )))
+  )));
+  return card;
+}
+
+async function downloadPayslip(id) {
+  try {
+    const r = await api('api_salary_payslip', id);
+    const w = window.open('', '_blank');
+    w.document.write(r.html);
+    w.document.close();
+    setTimeout(() => w.print(), 500);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function renderSalaryReport() {
+  const monthInput = h('input', { type: 'month', id: 'sal-month', value: new Date().toISOString().slice(0, 7) });
+  const go = h('button', { class: 'btn primary', onclick: () => refreshSalaryReport() }, 'Load');
+  const out = h('div', { id: 'sal-report' });
+  const card = h('div', {}, h('div', { class: 'toolbar' }, h('label', {}, 'Month'), monthInput, go), out);
+  await refreshSalaryReport();
+  return card;
+
+  async function refreshSalaryReport() {
+    out.innerHTML = '<div class="loading">…</div>';
+    try {
+      const r = await api('api_salary_report', monthInput.value);
+      out.innerHTML = '';
+      if (!r.rows.length) { out.innerHTML = '<p class="muted">No salary records for this month.</p>'; return; }
+      out.append(
+        h('div', { class: 'cards' },
+          h('div', { class: 'card stat accent' }, h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Total base'), h('div', { class: 'stat-value' }, '₹' + r.totals.base.toFixed(0)))),
+          h('div', { class: 'card stat' }, h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Allowances'), h('div', { class: 'stat-value' }, '₹' + r.totals.allowances.toFixed(0)))),
+          h('div', { class: 'card stat err' }, h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Deductions'), h('div', { class: 'stat-value' }, '₹' + r.totals.deductions.toFixed(0)))),
+          h('div', { class: 'card stat ok' }, h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, 'Net payout'), h('div', { class: 'stat-value' }, '₹' + r.totals.net_pay.toFixed(0))))
+        ),
+        h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'User'), h('th', {}, 'Role'),
+            h('th', {}, 'Base'), h('th', {}, 'Allowances'), h('th', {}, 'Deductions'), h('th', {}, 'Net'), h('th', {}))),
+          h('tbody', {}, ...r.rows.map(s => h('tr', {},
+            h('td', {}, s.user_name),
+            h('td', {}, s.user_role),
+            h('td', {}, '₹' + Number(s.base).toFixed(2)),
+            h('td', {}, '₹' + Number(s.allowances).toFixed(2)),
+            h('td', {}, '₹' + Number(s.deductions).toFixed(2)),
+            h('td', { class: 'cell-ok' }, '₹' + Number(s.net_pay).toFixed(2)),
+            h('td', {}, h('button', { class: 'btn sm', onclick: () => downloadPayslip(s.id) }, '📄'))
+          )))
+        ))
+      );
+    } catch (e) { out.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+  }
+}
+
+async function renderSalaryBulk() {
+  const users = await api('api_users_list');
+  const month = new Date().toISOString().slice(0, 7);
+  const existing = await api('api_salary_report', month);
+  const exByUser = {}; existing.rows.forEach(r => { exByUser[Number(r.user_id)] = r; });
+
+  const monthInput = h('input', { type: 'month', id: 'bulk-month', value: month });
+  const card = h('div', {},
+    h('div', { class: 'toolbar' },
+      h('label', {}, 'Month'),
+      monthInput,
+      h('button', { class: 'btn', onclick: () => showSalaryTab({ target: $$('.subtab')[2] }, 'bulk') }, 'Load month')
+    ),
+    h('p', { class: 'muted' }, 'Enter/adjust base / allowances / deductions for each employee and click Save all.')
+  );
+  const tbl = h('table', { class: 'mini-table', id: 'bulk-tbl' });
+  tbl.append(
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'User'), h('th', {}, 'Role'),
+      h('th', {}, 'Base (₹)'), h('th', {}, 'Allowances (₹)'), h('th', {}, 'Deductions (₹)'), h('th', {}, 'Net')
+    )),
+    h('tbody', {},
+      ...users.map(u => {
+        const ex = exByUser[Number(u.id)] || {};
+        const baseIn = h('input', { type: 'number', step: '0.01', 'data-uid': u.id, 'data-f': 'base', value: ex.base || u.monthly_salary || 0, style: { width: '110px' } });
+        const alIn   = h('input', { type: 'number', step: '0.01', 'data-uid': u.id, 'data-f': 'allowances', value: ex.allowances || 0, style: { width: '110px' } });
+        const dedIn  = h('input', { type: 'number', step: '0.01', 'data-uid': u.id, 'data-f': 'deductions', value: ex.deductions || 0, style: { width: '110px' } });
+        const net = h('td', { class: 'cell-ok', 'data-uid-net': u.id }, '₹' + (Number(ex.net_pay) || 0).toFixed(2));
+        const update = () => {
+          const n = Number(baseIn.value || 0) + Number(alIn.value || 0) - Number(dedIn.value || 0);
+          net.textContent = '₹' + n.toFixed(2);
+        };
+        [baseIn, alIn, dedIn].forEach(i => i.addEventListener('input', update));
+        return h('tr', {},
+          h('td', {}, u.name), h('td', {}, u.role),
+          h('td', {}, baseIn), h('td', {}, alIn), h('td', {}, dedIn),
+          net
+        );
+      })
+    )
+  );
+  card.append(tbl, h('div', { class: 'actions' },
+    h('button', { class: 'btn primary', onclick: async () => {
+      const rows = [];
+      const m = monthInput.value;
+      users.forEach(u => {
+        const base = $$(`[data-uid="${u.id}"][data-f="base"]`)[0]?.value;
+        const al   = $$(`[data-uid="${u.id}"][data-f="allowances"]`)[0]?.value;
+        const ded  = $$(`[data-uid="${u.id}"][data-f="deductions"]`)[0]?.value;
+        rows.push({ user_id: u.id, month: m, base, allowances: al, deductions: ded });
+      });
+      try {
+        const r = await api('api_salary_bulkSave', rows);
+        toast(`Saved ${r.saved} salary rows`);
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '💾 Save all')
+  ));
+  return card;
+}
 
 VIEWS.bank = async (view) => {
   const info = (await api('api_bank_mine')) || {};

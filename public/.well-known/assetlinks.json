@@ -1,0 +1,10 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "app.railway.up.lead_crm_production_3628.twa",
+    "sha256_cert_fingerprints": [
+      "72:CB:0C:63:35:00:70:22:3E:10:67:90:3F:37:47:9A:7E:74:75:77:BD:2C:2F:5A:AF:E8:F3:05:3D:B3:27:1D"
+    ]
+  }
+}]
