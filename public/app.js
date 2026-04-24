@@ -1102,7 +1102,8 @@ VIEWS.dialer = async (view) => {
   const tabs = h('div', { class: 'dialer-tabs' },
     tabBtn('pad', '📟 Dialpad'),
     tabBtn('history', '🕒 History'),
-    tabBtn('recordings', '📼 Recordings')
+    tabBtn('recordings', '📼 Recordings'),
+    tabBtn('settings', '⚙️')
   );
   const body = h('div', { class: 'dialer-body' });
   view.appendChild(h('div', { class: 'dialer-shell' }, tabs, body));
@@ -1115,16 +1116,86 @@ VIEWS.dialer = async (view) => {
   }
 
   function renderDialerTab() {
-    [...tabs.children].forEach(c => c.classList.toggle('active',
-      c.textContent.toLowerCase().includes(_dialerState.tab)));
+    [...tabs.children].forEach((c, i) => {
+      const ids = ['pad', 'history', 'recordings', 'settings'];
+      c.classList.toggle('active', _dialerState.tab === ids[i]);
+    });
     body.innerHTML = '';
     if (_dialerState.tab === 'pad') body.appendChild(renderDialpad());
     else if (_dialerState.tab === 'history') body.appendChild(renderHistory());
-    else body.appendChild(renderRecordingsList());
+    else if (_dialerState.tab === 'recordings') body.appendChild(renderRecordingsList());
+    else body.appendChild(renderDialerSettings());
   }
 
   renderDialerTab();
+
+  // First-run nudge: if the user hasn't picked a folder yet, gently prompt
+  if (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') {
+    try {
+      const fld = LeadCRMNative.getRecordingFolder();
+      if (!fld && !sessionStorage.getItem('rec_setup_dismissed')) {
+        setTimeout(() => {
+          if (location.hash === '#/dialer') setupRecordingFolder();
+          sessionStorage.setItem('rec_setup_dismissed', '1');
+        }, 800);
+      }
+    } catch (_) {}
+  }
 };
+
+function renderDialerSettings() {
+  const wrap = h('div', { class: 'dialer-settings' });
+  const isApp = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
+  let folder = '';
+  try { folder = isApp ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  const lastSync = Number(localStorage.getItem('rec_last_sync') || 0);
+
+  if (!isApp) {
+    wrap.appendChild(h('div', { class: 'settings-card' },
+      h('h4', {}, '📱 Open in the Android app'),
+      h('p', { class: 'muted' }, 'Recording sync only works inside the LeadCRM Android app — install it from the Install page.')
+    ));
+    return wrap;
+  }
+
+  // Folder card
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, '📁 Call recordings folder'),
+    folder
+      ? h('div', {},
+          h('div', { class: 'rec-folder-current' }, h('code', {}, folder)),
+          h('div', { class: 'muted' }, 'The app reads new files from this folder, parses the phone number, and uploads each recording to the matching lead.'),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
+            h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
+            h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
+            h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
+          ),
+          h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.78rem' } },
+            h('span', { id: 'sync-progress', style: { fontWeight: 600 } }, ''),
+            ' · Last synced: ', lastSync ? fmtDate(new Date(lastSync).toISOString(), 'relative') : 'never'
+          )
+        )
+      : h('div', {},
+          h('p', { class: 'muted' }, 'No folder connected yet. Pick the folder where your phone saves call recordings.'),
+          h('button', { class: 'btn primary', onclick: () => setupRecordingFolder() }, '📁 Pick recordings folder')
+        )
+  ));
+
+  // Help card
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, 'ℹ️ How it works'),
+    h('ol', { class: 'how-it-works' },
+      h('li', {}, 'Enable call recording in your phone\'s dialer (Settings → Phone → Call recording).'),
+      h('li', {}, 'Make a call. The phone saves an audio file (e.g. ', h('code', {}, '+91XXXX_2024-04-25.m4a'), ') to its recordings folder.'),
+      h('li', {}, 'Open this app and tap ', h('b', {}, 'Sync now'), '. The CRM finds each new file, reads the phone number from the filename, looks up the matching lead, and uploads the recording.'),
+      h('li', {}, 'Listen to recordings inside any lead\'s detail page or under ', h('b', {}, 'Recordings'), '.')
+    ),
+    h('p', { class: 'muted' }, 'Note: the CRM does not record calls itself — that complies with Indian and EU regulations. You (or your phone\'s built-in recorder) control recording.')
+  ));
+
+  return wrap;
+}
 
 function renderDialpad() {
   const wrap = h('div', { class: 'dialpad-wrap' });
@@ -2742,41 +2813,194 @@ function connectFacebook() {
 }
 
 /* ---------------- Native Android integration (Capacitor APK) ---------------- */
-// Native MainActivity calls this after stopRecording. We hand off to the
-// LeadCRMNative bridge which streams the file to /api/recordings.
-window.__uploadRecordingFromPath = function (path, number, direction, durationS) {
-  try {
-    if (!window.LeadCRMNative || typeof LeadCRMNative.uploadRecording !== 'function') {
-      console.warn('[leadcrm] no native bridge — recording stays on device:', path);
-      return;
-    }
-    const baseUrl = location.origin;
-    const token = CRM.token || localStorage.getItem('crm_token') || '';
-    // Find a matching lead by phone, if any (so the recording is auto-linked)
-    const digits = String(number || '').replace(/\D/g, '');
-    const match = (CRM.cache && CRM.cache.lastLeads || []).find(l =>
-      digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
-    );
-    const leadId = match ? String(match.id) : '';
-    LeadCRMNative.uploadRecording(
-      path, baseUrl, token, number || '', direction || 'out',
-      Number(durationS) || 0, leadId, '__onRecordingUploaded'
-    );
-    toast('📤 Uploading recording…');
-  } catch (e) {
-    console.error('[leadcrm] upload trigger failed:', e);
-  }
-};
+// (Auto-recording is disabled. We use the SAF folder-watcher pattern instead —
+//  see syncRecordings() below.)
 
-window.__onRecordingUploaded = function (ok, detail) {
-  if (ok) {
-    toast('✅ Recording uploaded to CRM');
-    // If the dialer view is visible, refresh its history
-    if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
-  } else {
-    toast('⚠️ Upload failed: ' + detail, 'warn');
+/**
+ * Parse a phone-call recording filename. Common patterns we handle:
+ *   "Call recording with +91XXXXXXXXXX_2024-01-15-14-30-22.m4a"
+ *   "+919876543210_20240115_143022.mp3"
+ *   "Outgoing_+91XXXXXXXXXX_15-01-2024.amr"
+ *   "Incoming call from John Doe (9876543210) 15-Jan-2024.amr"
+ *   "20240115_143022_+919876543210_out.m4a"
+ */
+function parseRecordingFilename(name, fallbackTimestamp) {
+  const lower = name.toLowerCase();
+  // Phone — first run of 7-15 digits (optionally + prefix), preferring + form
+  let phone = '';
+  const plusMatch = name.match(/\+\d{8,15}/);
+  if (plusMatch) phone = plusMatch[0];
+  else {
+    const m = name.match(/(\d{7,15})/);
+    if (m) phone = m[1];
   }
-};
+  // Direction
+  let direction = 'out';
+  if (/(incoming|received|\bin[_\-\s]|inbound)/.test(lower)) direction = 'in';
+  else if (/(outgoing|outbound|\bout[_\-\s]|dialed|made)/.test(lower)) direction = 'out';
+  // Date — try YYYY-MM-DD HH:MM:SS or YYYYMMDD_HHMMSS variants
+  let startedAt = fallbackTimestamp || Date.now();
+  const dt1 = name.match(/(\d{4})[\-_]?(\d{2})[\-_]?(\d{2})[\-_\sT]+(\d{2})[\-_:]?(\d{2})[\-_:]?(\d{2})/);
+  if (dt1) {
+    const [, y, mo, d, h, mi, s] = dt1;
+    const ts = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`).getTime();
+    if (!isNaN(ts)) startedAt = ts;
+  }
+  return { phone, direction, startedAt };
+}
+
+/**
+ * Walk the user's selected recordings folder, find new files, look up the
+ * matching lead by phone number, and upload each new recording to the CRM.
+ *
+ * Skips files we've already uploaded (tracked in localStorage by file URI).
+ */
+async function syncRecordings(opts) {
+  opts = opts || {};
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') {
+    toast('Sync only works in the Android app', 'warn');
+    return;
+  }
+  let folderName = '';
+  try { folderName = LeadCRMNative.getRecordingFolder() || ''; } catch (e) {}
+  if (!folderName) {
+    return setupRecordingFolder();
+  }
+
+  const sinceMs = Number(localStorage.getItem('rec_last_sync') || 0);
+  const filesJson = LeadCRMNative.listRecordings(opts.full ? 0 : sinceMs);
+  let files = [];
+  try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
+
+  if (files.length === 0) {
+    toast('No new recordings in the folder');
+    return;
+  }
+
+  // Make sure we have leads loaded for matching
+  if (!CRM.cache.lastLeads || CRM.cache.lastLeads.length === 0) {
+    try {
+      const r = await api('api_leads_list', {});
+      CRM.cache.lastLeads = (r.leads || r);
+    } catch (_) {}
+  }
+
+  const uploaded = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
+  let success = 0, failed = 0, skipped = 0;
+
+  // Show progress in dialer view if visible
+  const progress = $('#sync-progress');
+  if (progress) progress.textContent = `0 / ${files.length}`;
+
+  for (let i = 0; i < files.length; i++) {
+    const f = files[i];
+    if (uploaded[f.uri]) { skipped++; continue; }
+    const meta = parseRecordingFilename(f.name, f.modified);
+    const digits = String(meta.phone || '').replace(/\D/g, '');
+    const lead = digits ? (CRM.cache.lastLeads || []).find(l =>
+      String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
+    ) : null;
+    const leadId = lead ? String(lead.id) : '';
+    // Rough duration: ~12 KB/sec for AAC m4a, ~8 KB/sec for amr, ~16 KB/sec for mp3
+    const bytesPerSec = /\.(mp3|wav)$/i.test(f.name) ? 16000 : /\.(amr|3gp)$/i.test(f.name) ? 8000 : 12000;
+    const durationGuess = Math.max(0, Math.round((Number(f.size) || 0) / bytesPerSec));
+
+    const ok = await new Promise(resolve => {
+      const cbName = '__recCB_' + Math.random().toString(36).slice(2, 10);
+      window[cbName] = (success, detail) => {
+        delete window[cbName];
+        resolve({ success, detail });
+      };
+      try {
+        LeadCRMNative.uploadRecordingByUri(
+          f.uri, location.origin, CRM.token || '',
+          meta.phone || '', meta.direction || 'out',
+          durationGuess, leadId,
+          new Date(meta.startedAt).toISOString(), f.name, cbName
+        );
+      } catch (e) {
+        delete window[cbName];
+        resolve({ success: false, detail: e.message });
+      }
+    });
+
+    if (ok.success) {
+      success++;
+      uploaded[f.uri] = Date.now();
+    } else {
+      failed++;
+      console.warn('[leadcrm] upload failed:', f.name, ok.detail);
+    }
+    if (progress) progress.textContent = `${i + 1} / ${files.length}`;
+  }
+
+  localStorage.setItem('rec_uploaded', JSON.stringify(uploaded));
+  localStorage.setItem('rec_last_sync', String(Date.now()));
+  toast(`✅ Synced ${success} new · ${skipped} already up-to-date${failed ? ' · ' + failed + ' failed' : ''}`);
+  if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+}
+
+/** First-run flow: ask the user to point the app at their recordings folder. */
+function setupRecordingFolder() {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.pickRecordingFolder !== 'function') {
+    toast('Folder picker only works in the Android app', 'warn');
+    return;
+  }
+  const modal = h('div', { class: 'modal-backdrop' },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📁 Connect call-recordings folder'),
+        h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+      ),
+      h('p', { class: 'muted' },
+        'Pick the folder where your phone (or call recorder app) saves call recordings. ' +
+        'The CRM will read each file, match it to the right lead by phone number, and ' +
+        'upload it. Common locations:'
+      ),
+      h('ul', { class: 'rec-folder-tips' },
+        h('li', {}, h('b', {}, 'Stock Android: '), 'Internal storage › Recordings › Call'),
+        h('li', {}, h('b', {}, 'Samsung: '), 'Internal storage › Call'),
+        h('li', {}, h('b', {}, 'Xiaomi/Redmi: '), 'Internal storage › MIUI › sound_recorder › call_rec'),
+        h('li', {}, h('b', {}, 'OnePlus/Realme: '), 'Internal storage › Recordings › Call'),
+        h('li', {}, h('b', {}, 'Truecaller: '), 'Internal storage › Truecaller'),
+        h('li', {}, h('b', {}, 'Google Phone: '), 'Internal storage › Recorded Calls')
+      ),
+      h('p', { class: 'muted' }, 'Recording must be enabled separately in your phone\'s call recorder. ' +
+        'The CRM only reads the files — it doesn\'t record calls itself.'),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: () => {
+          window.__onFolderPicked = (ok, name) => {
+            delete window.__onFolderPicked;
+            if (ok) {
+              toast('📁 Folder connected: ' + name);
+              modal.remove();
+              if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+              // Run an initial full sync so existing recordings show up
+              setTimeout(() => syncRecordings({ full: true }), 600);
+            } else {
+              toast('Folder selection cancelled', 'warn');
+            }
+          };
+          try {
+            LeadCRMNative.pickRecordingFolder('__onFolderPicked');
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Pick folder')
+      )
+    )
+  );
+  document.body.appendChild(modal);
+}
+
+/** Reset the folder + clear the upload cache (for "switch folder" flow). */
+function resetRecordingFolder() {
+  if (!window.LeadCRMNative) return;
+  try { LeadCRMNative.clearRecordingFolder(); } catch (e) {}
+  localStorage.removeItem('rec_last_sync');
+  localStorage.removeItem('rec_uploaded');
+  toast('Folder cleared');
+  if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+}
 
 // When the native PhoneStateReceiver fires a call event, it calls this function.
 window.onLeadCRMCallEvent = function (event, number) {
@@ -2806,11 +3030,9 @@ window.onLeadCRMCallEvent = function (event, number) {
         promptSaveAsLead(number);
       }
       if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
-    } else if (event === 'recording_saved') {
-      const [path] = String(number || '').split('|');
-      toast('📁 Recording saved: ' + path.split('/').pop() + ' — uploading…');
-      // Actual upload is triggered separately by __uploadRecordingFromPath
     }
+    // 'recording_saved' is no longer fired — auto-recording is intentionally
+    // disabled. Use the folder-watcher (Dialer → Settings → Sync now) instead.
   } catch (e) { console.error('[leadcrm] callEvent handler:', e); }
 };
 

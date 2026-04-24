@@ -672,3 +672,328 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .dialpad-grid { max-width: 100%; }
   .dialpad-call { width: 72px; height: 72px; font-size: 2rem; }
 }
+
+/* Dialer settings tab */
+.dialer-settings { display: flex; flex-direction: column; gap: .85rem; }
+.settings-card {
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+}
+.settings-card h4 { margin: 0 0 .5rem; font-size: 1rem; }
+.settings-card p { margin: .35rem 0; font-size: .9rem; }
+.settings-card .actions { flex-wrap: wrap; gap: .4rem; margin-top: .75rem; }
+.rec-folder-current {
+  background: var(--bg-alt, #f1f5f9);
+  border-radius: 8px; padding: .55rem .75rem;
+  font-family: -apple-system, "SF Mono", Menlo, monospace;
+  font-size: .82rem; word-break: break-all; margin: .5rem 0;
+}
+.rec-folder-tips {
+  font-size: .85rem; line-height: 1.6; margin: .5rem 0; padding-left: 1.2rem;
+  background: var(--bg-alt, #f8fafc); padding: .65rem 1.4rem .65rem 1.6rem;
+  border-radius: 8px; border-left: 3px solid var(--brand, #6366f1);
+}
+.rec-folder-tips li { margin-bottom: .15rem; }
+.how-it-works { font-size: .9rem; line-height: 1.6; padding-left: 1.2rem; }
+.how-it-works li { margin-bottom: .35rem; }
+.how-it-works code {
+  background: var(--bg-alt, #f1f5f9); padding: .1rem .35rem; border-radius: 4px;
+  font-size: .82rem;
+}
+
+/* ============================================================
+   Native-feeling mobile app overhaul
+   Activates on phones (< 780px) and inside the Capacitor webview.
+   Goal: dashboard, leads, pipeline, etc should look like a native
+   Android app, not a desktop site shrunk down.
+   ============================================================ */
+@media (max-width: 780px) {
+  :root {
+    --app-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%);
+    --app-radius: 16px;
+    --app-card-radius: 14px;
+  }
+
+  body { background: #f3f4f6; }
+
+  /* Shell — kill desktop chrome, give edge-to-edge feel */
+  .shell {
+    grid-template-columns: 1fr;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom, 0));
+    min-height: 100vh;
+  }
+  .main { background: transparent; }
+
+  /* Topbar becomes a brand-colored gradient hero */
+  .topbar {
+    background: var(--app-grad);
+    color: #fff;
+    padding: calc(env(safe-area-inset-top, 0) + .65rem) 1rem .75rem;
+    border-radius: 0;
+    border: none;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, .25);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar h2 { color: #fff; font-weight: 600; font-size: 1.05rem; margin: 0; }
+  .topbar-mobile-menu, .topbar-right .btn {
+    background: rgba(255, 255, 255, .15) !important;
+    color: #fff !important;
+    border: none !important;
+  }
+  .topbar-mobile-menu:hover, .topbar-right .btn:hover {
+    background: rgba(255, 255, 255, .25) !important;
+  }
+  .topbar-right .badge { background: #fff; color: #6366f1; }
+
+  /* Content area gets vertical breathing room */
+  #view { padding: 1rem .85rem 1.5rem; }
+
+  /* ---------------- Dashboard cards ---------------- */
+  .dash-grid { grid-template-columns: 1fr 1fr !important; gap: .65rem !important; }
+  .stat-card,
+  .dashboard-card,
+  .card {
+    background: #fff !important;
+    border-radius: var(--app-card-radius) !important;
+    padding: 1rem .9rem !important;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .06) !important;
+    border: none !important;
+  }
+  .stat-card { display: flex; flex-direction: column; gap: .15rem; }
+  .stat-value { font-size: 1.45rem !important; font-weight: 700; }
+  .stat-label { font-size: .72rem !important; color: var(--muted); }
+  .stat-card::before {
+    content: ""; position: absolute; left: 0; top: 14%; bottom: 14%;
+    width: 4px; border-radius: 0 4px 4px 0; background: var(--brand);
+  }
+  .stat-card { position: relative; overflow: hidden; }
+
+  /* Subtabs / segment controls */
+  .subtabs {
+    background: #fff;
+    border-radius: 999px;
+    padding: 4px;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, .05);
+    overflow: hidden;
+    display: inline-flex !important;
+    width: 100%;
+  }
+  .subtab {
+    flex: 1; padding: .55rem .5rem !important;
+    border-radius: 999px !important;
+    text-align: center; font-weight: 500;
+  }
+  .subtab.active { background: var(--app-grad); color: #fff !important; }
+
+  /* Section headers */
+  h3, .section-title {
+    font-size: 1rem; font-weight: 600; margin: 1.1rem 0 .55rem;
+    padding-left: .25rem;
+  }
+
+  /* ---------------- Leads (mobile cards) ---------------- */
+  .lead-card {
+    border-left-width: 0 !important;
+    border-radius: var(--app-card-radius) !important;
+    padding: .9rem 1rem !important;
+    background: #fff !important;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05) !important;
+    position: relative;
+  }
+  .lead-card::after {
+    content: ""; position: absolute; left: 0; top: 18%; bottom: 18%;
+    width: 4px; border-radius: 0 4px 4px 0; background: var(--brand-color, var(--brand));
+  }
+  .lc-name { font-size: 1rem !important; }
+  .lc-meta { font-size: .8rem !important; }
+  .lc-actions {
+    border-top: 1px solid #f1f5f9;
+    padding-top: .6rem !important;
+    margin-top: .65rem !important;
+    gap: .4rem !important;
+  }
+  .lc-actions .btn {
+    border-radius: 10px !important;
+    padding: .55rem !important;
+    font-size: .82rem !important;
+    background: #f8fafc !important;
+    border: none !important;
+  }
+  .lc-actions .btn.btn-call {
+    background: var(--ok) !important;
+    color: #fff !important;
+  }
+
+  /* ---------------- Bottom nav — pill-shaped floating ---------------- */
+  .bottom-nav {
+    bottom: calc(env(safe-area-inset-bottom, 0) + .6rem) !important;
+    left: .6rem !important; right: .6rem !important;
+    border-radius: 999px !important;
+    background: #fff !important;
+    border: none !important;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, .15), 0 2px 4px rgba(15, 23, 42, .05) !important;
+    padding: .35rem .5rem !important;
+  }
+  .bottom-nav a {
+    border-radius: 999px;
+    padding: .45rem .25rem !important;
+    margin: 0 .12rem;
+    transition: background .18s, color .18s;
+  }
+  .bottom-nav a.active {
+    background: var(--app-grad);
+    color: #fff !important;
+  }
+  .bottom-nav a.active .bn-ico { transform: scale(1.05); }
+  .bottom-nav a .bn-ico { transition: transform .18s; }
+
+  /* ---------------- Modals as proper bottom-sheets ---------------- */
+  .modal-backdrop { background: rgba(15, 23, 42, .55); }
+  .modal {
+    border-radius: 22px 22px 0 0 !important;
+    padding: .65rem 1.1rem 1.4rem !important;
+    max-height: 92vh !important;
+    box-shadow: 0 -8px 32px rgba(15, 23, 42, .25) !important;
+  }
+  .modal::before {
+    content: "";
+    display: block;
+    width: 38px; height: 4px;
+    margin: .4rem auto .85rem;
+    background: #cbd5e1;
+    border-radius: 999px;
+  }
+  .modal-head { padding-top: 0; padding-bottom: .5rem; border-bottom: 1px solid #f1f5f9; margin-bottom: .85rem; }
+  .modal-head h3 { font-size: 1.1rem; font-weight: 600; }
+
+  /* Forms — bigger touch targets */
+  input, select, textarea {
+    font-size: 16px !important;
+    padding: .75rem .85rem !important;
+    border-radius: 12px !important;
+    border: 1.5px solid #e5e7eb !important;
+    background: #f9fafb !important;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--brand) !important;
+    background: #fff !important;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, .15) !important;
+  }
+  label { font-size: .82rem; font-weight: 500; color: #475569; margin-bottom: .3rem; }
+
+  /* Buttons */
+  .btn {
+    border-radius: 12px !important;
+    padding: .65rem 1rem !important;
+    font-weight: 500;
+    min-height: 44px;
+  }
+  .btn.primary {
+    background: var(--app-grad) !important;
+    border: none !important;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, .35);
+  }
+  .btn.primary:hover { box-shadow: 0 6px 16px rgba(99, 102, 241, .45); }
+  .btn.icon { padding: .5rem !important; min-height: 40px; min-width: 40px; }
+
+  /* FAB sits above the floating nav bar */
+  .fab {
+    bottom: calc(env(safe-area-inset-bottom, 0) + 90px) !important;
+    width: 60px; height: 60px;
+    box-shadow: 0 10px 28px rgba(236, 72, 153, .45) !important;
+  }
+
+  /* Pipeline horizontal-scroll cards */
+  .pipeline { gap: .6rem; padding: .25rem 0 .75rem; scroll-snap-type: x mandatory; }
+  .pipeline .stage {
+    background: #fff !important; border-radius: var(--app-card-radius);
+    padding: .85rem .8rem !important; box-shadow: 0 2px 6px rgba(15,23,42,.05);
+    scroll-snap-align: start;
+  }
+
+  /* Kanban — full-width snap columns */
+  .kanban {
+    gap: .7rem; padding: .25rem 0 .85rem;
+    scroll-snap-type: x mandatory;
+  }
+  .kanban .col {
+    background: #fff; border-radius: var(--app-card-radius);
+    box-shadow: 0 2px 6px rgba(15,23,42,.05);
+    padding: .65rem; scroll-snap-align: start;
+  }
+
+  /* Toasts — float above bottom nav */
+  .toast, .toast-stack { bottom: 110px !important; }
+
+  /* Section card grouping for dashboards */
+  .panel, .section, .grid-block {
+    background: #fff;
+    border-radius: var(--app-card-radius);
+    padding: 1rem;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+    margin-bottom: .85rem;
+  }
+
+  /* Loading + empty states */
+  .loading, .empty-state {
+    text-align: center;
+    padding: 2.5rem 1rem;
+    color: var(--muted);
+    font-size: .9rem;
+  }
+
+  /* Lists — convert tables to card-like rows where possible */
+  table.cards-on-mobile { display: block; }
+  table.cards-on-mobile thead { display: none; }
+  table.cards-on-mobile tr {
+    display: block; background: #fff; border-radius: var(--app-card-radius);
+    margin-bottom: .55rem; padding: .85rem 1rem;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, .05);
+  }
+  table.cards-on-mobile td {
+    display: block; padding: .15rem 0; border: none !important;
+  }
+
+  /* Status-bar background — paint behind the gradient */
+  body::before {
+    content: "";
+    position: fixed; top: 0; left: 0; right: 0;
+    height: env(safe-area-inset-top, 0);
+    background: #6366f1;
+    z-index: 11;
+  }
+
+  /* Dialer specifically — make full-bleed and card-free on mobile */
+  .dialer-shell { background: transparent; box-shadow: none; }
+  .dialer-tabs {
+    background: #fff; border-radius: var(--app-card-radius);
+    margin-bottom: .85rem;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, .05);
+    border: none;
+  }
+  .dialer-tab { font-size: .85rem; padding: .9rem .25rem; border-bottom: none; }
+  .dialer-tab.active {
+    background: var(--brand-soft, #eef2ff); border-radius: var(--app-card-radius);
+    border-bottom-color: transparent;
+  }
+  .dialer-body { padding: 0; }
+  .hist-item {
+    border: none !important; box-shadow: 0 2px 6px rgba(15, 23, 42, .04);
+  }
+
+  /* Reports — mobile-friendly chart wrappers */
+  .chart-wrap {
+    background: #fff; border-radius: var(--app-card-radius);
+    padding: .85rem; box-shadow: 0 2px 6px rgba(15, 23, 42, .05);
+    margin-bottom: .65rem;
+  }
+}
+
+/* Status-bar overlay for the Capacitor webview specifically */
+@supports (padding: max(0px)) {
+  @media (max-width: 780px) {
+    .topbar { padding-top: max(env(safe-area-inset-top, 0), .85rem); }
+  }
+}
