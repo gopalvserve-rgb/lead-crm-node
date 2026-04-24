@@ -47,7 +47,7 @@ const SCHEMA = {
               'source_ref', 'product', 'product_id', 'status_id', 'assigned_to',
               'created_by', 'created_at', 'updated_at',
               'last_status_change_at', 'next_followup_at',
-              'is_duplicate', 'duplicate_of', 'notes',
+              'is_duplicate', 'duplicate_of', 'tags', 'notes',
               'address', 'city', 'state', 'pincode', 'country', 'company',
               'value', 'currency', 'meta_json', 'extra_json'],
     json: ['meta_json', 'extra_json']

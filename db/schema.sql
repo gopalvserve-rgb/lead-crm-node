@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS leads (
   next_followup_at       TIMESTAMPTZ,
   is_duplicate           INTEGER NOT NULL DEFAULT 0,
   duplicate_of           INTEGER,
+  tags                   TEXT,
   notes                  TEXT,
   address                TEXT,
   city                   TEXT,
@@ -257,3 +258,20 @@ CREATE TABLE IF NOT EXISTS webhook_log (
   error        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_source ON webhook_log(source, processed);
+
+-- ---- idempotent column additions for existing DBs -----------
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS tags TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS whatsapp TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS source_ref TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS product_id INTEGER;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS next_followup_at TIMESTAMPTZ;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS last_status_change_at TIMESTAMPTZ;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS is_duplicate INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS duplicate_of INTEGER;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS department TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS designation TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS photo_url TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_salary NUMERIC(14,2) DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS joining_date DATE;
+ALTER TABLE remarks ADD COLUMN IF NOT EXISTS status_id INTEGER;
+ALTER TABLE custom_fields ADD COLUMN IF NOT EXISTS show_in_list INTEGER NOT NULL DEFAULT 0;

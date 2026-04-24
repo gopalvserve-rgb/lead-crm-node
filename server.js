@@ -162,6 +162,8 @@ async function bootstrap() {
   console.log(`[boot] DATABASE_URL set: ${!!process.env.DATABASE_URL}`);
   console.log(`[boot] JWT_SECRET set: ${!!process.env.JWT_SECRET}`);
   await bootstrap();
+  try { require('./utils/reminders').start(); }
+  catch (e) { console.error('[boot] reminders start failed:', e.message); }
   app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);

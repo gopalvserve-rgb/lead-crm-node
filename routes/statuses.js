@@ -14,4 +14,20 @@ async function api_statuses_save(token, s) {
   const id = await db.insert('statuses', payload);
   return { id };
 }
-module.exports = { api_statuses_list, api_statuses_save };
+async function api_statuses_delete(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  // Reassign any leads using this status to 'New' first (if exists), else null
+  const leads = await db.getAll('leads');
+  const news = await db.findOneBy('statuses', 'name', 'New');
+  const replacement = news && Number(news.id) !== Number(id) ? news.id : null;
+  for (const l of leads) {
+    if (Number(l.status_id) === Number(id)) {
+      await db.update('leads', l.id, { status_id: replacement });
+    }
+  }
+  await db.removeRow('statuses', id);
+  return { ok: true };
+}
+
+module.exports = { api_statuses_list, api_statuses_save, api_statuses_delete };
