@@ -87,6 +87,55 @@ app.get('/api/docs', (req, res) => {
   });
 });
 
+// Direct download links for the signed APK + AAB
+app.get('/LeadCRM.apk', (req, res) => {
+  res.setHeader('Content-Disposition', 'attachment; filename="LeadCRM.apk"');
+  res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+  res.sendFile(path.join(__dirname, 'public', 'LeadCRM.apk'));
+});
+app.get('/LeadCRM.aab', (req, res) => {
+  res.setHeader('Content-Disposition', 'attachment; filename="LeadCRM.aab"');
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.sendFile(path.join(__dirname, 'public', 'LeadCRM.aab'));
+});
+// Pretty "get the app" page
+app.get('/install', (req, res) => {
+  const host = req.protocol + '://' + req.get('host');
+  res.type('html').send(`<!doctype html><html><head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Install Lead CRM on Android</title>
+  <style>
+    body{margin:0;font-family:-apple-system,Segoe UI,sans-serif;background:linear-gradient(135deg,#6366f1,#8b5cf6,#ec4899);min-height:100vh;color:#fff;display:flex;align-items:center;justify-content:center;padding:1rem}
+    .box{background:#fff;color:#0f172a;border-radius:20px;max-width:480px;width:100%;padding:2rem;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+    h1{margin:0 0 .5rem}
+    .app{display:flex;gap:1rem;align-items:center;margin:1.2rem 0 1.5rem}
+    .icon{width:72px;height:72px;border-radius:18px;background:linear-gradient(135deg,#6366f1,#ec4899);display:grid;place-items:center;font-size:2.2rem;color:#fff}
+    a.btn{display:block;text-align:center;background:#6366f1;color:#fff;padding:1rem;border-radius:10px;text-decoration:none;font-weight:700;margin:.5rem 0;font-size:1.05rem}
+    a.btn.alt{background:#fff;color:#6366f1;border:2px solid #6366f1}
+    ol{padding-left:1.2rem;line-height:1.7;color:#475569}
+    .muted{color:#94a3b8;font-size:.85rem}
+  </style></head><body>
+  <div class="box">
+    <div class="app">
+      <div class="icon">🎯</div>
+      <div>
+        <h1>Lead CRM</h1>
+        <div class="muted">Android app · 873 KB · v1.0</div>
+      </div>
+    </div>
+    <a class="btn" href="/LeadCRM.apk" download>⬇️ Download APK</a>
+    <a class="btn alt" href="/" style="margin-bottom:1rem">Open web version</a>
+    <h3 style="margin-top:1.5rem">How to install</h3>
+    <ol>
+      <li>Tap the <b>Download APK</b> button above.</li>
+      <li>When the file finishes downloading, tap it to open.</li>
+      <li>Android will ask "Install from unknown sources" — tap <b>Settings → Allow</b>.</li>
+      <li>Tap <b>Install</b>. The "Lead CRM" app icon appears on your home screen.</li>
+    </ol>
+    <p class="muted">The app is signed and safe. It opens <b>${host}</b> full-screen. Content auto-updates — you won't need to re-install when we ship features.</p>
+  </div></body></html>`);
+});
+
 app.get('/api/sample.csv', (req, res) => {
   const csv = [
     'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at',
