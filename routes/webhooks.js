@@ -1,0 +1,279 @@
+/**
+ * routes/webhooks.js — inbound webhook handlers
+ *
+ * Endpoints mounted by server.js:
+ *   GET  /hook/meta      — Meta subscription verification
+ *   POST /hook/meta      — Meta Lead Ads events
+ *   GET  /hook/whatsapp  — WhatsApp verify
+ *   POST /hook/whatsapp  — WhatsApp events
+ *   POST /hook/website   — HTML form -> lead (requires x-api-key)
+ *   POST /hook/other     — generic JSON lead ingest (requires x-api-key)
+ */
+const fetch = require('node-fetch');
+const db = require('../db/pg');
+
+const GRAPH = 'https://graph.facebook.com/v19.0';
+
+// -------------------- Meta verification (GET) --------------------
+async function metaVerify(req, res) {
+  const mode     = req.query['hub.mode'];
+  const token    = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const expected = process.env.META_VERIFY_TOKEN || '';
+  if (mode === 'subscribe' && token === expected) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).send('Verification failed');
+}
+
+// -------------------- Meta events (POST) -------------------------
+async function metaEvent(req, res) {
+  // Always 200 quickly so Meta doesn't retry.
+  res.status(200).send('EVENT_RECEIVED');
+  try {
+    const body = req.body || {};
+    await db.insert('webhook_log', { source: 'meta', payload: body, processed: 0 });
+
+    const entries = body.entry || [];
+    for (const entry of entries) {
+      for (const change of (entry.changes || [])) {
+        if (change.field !== 'leadgen') continue;
+        const leadgenId = change.value?.leadgen_id;
+        const pageId    = change.value?.page_id;
+        const formId    = change.value?.form_id;
+        if (!leadgenId) continue;
+        try {
+          await _processLeadgen(leadgenId, pageId, formId);
+        } catch (e) {
+          console.error('[meta] leadgen failed:', leadgenId, e.message);
+          await db.insert('webhook_log', {
+            source: 'meta', payload: { leadgen_id: leadgenId, error: e.message },
+            processed: 0, error: e.message
+          });
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[meta] event handler error:', e);
+  }
+}
+
+async function _processLeadgen(leadgenId, pageId, formId) {
+  const pageToken = await db.getConfig('META_PAGE_ACCESS_TOKEN');
+  if (!pageToken) throw new Error('No META_PAGE_ACCESS_TOKEN configured');
+  const r = await fetch(`${GRAPH}/${leadgenId}?access_token=${pageToken}`);
+  const j = await r.json();
+  if (j.error) throw new Error('Graph: ' + j.error.message);
+
+  const fieldData = j.field_data || [];
+  const payload = {};
+  fieldData.forEach(f => {
+    payload[f.name] = Array.isArray(f.values) ? f.values.join(', ') : f.values;
+  });
+
+  const lead = {
+    name:     payload.full_name || payload.name || '',
+    phone:    payload.phone_number || payload.phone || '',
+    email:    payload.email || '',
+    whatsapp: payload.phone_number || payload.phone || '',
+    source:   'Facebook Lead Ad',
+    notes:    'Imported from Meta Lead Ad',
+    meta_json: { leadgen_id: leadgenId, page_id: pageId, form_id: formId, raw: j },
+    created_at: db.nowIso(),
+    updated_at: db.nowIso()
+  };
+
+  await _createLeadFromWebhook(lead);
+}
+
+// -------------------- WhatsApp verification ----------------------
+async function whatsappVerify(req, res) {
+  const mode     = req.query['hub.mode'];
+  const token    = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  const expected = process.env.WHATSAPP_VERIFY_TOKEN || '';
+  if (mode === 'subscribe' && token === expected) {
+    return res.status(200).send(challenge);
+  }
+  return res.status(403).send('Verification failed');
+}
+
+async function whatsappEvent(req, res) {
+  res.status(200).send('EVENT_RECEIVED');
+  try {
+    const body = req.body || {};
+    await db.insert('webhook_log', { source: 'whatsapp', payload: body, processed: 0 });
+    // Optional: persist new inbound message as a remark on matching lead
+    const entries = body.entry || [];
+    for (const entry of entries) {
+      for (const change of (entry.changes || [])) {
+        const msgs = change.value?.messages || [];
+        for (const m of msgs) {
+          const from = m.from;
+          const text = m.text?.body || '';
+          if (!from || !text) continue;
+          const lead = (await db.getAll('leads')).find(l => {
+            const p = String(l.phone || '').replace(/\D/g, '');
+            const w = String(l.whatsapp || '').replace(/\D/g, '');
+            const f = String(from).replace(/\D/g, '');
+            return p && (p === f || w === f);
+          });
+          if (lead) {
+            await db.insert('remarks', {
+              lead_id: lead.id, user_id: null,
+              remark: '[WhatsApp] ' + text, created_at: db.nowIso()
+            });
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[whatsapp] error:', e);
+  }
+}
+
+// -------------------- Website hook -------------------------------
+async function websiteHook(req, res) {
+  const key = req.header('x-api-key') || (req.body && req.body.api_key) || '';
+  if (!process.env.WEBSITE_API_KEY || key !== process.env.WEBSITE_API_KEY) {
+    return res.status(401).json({ error: 'Invalid API key' });
+  }
+  try {
+    const b = req.body || {};
+    const lead = {
+      name:     b.name || '',
+      phone:    b.phone || b.mobile || '',
+      whatsapp: b.whatsapp || b.phone || '',
+      email:    b.email || '',
+      source:   b.source || 'Website',
+      product:  b.product || '',
+      notes:    b.notes || b.message || '',
+      city:     b.city || '',
+      meta_json: b.meta || null,
+      created_at: db.nowIso(),
+      updated_at: db.nowIso()
+    };
+    const result = await _createLeadFromWebhook(lead);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[website] error:', e);
+    res.status(400).json({ error: e.message });
+  }
+}
+
+async function otherHook(req, res) {
+  const key = req.header('x-api-key') || (req.body && req.body.api_key) || '';
+  if (!process.env.WEBSITE_API_KEY || key !== process.env.WEBSITE_API_KEY) {
+    return res.status(401).json({ error: 'Invalid API key' });
+  }
+  try {
+    const b = req.body || {};
+    const lead = {
+      name: b.name || '',
+      phone: b.phone || '',
+      email: b.email || '',
+      source: b.source || 'Other',
+      notes: b.notes || '',
+      meta_json: b,
+      created_at: db.nowIso(),
+      updated_at: db.nowIso()
+    };
+    const r = await _createLeadFromWebhook(lead);
+    res.json({ ok: true, ...r });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+}
+
+// -------------------- Shared lead creator ------------------------
+// Applies simple round-robin if assignment_rules don't match.
+async function _createLeadFromWebhook(lead) {
+  // 1. Find default 'New' status
+  const statuses = await db.getAll('statuses');
+  const newStatus = statuses.find(s => s.name === 'New');
+  if (newStatus) lead.status_id = newStatus.id;
+
+  // 2. Apply assignment rules (first matching one by priority wins)
+  const rules = (await db.getAll('assignment_rules'))
+    .filter(r => Number(r.is_active) === 1)
+    .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0));
+  let assignedUserId = null;
+  for (const rule of rules) {
+    const fieldVal = String(lead[rule.field] || '').toLowerCase();
+    const ruleVal  = String(rule.value || '').toLowerCase();
+    let match = false;
+    switch (rule.operator) {
+      case 'equals':      match = fieldVal === ruleVal; break;
+      case 'contains':    match = fieldVal.includes(ruleVal); break;
+      case 'starts_with': match = fieldVal.startsWith(ruleVal); break;
+      case 'ends_with':   match = fieldVal.endsWith(ruleVal); break;
+      default: break;
+    }
+    if (match) {
+      const ids = String(rule.assigned_to || '').split(',').map(s => Number(s.trim())).filter(Boolean);
+      if (ids.length) {
+        // Round robin: pick the user with the fewest open leads today
+        const counts = {};
+        const today = new Date().toISOString().slice(0, 10);
+        const todays = (await db.getAll('leads'))
+          .filter(l => String(l.created_at).slice(0, 10) === today);
+        todays.forEach(l => {
+          const k = Number(l.assigned_to) || 0;
+          counts[k] = (counts[k] || 0) + 1;
+        });
+        ids.sort((a, b) => (counts[a] || 0) - (counts[b] || 0));
+        assignedUserId = ids[0];
+        break;
+      }
+    }
+  }
+  if (assignedUserId) lead.assigned_to = assignedUserId;
+
+  // 3. Duplicate check (within window)
+  const policy = process.env.DUPLICATE_POLICY || 'allow';
+  if (policy !== 'allow') {
+    const hours = Number(process.env.DUPLICATE_WINDOW_HOURS) || 24;
+    const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+    const phoneDigits = String(lead.phone || '').replace(/\D/g, '');
+    const emailLower  = String(lead.email || '').toLowerCase();
+    const dup = (await db.getAll('leads')).find(l => {
+      if (String(l.created_at) < since) return false;
+      const lp = String(l.phone || '').replace(/\D/g, '');
+      const le = String(l.email || '').toLowerCase();
+      return (phoneDigits && lp === phoneDigits) ||
+             (emailLower && le === emailLower);
+    });
+    if (dup) {
+      if (policy === 'reject') {
+        return { duplicate: true, matched_id: dup.id, skipped: true };
+      }
+      if (policy === 'assign_same_user' && dup.assigned_to) {
+        lead.assigned_to = dup.assigned_to;
+      }
+      if (policy === 'skip_assignment') lead.assigned_to = null;
+      lead.notes = (lead.notes || '') + '\n[DUPLICATE of lead #' + dup.id + ']';
+    }
+  }
+
+  const id = await db.insert('leads', lead);
+
+  // Notify the assignee
+  if (lead.assigned_to) {
+    await db.insert('notifications', {
+      user_id: lead.assigned_to,
+      type: 'lead_assigned',
+      title: 'New lead: ' + (lead.name || lead.phone || ''),
+      body:  'Source: ' + (lead.source || ''),
+      link:  '#/leads/' + id,
+      is_read: 0,
+      created_at: db.nowIso()
+    });
+  }
+  return { id, assigned_to: lead.assigned_to || null };
+}
+
+module.exports = {
+  metaVerify, metaEvent,
+  whatsappVerify, whatsappEvent,
+  websiteHook, otherHook
+};
