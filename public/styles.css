@@ -432,3 +432,132 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
 .att-matrix .day-cell.absent { background: #fff; color: var(--muted); }
 .att-meta { margin-top: .75rem; padding: .6rem .75rem; background: var(--bg-alt); border-radius: var(--radius-sm); font-size: .85rem; line-height: 1.8; }
 .att-meta code { font-size: .85em; }
+
+/* ==========================================================
+   Mobile-first overhaul (≤ 780px): bottom nav, cards, FAB
+   ========================================================== */
+@media (max-width: 780px) {
+  /* Hide sidebar, replace with bottom nav */
+  .shell { grid-template-columns: 1fr; padding-bottom: 60px; }
+  .sidebar { display: none; }
+  .topbar { padding: .75rem 1rem; }
+  .topbar h2 { font-size: 1.05rem; }
+  #view { padding: .85rem; }
+
+  /* Bottom nav */
+  .bottom-nav {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: space-around; align-items: center;
+    background: #fff; border-top: 1px solid var(--border);
+    padding: .3rem 0 env(safe-area-inset-bottom, 0);
+    z-index: 100;
+    box-shadow: 0 -2px 12px rgba(15, 23, 42, .08);
+  }
+  .bottom-nav a {
+    flex: 1; text-align: center; padding: .5rem .2rem;
+    color: var(--text-soft); font-size: .68rem; font-weight: 500;
+    text-decoration: none;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+  }
+  .bottom-nav a.active { color: var(--brand); }
+  .bottom-nav a .bn-ico { font-size: 1.25rem; line-height: 1; }
+  .bottom-nav-more-modal { --bottom-sheet: 1; }
+
+  /* Hamburger menu in top bar for "More" */
+  .topbar-mobile-menu { display: inline-flex; }
+
+  /* Lead listing — card view on mobile */
+  .leads-table { display: none; }
+  .leads-mobile { display: flex; flex-direction: column; gap: .5rem; }
+  .lead-card {
+    background: #fff; border-radius: var(--radius);
+    padding: .75rem .9rem; box-shadow: var(--shadow-sm);
+    border-left: 3px solid var(--brand);
+    position: relative;
+  }
+  .lead-card.row-duplicate { background: #fffbeb; border-left-color: var(--warn); }
+  .lc-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+  .lc-name { font-weight: 600; font-size: .98rem; flex: 1; }
+  .lc-status { font-size: .68rem; padding: 2px 8px; border-radius: 999px; color: #fff; }
+  .lc-meta { color: var(--muted); font-size: .78rem; margin-top: .1rem; display: flex; gap: .5rem; flex-wrap: wrap; }
+  .lc-actions { display: flex; gap: .3rem; margin-top: .6rem; flex-wrap: wrap; }
+  .lc-actions .btn { flex: 1; min-width: 0; padding: .4rem; font-size: .8rem; }
+  .lc-fu { color: var(--warn); font-size: .75rem; font-weight: 500; }
+  .lc-fu.overdue { color: var(--err); }
+
+  /* FAB — floating action button */
+  .fab {
+    position: fixed; right: 1rem; bottom: 72px;
+    width: 56px; height: 56px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--brand), #ec4899);
+    color: #fff; border: none; font-size: 1.6rem;
+    box-shadow: 0 8px 20px rgba(99, 102, 241, .4);
+    cursor: pointer; z-index: 99;
+    display: grid; place-items: center;
+  }
+
+  /* Simpler toolbars on mobile */
+  .toolbar { padding: .5rem; gap: .3rem; }
+  .toolbar input, .toolbar select { font-size: 16px; } /* prevents iOS zoom */
+  .toolbar .flex { min-width: 150px; }
+
+  /* Modals are sheets from bottom on mobile */
+  .modal-backdrop { align-items: flex-end; padding: 0; }
+  .modal { border-radius: 16px 16px 0 0; width: 100% !important; max-height: 92vh; padding: 1rem; }
+  .modal.modal-lg { width: 100% !important; }
+  .form-grid { grid-template-columns: 1fr; }
+
+  /* Tables in general are ugly on mobile — make them horizontal scroll containers */
+  .table-wrap { border-radius: var(--radius); }
+  thead th { font-size: .68rem; padding: .5rem .5rem; }
+  tbody td { padding: .45rem .5rem; font-size: .85rem; }
+  .cards { grid-template-columns: repeat(2, 1fr); gap: .6rem; }
+  .stat-value { font-size: 1.3rem; }
+  .subtabs { font-size: .82rem; }
+  .subtab { padding: .55rem .75rem; }
+
+  /* Topbar right: keep bell, add menu */
+  .topbar-right { gap: .25rem; }
+  .btn { min-height: 36px; }
+  .btn.sm { min-height: 30px; }
+
+  /* Dashboard grid stacks */
+  .dash-grid { grid-template-columns: 1fr !important; }
+  .pipeline { overflow-x: auto; flex-wrap: nowrap; padding-bottom: .5rem; }
+  .pipeline .stage { min-width: 110px; flex: 0 0 110px; }
+  .kanban { grid-auto-columns: 85vw; }
+}
+
+@media (min-width: 781px) {
+  .bottom-nav { display: none; }
+  .fab { display: none; }
+  .leads-mobile { display: none; }
+  .topbar-mobile-menu { display: none; }
+}
+
+/* Call button styled for mobile */
+.btn-call {
+  background: var(--ok) !important; color: #fff !important;
+  border-color: var(--ok) !important; font-weight: 600;
+}
+.btn-call:hover { background: #059669 !important; }
+
+/* After-call modal — distinctive */
+.after-call-modal .modal { border-top: 4px solid var(--ok); }
+.after-call-modal .modal-head h3 { color: var(--ok); }
+
+/* Mobile menu sheet */
+.mobile-menu-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .75rem; }
+.menu-tile {
+  background: var(--bg-alt); border-radius: var(--radius); padding: .85rem .5rem;
+  display: flex; flex-direction: column; align-items: center; gap: .4rem;
+  text-align: center; font-size: .82rem; color: var(--text); text-decoration: none;
+}
+.menu-tile:hover { background: var(--brand-soft); color: var(--brand); text-decoration: none; }
+.menu-tile-icon { font-size: 1.6rem; }
+
+/* Bottom-nav highlight when nav item is active */
+#bottom-nav a.active { color: var(--brand); }
+
+/* Topbar — hide menu button on desktop */
+@media (min-width: 781px) { .topbar-mobile-menu { display: none !important; } }

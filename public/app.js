@@ -224,6 +224,7 @@ function renderShell() {
       </aside>
       <main class="main">
         <header class="topbar">
+          <button class="btn icon topbar-mobile-menu" id="btn-more" title="Menu">☰</button>
           <h2 id="page-title">Dashboard</h2>
           <div class="topbar-right">
             <button class="btn ghost" id="btn-notif" title="Notifications">🔔<span class="badge" id="notif-count" hidden>0</span></button>
@@ -231,20 +232,64 @@ function renderShell() {
         </header>
         <section id="view"></section>
       </main>
+      <nav class="bottom-nav" id="bottom-nav"></nav>
     </div>`;
   const nav = $('#nav');
+  const mobileNav = $('#bottom-nav');
+  // Mobile bottom bar: 4 main + More
+  const mobilePrimary = ['dashboard', 'leads', 'kanban', 'followups'];
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
     const a = h('a', { href: '#/' + item.id, 'data-view': item.id }, h('span', { class: 'nav-icon' }, item.icon), h('span', {}, item.label));
     nav.appendChild(a);
+    if (mobilePrimary.includes(item.id)) {
+      const ma = h('a', { href: '#/' + item.id, 'data-view': item.id },
+        h('span', { class: 'bn-ico' }, item.icon),
+        h('span', {}, item.label));
+      mobileNav.appendChild(ma);
+    }
   });
+  // "More" button opens the full menu as a bottom sheet
+  mobileNav.appendChild(h('a', { href: '#', onclick: ev => { ev.preventDefault(); showMobileMore(); } },
+    h('span', { class: 'bn-ico' }, '⋯'), h('span', {}, 'More')));
+
   $('#btn-logout').onclick = logout;
   $('#btn-notif').onclick = showNotifs;
+  $('#btn-more').onclick = showMobileMore;
+}
+
+function showMobileMore() {
+  const sheet = h('div', { class: 'modal-backdrop bottom-nav-more-modal', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) sheet.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, esc(CRM.config.company_name || 'Menu')),
+        h('button', { class: 'btn icon', onclick: () => sheet.remove() }, '✕')
+      ),
+      h('div', { class: 'me', style: { padding: '.5rem 0' } },
+        h('span', { class: 'avatar' }, (CRM.user.name || '?').split(/\s+/).map(s => s[0]).slice(0, 2).join('').toUpperCase()),
+        h('div', { class: 'me-meta' },
+          h('div', { class: 'name' }, CRM.user.name),
+          h('div', { class: 'role muted' }, CRM.user.role + ' · ' + CRM.user.email)
+        )
+      ),
+      h('div', { class: 'mobile-menu-grid' },
+        ...NAV.filter(item => !item.roles || item.roles.includes(CRM.user.role)).map(item =>
+          h('a', { href: '#/' + item.id, class: 'menu-tile', onclick: () => sheet.remove() },
+            h('span', { class: 'menu-tile-icon' }, item.icon),
+            h('span', {}, item.label))
+        )
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn block', onclick: () => { sheet.remove(); logout(); } }, 'Logout')
+      )
+    )
+  );
+  document.body.appendChild(sheet);
 }
 
 function navigateTo(id) {
   const item = NAV.find(n => n.id === id) || NAV[0];
-  $$('.sidebar nav a').forEach(a => a.classList.toggle('active', a.dataset.view === item.id));
+  $$('.sidebar nav a, #bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.view === item.id));
   $('#page-title').textContent = item.label;
   const view = $('#view');
   view.innerHTML = '<div class="loading">Loading…</div>';
@@ -390,6 +435,10 @@ VIEWS.leads = async (view) => {
   ));
 
   view.appendChild(h('div', { class: 'table-wrap' }, h('table', { id: 'leads-table', class: 'leads-table' })));
+  // Mobile card container (only visible on ≤ 780px via CSS)
+  view.appendChild(h('div', { class: 'leads-mobile', id: 'leads-mobile' }));
+  // Mobile FAB
+  view.appendChild(h('button', { class: 'fab', onclick: () => openLeadModal(), title: 'New lead' }, '+'));
 
   await loadLeads();
 };
@@ -489,6 +538,114 @@ function renderLeadsTable(rows) {
       } catch (e) { toast(e.message, 'err'); }
     })
   );
+
+  // Mobile card view
+  renderLeadsMobile(rows);
+}
+
+function renderLeadsMobile(rows) {
+  const m = $('#leads-mobile');
+  if (!m) return;
+  m.innerHTML = '';
+  if (!rows.length) {
+    m.appendChild(h('div', { class: 'empty' }, 'No leads match your filters.'));
+    return;
+  }
+  const { statuses } = CRM.cache;
+  rows.forEach(l => {
+    const digits = String(l.phone || '').replace(/\D/g, '');
+    const statusColor = l.status_color || '#6b7280';
+    const due = l.next_followup_at ? new Date(l.next_followup_at) : null;
+    const overdue = due && due < new Date();
+    const card = h('div', { class: 'lead-card' + (l.is_duplicate ? ' row-duplicate' : '') },
+      h('div', { class: 'lc-head' },
+        h('a', { href: '#', class: 'lc-name', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
+        h('span', { class: 'lc-status', style: { background: statusColor } }, l.status_name || '')
+      ),
+      h('div', { class: 'lc-meta' },
+        l.phone ? h('span', {}, '📞 ', l.phone) : null,
+        l.source ? h('span', {}, '• ', l.source) : null,
+        l.assigned_name ? h('span', {}, '👤 ', l.assigned_name) : null
+      ),
+      l.is_duplicate ? h('div', { class: 'dup-pill', onclick: () => openDuplicateHistory(l.id) }, '⚠ DUP — see past') : null,
+      due ? h('div', { class: 'lc-fu' + (overdue ? ' overdue' : '') }, '⏰ ' + fmtDate(l.next_followup_at, 'relative')) : null,
+      l.recent_remark ? h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.3rem' } }, '💬 ' + (l.recent_remark || '').slice(0, 80)) : null,
+      h('div', { class: 'lc-actions' },
+        digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
+        digits ? h('a', { class: 'btn sm', href: `https://wa.me/${digits}`, target: '_blank' }, '💬 WA') : null,
+        h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
+        h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎ Edit')
+      )
+    );
+    m.appendChild(card);
+  });
+}
+
+/** Click-to-call with after-call modal. Stores the lead being called so the
+ *  Page Visibility handler can fire the follow-up prompt when user returns. */
+function callLead(lead) {
+  CRM.pendingCall = { lead, startedAt: Date.now() };
+  // Open tel: — on Android opens the dialer / on desktop nothing
+  const digits = String(lead.phone || '').replace(/\D/g, '');
+  if (!digits) return toast('No phone number', 'warn');
+  const a = document.createElement('a');
+  a.href = 'tel:+' + digits;
+  a.click();
+  // Safety net: if tel: doesn't fire (desktop), show the modal after 1s
+  setTimeout(() => { if (document.visibilityState === 'visible') openAfterCallModal(lead); }, 1200);
+}
+
+// Fire after-call modal when user returns from the dialer
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && CRM.pendingCall) {
+    const { lead, startedAt } = CRM.pendingCall;
+    CRM.pendingCall = null;
+    // Only if we were gone for >3s (actual call, not just accidental)
+    if (Date.now() - startedAt > 3000) {
+      openAfterCallModal(lead);
+    }
+  }
+});
+
+async function openAfterCallModal(lead) {
+  const { statuses } = CRM.cache;
+  const modal = h('div', { class: 'modal-backdrop after-call-modal' },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📞 Call with ' + (lead.name || 'lead')),
+        h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+      ),
+      h('p', { class: 'muted' }, 'How did the call go? Update the status and add a remark.'),
+      h('label', {}, 'Status'),
+      h('select', { id: 'ac-status' },
+        ...statuses.map(s => h('option', { value: s.id, selected: Number(s.id) === Number(lead.status_id) ? 'selected' : null }, s.name))
+      ),
+      h('label', {}, 'Remark'),
+      h('textarea', { id: 'ac-remark', rows: 4, placeholder: 'What was discussed? Next step?' }),
+      h('label', {}, 'Next follow-up (optional)'),
+      h('input', { type: 'datetime-local', id: 'ac-followup' }),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Skip'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          const statusId = Number($('#ac-status').value);
+          const remark = $('#ac-remark').value.trim();
+          const fu = $('#ac-followup').value;
+          const patch = {};
+          if (statusId && statusId !== Number(lead.status_id)) patch.status_id = statusId;
+          if (fu) patch.next_followup_at = fu;
+          try {
+            if (Object.keys(patch).length) await api('api_leads_update', lead.id, patch);
+            if (remark) await api('api_leads_addRemark', lead.id, { remark });
+            toast('Updated');
+            modal.remove();
+            if (typeof loadLeads === 'function') loadLeads();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, '✓ Save update')
+      )
+    )
+  );
+  document.body.appendChild(modal);
+  setTimeout(() => $('#ac-remark')?.focus(), 100);
 }
 
 function renderCell(col, l, statuses) {
@@ -503,6 +660,7 @@ function renderCell(col, l, statuses) {
       const digits = String(l.phone || '').replace(/\D/g, '');
       return h('td', { class: 'cell-phone' },
         l.phone || '',
+        digits ? h('button', { class: 'btn icon', title: 'Call', onclick: ev => { ev.stopPropagation(); callLead(l); } }, '📞') : null,
         l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: ev => { ev.stopPropagation(); navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
         digits ? h('a', { class: 'btn icon', href: `https://wa.me/${digits}`, target: '_blank', title: 'WhatsApp', onclick: ev => ev.stopPropagation() }, '💬') : null
       );
