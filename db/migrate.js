@@ -21,5 +21,6 @@ const { pool } = require('./pg');
   } finally {
     client.release();
     await pool.end();
+    process.exit(process.exitCode || 0);
   }
 })();

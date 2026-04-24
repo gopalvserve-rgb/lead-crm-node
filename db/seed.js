@@ -66,5 +66,6 @@ const DEFAULT_SOURCES = [
     process.exitCode = 1;
   } finally {
     await db.pool.end();
+    process.exit(process.exitCode || 0);
   }
 })();
