@@ -257,7 +257,6 @@ async function _createLeadFromWebhook(lead) {
 
   const id = await db.insert('leads', lead);
 
-  // Notify the assignee
   if (lead.assigned_to) {
     await db.insert('notifications', {
       user_id: lead.assigned_to,
@@ -269,6 +268,8 @@ async function _createLeadFromWebhook(lead) {
       created_at: db.nowIso()
     });
   }
+  // Fire automations for inbound leads
+  try { require('../utils/automations').fire('lead_created', { lead: Object.assign({ id }, lead) }); } catch (_) {}
   return { id, assigned_to: lead.assigned_to || null };
 }
 

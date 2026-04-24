@@ -205,10 +205,12 @@ async function api_leads_create(token, payload) {
     status_id: p.status_id || (await _newStatusId()),
     assigned_to: p.assigned_to || me.id,
     city: p.city || '',
+    tags: p.tags || '',
     notes: p.notes || '',
     extra_json: p.extra ? JSON.stringify(p.extra) : '',
     next_followup_at: p.next_followup_at || '',
-    last_status_change_at: db.nowIso()
+    last_status_change_at: db.nowIso(),
+    created_by: me.id
   };
   const dup = await _applyDuplicatePolicy(base, me.id);
   base = dup.payload;
@@ -222,6 +224,11 @@ async function api_leads_create(token, payload) {
       status_id: ''
     });
   }
+  // Sync followup + fire automations
+  if (base.next_followup_at) {
+    await _syncFollowup(id, base.assigned_to || me.id, base.next_followup_at, '');
+  }
+  try { require('../utils/automations').fire('lead_created', { lead: Object.assign({ id }, base), user: me }); } catch (_) {}
   return { id, duplicate: dup.duplicate, matched_id: dup.matched_id };
 }
 
@@ -233,26 +240,65 @@ async function api_leads_update(token, id, patch) {
   if (!_isVisible(me, visible, lead)) throw new Error('Forbidden');
 
   const allowed = {};
-  ['name', 'email', 'phone', 'whatsapp', 'product_id', 'status_id', 'assigned_to', 'city', 'notes', 'next_followup_at']
+  ['name', 'email', 'phone', 'whatsapp', 'product_id', 'status_id', 'assigned_to',
+   'city', 'state', 'pincode', 'country', 'company', 'address',
+   'notes', 'next_followup_at', 'tags', 'source', 'source_ref',
+   'value', 'currency']
     .forEach(k => { if (k in patch) allowed[k] = patch[k]; });
+  allowed.updated_at = db.nowIso();
 
   if (patch.extra && typeof patch.extra === 'object') {
     const curr = _parseExtra(lead);
     allowed.extra_json = JSON.stringify(Object.assign({}, curr, patch.extra));
   }
-  if (patch.status_id && Number(patch.status_id) !== Number(lead.status_id)) {
-    allowed.last_status_change_at = db.nowIso();
-  }
+  const statusChanged = patch.status_id && Number(patch.status_id) !== Number(lead.status_id);
+  const assigneeChanged = patch.assigned_to && Number(patch.assigned_to) !== Number(lead.assigned_to);
+  if (statusChanged) allowed.last_status_change_at = db.nowIso();
+
   await db.update('leads', id, allowed);
-  if (patch.status_id && Number(patch.status_id) !== Number(lead.status_id)) {
+
+  // Sync next_followup_at → followups table so reminder/notification views find it
+  if ('next_followup_at' in patch) {
+    await _syncFollowup(id, me.id, patch.next_followup_at, patch.followup_note || '');
+  }
+
+  if (statusChanged) {
     const s = await db.findById('statuses', patch.status_id);
     await db.insert('remarks', {
       lead_id: id, user_id: me.id,
       remark: 'Status changed to ' + (s ? s.name : ''),
       status_id: patch.status_id
     });
+    // Fire automations
+    try { require('../utils/automations').fire('status_changed', { lead: Object.assign({}, lead, allowed), user: me, new_status: s }); } catch (_) {}
+  }
+  if (assigneeChanged) {
+    try { require('../utils/automations').fire('lead_assigned', { lead: Object.assign({}, lead, allowed), user: me }); } catch (_) {}
   }
   return { ok: true };
+}
+
+// Sync helper — creates or updates a followup row when the lead's next_followup_at changes
+async function _syncFollowup(leadId, userId, dueAt, note) {
+  const existing = (await db.getAll('followups')).filter(f =>
+    Number(f.lead_id) === Number(leadId) && Number(f.is_done) === 0
+  );
+  if (!dueAt) {
+    // Mark existing open follow-ups done
+    for (const f of existing) await db.update('followups', f.id, { is_done: 1, done_at: db.nowIso() });
+    return;
+  }
+  if (existing.length > 0) {
+    await db.update('followups', existing[0].id, { due_at: dueAt, note: note || existing[0].note || '' });
+    for (let i = 1; i < existing.length; i++) {
+      await db.update('followups', existing[i].id, { is_done: 1, done_at: db.nowIso() });
+    }
+  } else {
+    await db.insert('followups', {
+      lead_id: leadId, user_id: userId, due_at: dueAt,
+      note: note || '', is_done: 0, created_at: db.nowIso()
+    });
+  }
 }
 
 async function api_leads_addRemark(token, leadId, payload) {

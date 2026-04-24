@@ -374,3 +374,25 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
   .funnel-row { grid-template-columns: 80px 1fr 70px; gap: .5rem; }
 }
 code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-size: .85em; font-family: "SF Mono", Consolas, Monaco, monospace; }
+
+/* Dashboard v2 */
+.dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: .5rem; }
+.dash-grid .card-wide { grid-column: 1 / -1; }
+.fu-dash-list { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow-y: auto; }
+.fu-dash-list li { display: grid; grid-template-columns: 1fr 120px 80px; gap: .5rem; padding: .45rem .2rem; border-bottom: 1px solid var(--border-light); align-items: center; }
+.fu-name { font-weight: 500; color: var(--brand); cursor: pointer; }
+.fu-name:hover { text-decoration: underline; }
+.fu-phone { font-size: .82rem; }
+.fu-due { font-size: .78rem; text-align: right; color: var(--muted); }
+.fu-due.overdue { color: var(--err); font-weight: 500; }
+
+/* API docs block */
+.api-endpoint { display: flex; align-items: center; gap: .5rem; margin: .5rem 0; flex-wrap: wrap; }
+.api-endpoint code { flex: 1; padding: .45rem .75rem; font-size: .85rem; word-break: break-all; background: var(--bg-alt); border-radius: var(--radius-sm); }
+.code-block { background: #1e293b; color: #e2e8f0; padding: 1rem; border-radius: var(--radius-sm); font-size: .8rem; overflow-x: auto; white-space: pre; font-family: "SF Mono", Consolas, Monaco, monospace; }
+
+@media (max-width: 900px) {
+  .dash-grid { grid-template-columns: 1fr; }
+  .fu-dash-list li { grid-template-columns: 1fr 90px; }
+  .fu-phone { display: none; }
+}

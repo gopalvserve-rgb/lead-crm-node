@@ -126,6 +126,16 @@ const SCHEMA = {
     columns: ['lead_id', 'direction', 'from_number', 'to_number',
               'body', 'wa_message_id', 'status', 'created_at'],
     json: []
+  },
+  automations: {
+    columns: ['name', 'event', 'condition', 'channel', 'recipient',
+              'subject', 'template', 'is_active', 'created_at'],
+    json: []
+  },
+  automation_log: {
+    columns: ['automation_id', 'lead_id', 'event', 'channel',
+              'recipient', 'status', 'detail', 'created_at'],
+    json: []
   }
 };
 

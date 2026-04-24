@@ -259,31 +259,62 @@ const VIEWS = {};
 
 /* ---------------- Dashboard ---------------- */
 VIEWS.dashboard = async (view) => {
-  const [summary, funnel, due] = await Promise.all([
+  await ensureChartJs();
+  const [summary, due] = await Promise.all([
     api('api_reports_summary', {}),
-    api('api_reports_funnel', {}),
     api('api_notifications_mine')
   ]);
   view.innerHTML = '';
+
+  // 4 clean KPI cards
   view.append(
     h('div', { class: 'cards' },
-      card('Total Leads', summary.totals.total, 'accent', '🎯'),
-      card('New', summary.totals.new_leads, '', '✨'),
-      card('Won', summary.totals.won, 'ok', '🏆'),
-      card('Lost', summary.totals.lost, 'err', '❌'),
-      card('Due today', due.counts.due_today, 'warn', '📅'),
-      card('Overdue', due.counts.overdue, 'err', '⚠️')
-    ),
-    h('div', { class: 'card card-wide' },
-      h('h3', {}, 'Pipeline'),
-      h('div', { class: 'pipeline' },
-        ...funnel.map(s => h('div', { class: 'stage', style: { borderTopColor: s.color } },
-          h('div', { class: 'stage-count' }, s.count),
-          h('div', { class: 'stage-name' }, s.name)
-        ))
-      )
+      card('Total Leads',  summary.totals.total,      'accent', '🎯'),
+      card('Won',          summary.totals.won,        'ok',     '🏆'),
+      card('Due today',    due.counts.due_today,      'warn',   '📅'),
+      card('Overdue',      due.counts.overdue,        'err',    '⚠️')
     )
   );
+
+  // Two-column: upcoming follow-ups + pie chart
+  const grid = h('div', { class: 'dash-grid' });
+  view.appendChild(grid);
+
+  // Upcoming follow-ups card
+  const allDue = [...(due.overdue || []), ...(due.due_today || []), ...(due.upcoming || [])].slice(0, 8);
+  const fuCard = h('div', { class: 'card' },
+    h('h3', {}, '⏰ Upcoming follow-ups'),
+    allDue.length === 0
+      ? h('p', { class: 'muted' }, 'No follow-ups scheduled.')
+      : h('ul', { class: 'fu-dash-list' }, ...allDue.map(f => h('li', {},
+          h('div', { class: 'fu-name', onclick: () => openLeadModal(f.lead_id) }, f.lead_name || '—'),
+          h('div', { class: 'fu-phone muted' }, f.lead_phone || ''),
+          h('div', { class: 'fu-due ' + (new Date(f.due_at) < new Date() ? 'overdue' : '') }, fmtDate(f.due_at, 'relative'))
+        )))
+  );
+  grid.appendChild(fuCard);
+
+  // Pie chart — leads by status
+  const pieCard = h('div', { class: 'card' },
+    h('h3', {}, '🎯 Leads by status'),
+    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-pie' }))
+  );
+  grid.appendChild(pieCard);
+
+  // By source bar chart
+  const srcCard = h('div', { class: 'card card-wide' },
+    h('h3', {}, 'Leads by source'),
+    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-src' }))
+  );
+  grid.appendChild(srcCard);
+
+  setTimeout(() => {
+    const statusData = (summary.by_status || []).filter(x => x.c > 0);
+    makeChart('dash-pie', 'pie', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
+    const srcData = summary.by_source || [];
+    makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
+  }, 50);
+
   function card(label, val, klass, icon) {
     return h('div', { class: `card stat ${klass}` },
       h('div', { class: 'stat-icon' }, icon || ''),
@@ -964,13 +995,26 @@ async function ensureChartJs() {
 VIEWS.reports = async (view) => {
   await ensureChartJs();
   view.innerHTML = '';
-  const users = CRM.cache.users || [];
+  const { users = [], products = [], sources = [] } = CRM.cache;
   const filterBar = h('div', { class: 'toolbar' },
     h('input', { type: 'date', id: 'rep-from' }),
     h('span', {}, 'to'),
     h('input', { type: 'date', id: 'rep-to' }),
     selectOpts('rep-user', [{ id: '', name: 'All users' }, ...users]),
-    h('button', { class: 'btn', onclick: loadReports }, '🔎 Apply')
+    h('select', { id: 'rep-role' },
+      h('option', { value: '' }, 'Any role'),
+      h('option', { value: 'admin' }, 'Admin'),
+      h('option', { value: 'manager' }, 'Manager'),
+      h('option', { value: 'team_leader' }, 'Team leader'),
+      h('option', { value: 'sales' }, 'Tele-caller / Sales')
+    ),
+    h('select', { id: 'rep-product' },
+      h('option', { value: '' }, 'Any product'),
+      ...products.map(p => h('option', { value: p.id }, p.name))
+    ),
+    selectOpts('rep-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))]),
+    h('input', { id: 'rep-tag', placeholder: 'Tag (e.g. vip)', style: { maxWidth: '130px' } }),
+    h('button', { class: 'btn primary', onclick: loadReports }, '🔎 Apply')
   );
   view.appendChild(filterBar);
   view.appendChild(h('div', { id: 'rep-cards', class: 'cards' }));
@@ -987,7 +1031,11 @@ async function loadReports() {
   const from = $('#rep-from')?.value || undefined;
   const to   = $('#rep-to')?.value || undefined;
   const user = $('#rep-user')?.value || undefined;
-  const summary = await api('api_reports_summary', { from, to, scope_user_id: user });
+  const role = $('#rep-role')?.value || undefined;
+  const product_id = $('#rep-product')?.value || undefined;
+  const source = $('#rep-source')?.value || undefined;
+  const tag = $('#rep-tag')?.value || undefined;
+  const summary = await api('api_reports_summary', { from, to, scope_user_id: user, role, product_id, source, tag });
   const funnel  = await api('api_reports_funnel',  { from, to });
 
   $('#rep-cards').innerHTML = '';
@@ -1042,15 +1090,17 @@ function makeChart(canvasId, type, labels, data, colors, extra) {
 VIEWS.admin = async (view) => {
   view.innerHTML = '';
   const tabs = [
-    { id: 'company',  label: 'Company' },
-    { id: 'fb',       label: 'Facebook' },
-    { id: 'whatsapp', label: 'WhatsApp' },
-    { id: 'sources',  label: 'Sources' },
-    { id: 'statuses', label: 'Statuses' },
+    { id: 'company',      label: 'Company' },
+    { id: 'api',          label: 'Website API' },
+    { id: 'automations',  label: 'Automations' },
+    { id: 'fb',           label: 'Facebook' },
+    { id: 'whatsapp',     label: 'WhatsApp' },
+    { id: 'sources',      label: 'Sources' },
+    { id: 'statuses',     label: 'Statuses' },
     { id: 'customfields', label: 'Custom Fields' },
-    { id: 'rules',    label: 'Auto-assign Rules' },
-    { id: 'duplicates', label: 'Duplicates' },
-    { id: 'smtp',     label: 'SMTP' }
+    { id: 'rules',        label: 'Auto-assign Rules' },
+    { id: 'duplicates',   label: 'Duplicates' },
+    { id: 'smtp',         label: 'SMTP' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -1065,8 +1115,10 @@ async function showAdminTab(id) {
   const body = $('#admin-body');
   body.innerHTML = '<div class="loading">Loading…</div>';
   try {
-    if (id === 'company')  body.replaceChildren(await adminCompany());
-    if (id === 'fb')       body.replaceChildren(await adminFb());
+    if (id === 'company')     body.replaceChildren(await adminCompany());
+    if (id === 'api')         body.replaceChildren(await adminApi());
+    if (id === 'automations') body.replaceChildren(await adminAutomations());
+    if (id === 'fb')          body.replaceChildren(await adminFb());
     if (id === 'whatsapp') body.replaceChildren(await adminWhatsapp());
     if (id === 'sources')  body.replaceChildren(await adminSources());
     if (id === 'statuses') body.replaceChildren(await adminStatuses());
@@ -1080,6 +1132,148 @@ async function showAdminTab(id) {
 async function adminCompany() {
   const cfg = await api('api_admin_getConfig');
   return configForm(cfg, ['COMPANY_NAME', 'COMPANY_LOGO_URL']);
+}
+
+/* ---- Website API / sample CSV ---- */
+async function adminApi() {
+  const cfg = await api('api_admin_getConfig');
+  const origin = location.origin;
+  const apiKey = cfg.WEBSITE_API_KEY || '(not set — set below)';
+  const curl = `curl -X POST '${origin}/hook/website' \\\n  -H 'x-api-key: ${apiKey}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name":"John Doe","phone":"+911234567890","email":"john@example.com","source":"Website","notes":"Demo request"}'`;
+  const card = h('div', {});
+  card.appendChild(h('div', { class: 'card' },
+    h('h4', {}, '🌐 Website lead API'),
+    h('p', { class: 'muted' }, 'Send leads from your website, landing page or any external system by POSTing to this endpoint. Leads go straight into the CRM and trigger your auto-assign rules + automations.'),
+    h('div', { class: 'api-endpoint' },
+      h('code', {}, origin + '/hook/website'),
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(origin + '/hook/website'); toast('URL copied'); } }, 'Copy URL')
+    ),
+    h('h5', {}, 'API key'),
+    h('div', { class: 'api-endpoint' },
+      h('code', {}, apiKey),
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(apiKey); toast('Key copied'); } }, 'Copy key')
+    ),
+    h('p', { class: 'muted' }, 'Keep this key secret. Change it any time in SMTP/Duplicates tab or here:'),
+    configForm(cfg, ['WEBSITE_API_KEY']),
+    h('h5', {}, 'Try it — cURL'),
+    h('pre', { class: 'code-block' }, curl),
+    h('h5', {}, 'Sample CSV for bulk upload'),
+    h('p', { class: 'muted' }, 'Download the template, fill in your leads, then use Leads → ⬆️ Upload to import.'),
+    h('a', { class: 'btn primary', href: '/api/sample.csv', download: 'lead-crm-sample.csv' }, '⬇️ Download sample CSV')
+  ));
+  return card;
+}
+
+/* ---- Automations ---- */
+async function adminAutomations() {
+  const [automations, log] = await Promise.all([
+    api('api_automations_list'),
+    api('api_automations_log', 20).catch(() => [])
+  ]);
+  const card = h('div', {});
+  card.appendChild(h('div', { class: 'card' },
+    h('h4', {}, '⚡ Automations'),
+    h('p', { class: 'muted' }, 'Send emails or WhatsApp messages automatically when events happen (lead created, status changed, etc). Use {{lead.name}}, {{lead.phone}}, {{user.name}}, {{new_status.name}} in your templates.')
+  ));
+  const tblCard = h('div', { class: 'card' });
+  tblCard.appendChild(h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Event'), h('th', {}, 'Channel'),
+      h('th', {}, 'Recipient'), h('th', {}, 'Active'), h('th', {})
+    )),
+    h('tbody', {}, ...automations.map(a => h('tr', {},
+      h('td', {}, a.name),
+      h('td', {}, a.event),
+      h('td', {}, a.channel),
+      h('td', {}, a.recipient),
+      h('td', {},
+        h('label', { class: 'switch' },
+          h('input', { type: 'checkbox', checked: Number(a.is_active) ? 'checked' : null,
+            onclick: async ev => { try { await api('api_automations_toggle', a.id, ev.target.checked); toast('Toggled'); } catch (e) { toast(e.message, 'err'); } } }),
+          h('span', { class: 'slider' })
+        )
+      ),
+      h('td', {},
+        h('button', { class: 'btn sm', onclick: () => openAutomationModal(a) }, '✎'),
+        h('button', { class: 'btn sm', onclick: async () => { try { const r = await api('api_automations_test', a.id); toast(r.note || 'Test fired'); setTimeout(() => showAdminTab('automations'), 2000); } catch (e) { toast(e.message, 'err'); } } }, '▶ Test'),
+        h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmDialog('Delete automation?')) return; await api('api_automations_delete', a.id); toast('Deleted'); showAdminTab('automations'); } }, '🗑')
+      )
+    )))
+  ));
+  tblCard.appendChild(h('div', { class: 'actions', style: { marginTop: '.75rem' } },
+    h('button', { class: 'btn primary', onclick: () => openAutomationModal() }, '+ New automation')
+  ));
+  card.appendChild(tblCard);
+
+  if (log && log.length) {
+    const logCard = h('div', { class: 'card' }, h('h4', {}, '📋 Recent log'));
+    logCard.appendChild(h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Automation'), h('th', {}, 'Event'), h('th', {}, 'Channel'), h('th', {}, 'Status'), h('th', {}, 'Detail'))),
+      h('tbody', {}, ...log.map(r => h('tr', {},
+        h('td', {}, fmtDate(r.created_at, 'relative')),
+        h('td', {}, r.automation_name || '—'),
+        h('td', {}, r.event),
+        h('td', {}, r.channel),
+        h('td', { class: r.status === 'sent' ? 'cell-ok' : r.status === 'failed' ? 'cell-err' : 'muted' }, r.status),
+        h('td', {}, (r.detail || '').slice(0, 60))
+      )))
+    ));
+    card.appendChild(logCard);
+  }
+  return card;
+}
+
+function openAutomationModal(existing) {
+  const a = existing || { name: '', event: 'lead_created', channel: 'email', recipient: 'lead', condition: '', subject: '', template: '', is_active: 1 };
+  const modal = h('div', { class: 'modal-backdrop' },
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' }, h('h3', {}, a.id ? 'Edit automation' : 'New automation'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+      h('form', { id: 'auto-form', class: 'form-grid' },
+        field('name', 'Name *', a.name, { required: true }),
+        selectField('event', 'When (event) *', a.event, [
+          { value: 'lead_created',   label: 'Lead created' },
+          { value: 'status_changed', label: 'Status changed' },
+          { value: 'lead_assigned',  label: 'Lead assigned' },
+          { value: 'followup_due',   label: 'Follow-up due' }
+        ]),
+        selectField('channel', 'Channel *', a.channel, [
+          { value: 'email',    label: 'Email (SMTP)' },
+          { value: 'whatsapp', label: 'WhatsApp' },
+          { value: 'webhook',  label: 'Webhook (POST URL)' }
+        ]),
+        selectField('recipient', 'Send to', a.recipient, [
+          { value: 'lead',     label: 'The lead' },
+          { value: 'assignee', label: 'Assigned user' },
+          { value: 'admin',    label: 'Admin' }
+        ]),
+        h('div', { class: 'f-row full' },
+          h('label', {}, 'Condition (optional)'),
+          h('input', { name: 'condition', value: a.condition || '', placeholder: 'e.g. status=Qualified   or   source=Website   or   tag:vip' })
+        ),
+        h('div', { class: 'f-row full' },
+          h('label', {}, 'Email subject (email only)'),
+          h('input', { name: 'subject', value: a.subject || '', placeholder: 'New lead: {{lead.name}}' })
+        ),
+        h('div', { class: 'f-row full' },
+          h('label', {}, 'Template (supports {{lead.name}}, {{lead.phone}}, {{lead.status_name}}, {{user.name}}, {{new_status.name}}, {{date}})'),
+          h('textarea', { name: 'template', rows: 5, placeholder: 'Hi {{lead.name}}, your status is now {{new_status.name}}. We\'ll get back to you shortly.' }, a.template || '')
+        )
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          const f = $('#auto-form');
+          const payload = { id: a.id,
+            name: f.name.value, event: f.event.value, channel: f.channel.value,
+            recipient: f.recipient.value, condition: f.condition.value,
+            subject: f.subject.value, template: f.template.value, is_active: 1 };
+          try { await api('api_automations_save', payload); toast('Saved'); modal.remove(); showAdminTab('automations'); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, 'Save')
+      )
+    )
+  );
+  document.body.appendChild(modal);
 }
 async function adminFb() {
   const [cfg, status] = await Promise.all([api('api_admin_getConfig'), api('api_fb_status').catch(() => ({ connected: false }))]);

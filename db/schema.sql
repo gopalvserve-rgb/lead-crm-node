@@ -275,3 +275,30 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_salary NUMERIC(14,2) DEFAULT 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS joining_date DATE;
 ALTER TABLE remarks ADD COLUMN IF NOT EXISTS status_id INTEGER;
 ALTER TABLE custom_fields ADD COLUMN IF NOT EXISTS show_in_list INTEGER NOT NULL DEFAULT 0;
+
+-- ---- automations --------------------------------------------
+CREATE TABLE IF NOT EXISTS automations (
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  event        TEXT NOT NULL,          -- lead_created | status_changed | lead_assigned | followup_due | source_is
+  condition    TEXT,                   -- e.g. status_id=3 OR source=Website OR tag:vip
+  channel      TEXT NOT NULL,          -- email | whatsapp | webhook
+  recipient    TEXT,                   -- 'lead' | 'assignee' | 'admin' | specific email/phone
+  subject      TEXT,
+  template     TEXT NOT NULL,
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS automation_log (
+  id            SERIAL PRIMARY KEY,
+  automation_id INTEGER REFERENCES automations(id) ON DELETE SET NULL,
+  lead_id       INTEGER REFERENCES leads(id) ON DELETE CASCADE,
+  event         TEXT,
+  channel       TEXT,
+  recipient     TEXT,
+  status        TEXT,   -- sent | failed | skipped
+  detail        TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_auto_log_lead ON automation_log(lead_id);

@@ -3,24 +3,61 @@ const { authUser, getVisibleUserIds } = require('../utils/auth');
 
 async function api_notifications_mine(token) {
   const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
   const todayStr = new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
 
-  const allFollowups = await db.getAll('followups');
+  const [allFollowups, allLeads] = await Promise.all([db.getAll('followups'), db.getAll('leads')]);
   const leadsById = {};
-  (await db.getAll('leads')).forEach(l => { leadsById[Number(l.id)] = l; });
-  const mine = allFollowups.filter(f => Number(f.user_id) === Number(me.id) && Number(f.is_done) === 0);
+  allLeads.forEach(l => { leadsById[Number(l.id)] = l; });
+
+  // Build a map of (lead_id -> open followup) so we don't double-count when the lead
+  // also has a next_followup_at that matches its open followup row.
+  const followupByLead = {};
+  allFollowups.forEach(f => {
+    if (Number(f.is_done) === 0) followupByLead[Number(f.lead_id)] = f;
+  });
+
+  // Collect items (from followups OR from leads.next_followup_at as fallback)
+  const items = [];
+  const isMine = (lead) => {
+    if (me.role === 'admin') return true;
+    return lead && visible.includes(Number(lead.assigned_to));
+  };
+
+  // From followups table — assigned to me OR for leads I can see
+  allFollowups.forEach(f => {
+    if (Number(f.is_done) === 1) return;
+    if (!f.due_at) return;
+    const lead = leadsById[Number(f.lead_id)];
+    const isForMe = Number(f.user_id) === Number(me.id);
+    if (!isForMe && !isMine(lead)) return;
+    items.push({
+      id: f.id, lead_id: f.lead_id, due_at: f.due_at, note: f.note || '',
+      lead_name: lead?.name || '', lead_phone: lead?.phone || '',
+      assigned_to: lead?.assigned_to
+    });
+  });
+
+  // Fallback: leads with next_followup_at but no matching followup row (legacy rows)
+  allLeads.forEach(l => {
+    if (!l.next_followup_at) return;
+    if (followupByLead[Number(l.id)]) return;
+    if (!isMine(l) && Number(l.assigned_to) !== Number(me.id)) return;
+    items.push({
+      id: null, lead_id: l.id, due_at: l.next_followup_at, note: '',
+      lead_name: l.name || '', lead_phone: l.phone || '',
+      assigned_to: l.assigned_to
+    });
+  });
 
   const overdue = [], due_today = [], upcoming = [];
-  mine.forEach(f => {
-    const row = Object.assign({}, f, {
-      lead_name: leadsById[Number(f.lead_id)]?.name || '',
-      lead_phone: leadsById[Number(f.lead_id)]?.phone || ''
-    });
-    if (!f.due_at) return;
-    if (String(f.due_at) < now && String(f.due_at).slice(0, 10) !== todayStr) overdue.push(row);
-    else if (String(f.due_at).slice(0, 10) === todayStr) due_today.push(row);
-    else if (String(f.due_at) > now) upcoming.push(row);
+  items.forEach(row => {
+    const due = String(row.due_at);
+    const dueDay = due.slice(0, 10);
+    if (dueDay === todayStr) due_today.push(row);
+    else if (due < now) overdue.push(row);
+    else upcoming.push(row);
   });
   overdue.sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)));
   due_today.sort((a, b) => String(a.due_at).localeCompare(String(b.due_at)));

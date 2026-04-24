@@ -14,12 +14,27 @@ async function api_reports_summary(token, filters) {
   const me = await authUser(token);
   filters = filters || {};
   let rows = await _visibleLeads(me);
+  const users = await db.getAll('users');
   if (filters.from) rows = rows.filter(l => String(l.created_at).slice(0, 10) >= filters.from);
   if (filters.to)   rows = rows.filter(l => String(l.created_at).slice(0, 10) <= filters.to);
   if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
+  if (filters.role) {
+    const userIds = users.filter(u => u.role === filters.role).map(u => Number(u.id));
+    rows = rows.filter(l => userIds.includes(Number(l.assigned_to)));
+  }
+  if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
+  if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
+  if (filters.tag)        rows = rows.filter(l => String(l.tags || '').toLowerCase().split(',').map(s => s.trim()).includes(String(filters.tag).toLowerCase()));
+  if (filters.custom_key && filters.custom_value) {
+    rows = rows.filter(l => {
+      try {
+        const extra = typeof l.extra_json === 'string' ? JSON.parse(l.extra_json) : (l.extra_json || {});
+        return String(extra[filters.custom_key] || '').toLowerCase() === String(filters.custom_value).toLowerCase();
+      } catch (_) { return false; }
+    });
+  }
 
   const statuses = await db.getAll('statuses');
-  const users = await db.getAll('users');
   const byStatus = statuses.map(s => ({
     status: s.name, color: s.color,
     c: rows.filter(l => Number(l.status_id) === Number(s.id)).length
