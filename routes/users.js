@@ -50,9 +50,20 @@ async function api_users_update(token, id, patch) {
   }
   const p = patch || {};
   const allowed = {};
-  ['name', 'phone', 'department', 'monthly_salary', 'joining_date', 'photo_url', 'is_active'].forEach(k => {
+  // Standard fields any user can update on themselves (and admins/managers on others)
+  ['name', 'phone', 'department', 'designation', 'monthly_salary', 'joining_date', 'photo_url', 'is_active'].forEach(k => {
     if (k in p) allowed[k] = p[k];
   });
+  // Email — needs uniqueness check against other users (case-insensitive)
+  if ('email' in p) {
+    const newEmail = String(p.email || '').toLowerCase().trim();
+    if (!newEmail) throw new Error('Email cannot be empty');
+    const existing = await db.findOneBy('users', 'email', newEmail);
+    if (existing && Number(existing.id) !== Number(id)) {
+      throw new Error('Another user is already using that email address');
+    }
+    allowed.email = newEmail;
+  }
   if (['admin', 'manager'].includes(me.role)) {
     if ('role' in p) allowed.role = p.role;
     if ('parent_id' in p) allowed.parent_id = p.parent_id;
