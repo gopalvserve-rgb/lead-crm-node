@@ -293,30 +293,39 @@ async function _createLeadFromWebhook(lead) {
   }
   if (assignedUserId) lead.assigned_to = assignedUserId;
 
-  // 3. Duplicate check (within window)
+  // 3. Duplicate check (within window). Always runs — we mark every dupe so
+  // the "⚠️ Duplicates only" filter and the bulk-Dedupe button can see them.
   const policy = process.env.DUPLICATE_POLICY || 'allow';
-  if (policy !== 'allow') {
-    const hours = Number(process.env.DUPLICATE_WINDOW_HOURS) || 24;
-    const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-    const phoneDigits = String(lead.phone || '').replace(/\D/g, '');
-    const emailLower  = String(lead.email || '').toLowerCase();
-    const dup = (await db.getAll('leads')).find(l => {
-      if (String(l.created_at) < since) return false;
-      const lp = String(l.phone || '').replace(/\D/g, '');
-      const le = String(l.email || '').toLowerCase();
-      return (phoneDigits && lp === phoneDigits) ||
-             (emailLower && le === emailLower);
-    });
-    if (dup) {
-      if (policy === 'reject') {
-        return { duplicate: true, matched_id: dup.id, skipped: true };
-      }
-      if (policy === 'assign_same_user' && dup.assigned_to) {
-        lead.assigned_to = dup.assigned_to;
-      }
-      if (policy === 'skip_assignment') lead.assigned_to = null;
-      lead.notes = (lead.notes || '') + '\n[DUPLICATE of lead #' + dup.id + ']';
+  const hours = Number(process.env.DUPLICATE_WINDOW_HOURS) || 24;
+  const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const phoneDigits = String(lead.phone || '').replace(/\D/g, '');
+  const emailLower  = String(lead.email || '').toLowerCase();
+  const dup = (phoneDigits || emailLower)
+    ? (await db.getAll('leads')).find(l => {
+        if (String(l.created_at) < since) return false;
+        const lp = String(l.phone || '').replace(/\D/g, '');
+        const le = String(l.email || '').toLowerCase();
+        return (phoneDigits && lp === phoneDigits) ||
+               (emailLower && le === emailLower);
+      })
+    : null;
+
+  if (dup) {
+    // Always flag — visible to the dedupe filter even under the default 'allow' policy
+    lead.is_duplicate = 1;
+    lead.duplicate_of = dup.id;
+    if (policy === 'reject') {
+      return { duplicate: true, matched_id: dup.id, skipped: true };
     }
+    if (policy === 'assign_same_user' && dup.assigned_to) {
+      lead.assigned_to = dup.assigned_to;
+    }
+    if (policy === 'skip_assignment') lead.assigned_to = null;
+    lead.notes = (lead.notes || '') + '\n[DUPLICATE of lead #' + dup.id + ']';
+  }
+  // Also flag is_duplicate=1 if the row's tag explicitly says "Duplicate"
+  if (!lead.is_duplicate && /\b(duplicate|dup)\b/i.test(String(lead.tags || ''))) {
+    lead.is_duplicate = 1;
   }
 
   const id = await db.insert('leads', lead);
