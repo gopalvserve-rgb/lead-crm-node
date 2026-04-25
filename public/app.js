@@ -3020,6 +3020,60 @@ async function adminFb() {
     }
   } catch (_) { /* ignore */ }
 
+  // ---- Manual page registration (no OAuth) ----
+  // Lets the admin paste a Page ID + a Page Access Token they obtained from
+  // Graph API Explorer or a System User in Business Manager. Bypasses the
+  // entire OAuth dance — useful when the app isn't approved for
+  // business_management yet, or for never-expiring System User tokens.
+  pagesCard.appendChild(h('details', { class: 'fb-manual-add', style: { marginTop: '1rem' } },
+    h('summary', { style: { cursor: 'pointer', fontWeight: 600, color: 'var(--brand)' } },
+      '➕ Add a page manually (no OAuth — paste a Page Access Token)'),
+    h('div', { style: { marginTop: '.75rem' } },
+      h('p', { class: 'muted', style: { fontSize: '.85rem', marginBottom: '.5rem' } },
+        'Skip the Facebook login flow. Get a Page Access Token from ',
+        h('a', { href: 'https://developers.facebook.com/tools/explorer/', target: '_blank', style: { color: 'var(--brand)' } }, 'Graph API Explorer'),
+        ' (select your app → Get Token → User Token → grant pages_show_list, pages_manage_metadata, leads_retrieval, pages_read_engagement → then click "Get Page Access Token" and pick the page) — or generate one in Business Manager → System Users.'),
+      h('form', { class: 'form-grid', onsubmit: async ev => {
+        ev.preventDefault();
+        const f = ev.target;
+        const submitBtn = f.querySelector('button[type=submit]');
+        submitBtn.disabled = 'disabled'; submitBtn.textContent = 'Validating…';
+        try {
+          const r = await api('api_fb_pages_addManual', {
+            page_id: f.page_id.value.trim(),
+            page_access_token: f.page_access_token.value.trim(),
+            page_name: f.page_name.value.trim()
+          });
+          toast(`Added ${r.page.page_name} — now monitoring leadgen.`);
+          showAdminTab('fb');
+        } catch (e) {
+          toast(e.message, 'err');
+        } finally {
+          submitBtn.disabled = null; submitBtn.textContent = 'Validate & add page';
+        }
+      }},
+        h('div', { class: 'f-row' },
+          h('label', {}, 'Page ID *'),
+          h('input', { name: 'page_id', placeholder: 'e.g. 100012345678901', required: true,
+            style: { fontFamily: 'monospace' } })
+        ),
+        h('div', { class: 'f-row' },
+          h('label', {}, 'Page name (optional)'),
+          h('input', { name: 'page_name', placeholder: 'auto-detected if blank' })
+        ),
+        h('div', { class: 'f-row full' },
+          h('label', {}, 'Page Access Token *'),
+          h('textarea', { name: 'page_access_token', rows: '3', required: true,
+            placeholder: 'EAAB... (paste the long token from Graph API Explorer)',
+            style: { fontFamily: 'monospace', fontSize: '.8rem' } })
+        ),
+        h('div', { class: 'f-row full' },
+          h('button', { type: 'submit', class: 'btn primary' }, 'Validate & add page')
+        )
+      )
+    )
+  ));
+
   if (status.connected && pages.length === 0) {
     pagesCard.appendChild(h('p', { class: 'muted' },
       'Connected, but no pages are showing yet. Click ', h('b', {}, 'Fetch Facebook Pages'), ' to load them.'

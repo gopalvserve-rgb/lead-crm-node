@@ -276,6 +276,64 @@ async function api_fb_pages_refetch(token) {
   return { ok: true, count: merged.length };
 }
 
+/**
+ * Manually register a page using a Page Access Token the admin has obtained
+ * out-of-band (Graph API Explorer, System User in Business Manager, etc.).
+ * Bypasses OAuth entirely — useful when:
+ *   - The Meta app isn't yet approved for `business_management` scope
+ *   - The admin already has a never-expiring System User token
+ *   - The admin can't or won't go through the FB Login dialog
+ *
+ * Validates the token by hitting Graph API for the page name + id, then
+ * subscribes the page to leadgen webhooks immediately so leads start flowing.
+ */
+async function api_fb_pages_addManual(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  const pageId = String(p.page_id || '').trim();
+  const pageToken = String(p.page_access_token || '').trim();
+  if (!pageId) throw new Error('Page ID is required');
+  if (!pageToken) throw new Error('Page Access Token is required');
+
+  // 1. Validate the token: it must return the page object with matching id.
+  let info;
+  try {
+    info = await _gget(`${GRAPH}/${pageId}?fields=id,name,category&access_token=${encodeURIComponent(pageToken)}`);
+  } catch (e) {
+    throw new Error('Token check failed — make sure the token is a Page Access Token for page ' + pageId + '. ' + e.message);
+  }
+  if (String(info.id) !== pageId) {
+    throw new Error('Page Access Token does not belong to page ' + pageId + ' (it belongs to ' + info.id + ').');
+  }
+
+  // 2. Subscribe to leadgen so we receive webhooks for this page.
+  try {
+    await _subscribePage(pageId, pageToken, true);
+  } catch (e) {
+    throw new Error('Page validated but leadgen subscribe failed: ' + e.message +
+      '. Ensure the Meta app webhook is configured for "leadgen" and the page admin granted leads_retrieval.');
+  }
+
+  // 3. Persist alongside any OAuth-fetched pages.
+  const list = await _readPagesList();
+  const existingIdx = list.findIndex(x => String(x.page_id) === pageId);
+  const entry = {
+    page_id: pageId,
+    page_name: info.name || (p.page_name || pageId),
+    category: info.category || (p.category || ''),
+    access_token: pageToken,
+    is_monitored: true,
+    added_at: existingIdx >= 0 ? list[existingIdx].added_at : db.nowIso(),
+    last_seen_at: db.nowIso(),
+    source: 'manual'
+  };
+  if (existingIdx >= 0) list[existingIdx] = entry;
+  else list.push(entry);
+  await _writePagesList(list);
+  return { ok: true, page: { page_id: entry.page_id, page_name: entry.page_name, is_monitored: true } };
+}
+
 /** Toggle monitoring for one page. */
 async function api_fb_pages_toggle(token, pageId, monitor) {
   const me = await authUser(token);
@@ -454,7 +512,7 @@ async function expressOAuthCallback(req, res) {
 module.exports = {
   api_fb_connect, api_fb_disconnect, api_fb_status,
   api_fb_settings_get, api_fb_settings_set,
-  api_fb_pages_list, api_fb_pages_refetch, api_fb_pages_toggle,
+  api_fb_pages_list, api_fb_pages_refetch, api_fb_pages_toggle, api_fb_pages_addManual,
   api_fb_oauth_url,
   // exported for server.js to mount as a plain route
   expressOAuthCallback,
