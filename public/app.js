@@ -4114,24 +4114,73 @@ VIEWS.bank = async (view) => {
 };
 
 /* ---------------- FB connect ---------------- */
-function connectFacebook() {
-  const doLogin = () => FB.login(async resp => {
-    if (!resp.authResponse) return toast('Cancelled', 'warn');
-    try {
-      const r = await api('api_fb_connect', resp.authResponse.accessToken);
-      toast(`Connected — ${r.pages_count} page${r.pages_count === 1 ? '' : 's'} fetched. Pick which to monitor below.`);
-      showAdminTab('fb');
-    }
-    catch (e) { toast(e.message, 'err'); }
-  }, { scope: 'pages_show_list,pages_manage_metadata,leads_retrieval,pages_read_engagement' });
+// Scopes mirror the proven PHP-CRM reference. business_management is critical
+// for accounts that hold pages inside a Business Manager — without it,
+// /me/accounts returns nothing or only personal pages.
+const FB_LOGIN_SCOPE = [
+  'public_profile',
+  'pages_show_list',
+  'pages_manage_metadata',
+  'pages_read_engagement',
+  'pages_read_user_content',
+  'pages_manage_ads',
+  'leads_retrieval',
+  'ads_management',
+  'ads_read',
+  'business_management'
+].join(',');
 
-  if (window.FB) return doLogin();
+const FB_REQUIRED_PERMS = [
+  'pages_show_list', 'leads_retrieval', 'pages_read_engagement', 'pages_manage_metadata'
+];
+
+function connectFacebook() {
+  const doLogin = () => {
+    toast('Opening Facebook login…');
+    FB.login(async resp => {
+      if (!resp.authResponse) return toast('Login cancelled', 'warn');
+      // Verify the user actually granted the four permissions we need. Without
+      // this the connect appears to succeed but pages fetch returns empty.
+      FB.api('me/permissions', async (permResp) => {
+        const granted = (permResp && permResp.data || [])
+          .filter(p => p.status === 'granted')
+          .map(p => p.permission);
+        const missing = FB_REQUIRED_PERMS.filter(p => !granted.includes(p));
+        if (missing.length) {
+          toast('Missing permissions: ' + missing.join(', ') +
+            '. Click Connect again and grant ALL requested permissions in the Facebook dialog.', 'err');
+          return;
+        }
+        try {
+          toast('Connected. Fetching your Facebook pages…');
+          const r = await api('api_fb_connect', resp.authResponse.accessToken);
+          if (r.pages_count === 0) {
+            toast('Login succeeded but no pages came back. Check that your account has Facebook page admin access.', 'warn');
+          } else {
+            toast(`Connected — ${r.pages_count} page${r.pages_count === 1 ? '' : 's'} fetched. Pick which to monitor below.`);
+          }
+          showAdminTab('fb');
+        } catch (e) { toast(e.message, 'err'); }
+      });
+    }, {
+      scope: FB_LOGIN_SCOPE,
+      // rerequest forces the dialog to ask for permissions the user previously
+      // declined or skipped. Without it, FB silently reuses the partial grant.
+      auth_type: 'rerequest',
+      return_scopes: true
+    });
+  };
+
+  if (window.FB && typeof FB.login === 'function') return doLogin();
   api('api_fb_status').then(({ app_id }) => {
     if (!app_id) return toast('Set Facebook Application ID first (Admin → Facebook → Application Settings)', 'err');
     const s = document.createElement('script');
     s.src = 'https://connect.facebook.net/en_US/sdk.js';
     s.async = true;
-    s.onload = () => { FB.init({ appId: app_id, cookie: true, xfbml: false, version: 'v19.0' }); doLogin(); };
+    s.onload = () => {
+      FB.init({ appId: app_id, cookie: true, xfbml: false, version: 'v19.0' });
+      doLogin();
+    };
     document.body.appendChild(s);
   }).catch(e => toast(e.message, 'err'));
 }

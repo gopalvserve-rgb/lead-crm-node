@@ -41,6 +41,75 @@ async function _gget(url) {
   return j;
 }
 
+/**
+ * Walk every page of /me/accounts (or any cursored Graph endpoint), returning
+ * the merged data array. Stops at MAX_PAGES iterations to prevent runaway calls.
+ */
+async function _gpaged(url) {
+  const out = [];
+  let next = url;
+  for (let i = 0; i < 30 && next; i++) {
+    const j = await _gget(next);
+    if (Array.isArray(j.data)) out.push(...j.data);
+    next = (j.paging && j.paging.next) ? j.paging.next : null;
+  }
+  return out;
+}
+
+/**
+ * Fetch every page the connected user has access to. Strategy mirrors the
+ * battle-tested PHP CRM:
+ *   1. /me/accounts — direct page admin grants
+ *   2. /me/businesses — Business Manager memberships, then for each business:
+ *      /<biz_id>/owned_pages and /<biz_id>/client_pages — pages owned/managed
+ *      by that business. This is what makes the Adbullet-style multi-page
+ *      setup actually work, because most agency pages live under a Business.
+ * Returns a deduped list keyed by page id, each with id, name, access_token,
+ * category.
+ */
+async function _fetchAllPages(userToken) {
+  const seen = new Map();   // page_id → page object
+  const fields = 'id,name,access_token,category';
+
+  // Tier 1 — direct accounts
+  try {
+    const direct = await _gpaged(`${GRAPH}/me/accounts?fields=${fields}&limit=100&access_token=${userToken}`);
+    for (const p of direct) seen.set(String(p.id), p);
+  } catch (e) {
+    console.warn('[fb] /me/accounts failed:', e.message);
+  }
+
+  // Tier 2 — Business Manager
+  let businesses = [];
+  try {
+    businesses = await _gpaged(`${GRAPH}/me/businesses?fields=id,name&limit=50&access_token=${userToken}`);
+  } catch (e) {
+    console.warn('[fb] /me/businesses failed:', e.message);
+  }
+  for (const biz of businesses) {
+    for (const which of ['owned_pages', 'client_pages']) {
+      try {
+        const pgs = await _gpaged(`${GRAPH}/${biz.id}/${which}?fields=${fields}&limit=100&access_token=${userToken}`);
+        for (const p of pgs) {
+          // Business-managed pages may not include access_token in the response;
+          // fetch it individually if missing — without it we can't subscribe.
+          if (!p.access_token) {
+            try {
+              const tk = await _gget(`${GRAPH}/${p.id}?fields=access_token&access_token=${userToken}`);
+              if (tk && tk.access_token) p.access_token = tk.access_token;
+            } catch (_) { /* skip pages we can't get a token for */ }
+          }
+          if (!seen.has(String(p.id))) seen.set(String(p.id), p);
+        }
+      } catch (e) {
+        console.warn(`[fb] /${biz.id}/${which} failed:`, e.message);
+      }
+    }
+  }
+
+  return Array.from(seen.values());
+}
+
 async function _readPagesList() {
   const raw = await db.getConfig('META_PAGES_LIST', '');
   if (!raw) return [];
@@ -129,10 +198,10 @@ async function api_fb_connect(token, shortToken) {
   // 1. Long-lived user token
   const longToken = await _longLived(shortToken);
 
-  // 2. Fetch the full list of pages the user has access to
-  const pagesResp = await _gget(`${GRAPH}/me/accounts?access_token=${longToken}&fields=id,name,access_token,category&limit=200`);
-  const pages = pagesResp.data || [];
-  if (!pages.length) throw new Error('No Facebook pages returned. Make sure you granted page access on the Login dialog.');
+  // 2. Fetch every page (direct + Business Manager owned + Business Manager
+  //    client). Without this, agency users who manage pages through a Business
+  //    get an empty list — that's the exact bug we're fixing here.
+  const pages = await _fetchAllPages(longToken);
 
   // 3. Merge with existing list — preserve is_monitored state for pages the
   //    admin already chose, refresh access_token for everyone (FB rotates them).
@@ -189,8 +258,7 @@ async function api_fb_pages_refetch(token) {
   if (me.role !== 'admin') throw new Error('Admin only');
   const userToken = await db.getConfig('META_USER_TOKEN', '');
   if (!userToken) throw new Error('Connect with Facebook first.');
-  const pagesResp = await _gget(`${GRAPH}/me/accounts?access_token=${userToken}&fields=id,name,access_token,category&limit=200`);
-  const pages = pagesResp.data || [];
+  const pages = await _fetchAllPages(userToken);
   const existing = await _readPagesList();
   const merged = pages.map(p => {
     const prev = existing.find(e => String(e.page_id) === String(p.id));
