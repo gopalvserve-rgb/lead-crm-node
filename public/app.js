@@ -1852,6 +1852,10 @@ async function adminApi() {
     configForm(cfg, ['WEBSITE_API_KEY']),
     h('h5', {}, 'Try it — cURL'),
     curlEl,
+    h('p', { style: { marginTop: '.75rem' } },
+      h('a', { href: '/api-docs', target: '_blank', class: 'btn primary' }, '📖 View full API documentation →')
+    ),
+    h('p', { class: 'muted' }, 'Includes JS, PHP, Python, WordPress, HTML form examples + how to send tags/labels.'),
     h('h5', {}, 'Sample CSV for bulk upload'),
     h('p', { class: 'muted' }, 'Download the template, fill in your leads, then use Leads → ⬆️ Upload to import.'),
     h('a', { class: 'btn primary', href: '/api/sample.csv', download: 'lead-crm-sample.csv' }, '⬇️ Download sample CSV')

@@ -140,16 +140,37 @@ async function websiteHook(req, res) {
   }
   try {
     const b = req.body || {};
+    // Tags — accept either a comma-separated string or a JSON array
+    let tags = '';
+    if (Array.isArray(b.tags)) tags = b.tags.join(',');
+    else if (b.tags) tags = String(b.tags);
+    else if (Array.isArray(b.labels)) tags = b.labels.join(',');
+    else if (b.labels) tags = String(b.labels);
+
     const lead = {
-      name:     b.name || '',
-      phone:    b.phone || b.mobile || '',
-      whatsapp: b.whatsapp || b.phone || '',
-      email:    b.email || '',
-      source:   b.source || 'Website',
-      product:  b.product || '',
-      notes:    b.notes || b.message || '',
-      city:     b.city || '',
-      meta_json: b.meta || null,
+      name:      b.name || '',
+      phone:     b.phone || b.mobile || '',
+      whatsapp:  b.whatsapp || b.phone || '',
+      email:     b.email || '',
+      source:    b.source || 'Website',
+      source_ref:b.source_ref || b.utm_campaign || '',
+      product:   b.product || '',
+      notes:     b.notes || b.message || '',
+      city:      b.city || '',
+      state:     b.state || '',
+      country:   b.country || '',
+      company:   b.company || '',
+      address:   b.address || '',
+      pincode:   b.pincode || b.zip || '',
+      tags:      tags,
+      value:     b.value != null ? Number(b.value) : null,
+      currency:  b.currency || '',
+      next_followup_at: b.next_followup_at || null,
+      meta_json: b.meta || (b.utm_source || b.utm_campaign ? {
+        utm_source: b.utm_source, utm_medium: b.utm_medium,
+        utm_campaign: b.utm_campaign, utm_term: b.utm_term, utm_content: b.utm_content,
+        landing_page: b.landing_page, referrer: b.referrer
+      } : null),
       created_at: db.nowIso(),
       updated_at: db.nowIso()
     };

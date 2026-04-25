@@ -230,6 +230,12 @@ app.get('/install', (req, res) => {
   </div></body></html>`);
 });
 
+// Public API documentation page
+app.get('/api-docs', (req, res) => {
+  const host = req.protocol + '://' + req.get('host');
+  res.type('html').send(apiDocsHtml(host));
+});
+
 app.get('/api/sample.csv', (req, res) => {
   const csv = [
     'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at',
@@ -342,6 +348,339 @@ async function bootstrap() {
     // Don't crash — start the server anyway so /config.json responds and we
     // get useful error messages via /api or the UI.
   }
+}
+
+function apiDocsHtml(host) {
+  const endpoint = host + '/hook/website';
+  return `<!doctype html><html lang="en"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Lead CRM — API Documentation</title>
+<style>
+  :root { --bg:#0f172a; --card:#fff; --soft:#f8fafc; --text:#0f172a; --muted:#64748b; --brand:#6366f1; --brand2:#ec4899; --code:#0f172a; --codetext:#a5f3fc; --border:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,Segoe UI,Roboto,sans-serif; background:#f3f4f6; color:var(--text); line-height:1.6; }
+  header { background:linear-gradient(135deg,var(--brand),#8b5cf6,var(--brand2)); color:#fff; padding:2.5rem 1.5rem 2rem; }
+  header h1 { margin:0 0 .35rem; font-size:1.9rem; }
+  header p { margin:0; opacity:.9; }
+  main { max-width:920px; margin:-1.5rem auto 3rem; padding:0 1rem; }
+  .card { background:var(--card); border-radius:14px; padding:1.5rem 1.75rem; margin-bottom:1.1rem; box-shadow:0 4px 14px rgba(15,23,42,.08); }
+  h2 { margin:0 0 .85rem; font-size:1.25rem; border-left:4px solid var(--brand); padding-left:.7rem; }
+  h3 { margin:1.4rem 0 .5rem; font-size:1.05rem; color:var(--text); }
+  code, pre { font-family:"SF Mono",Menlo,Monaco,Consolas,monospace; }
+  pre { background:var(--code); color:var(--codetext); padding:1rem 1.1rem; border-radius:10px; overflow-x:auto; font-size:.83rem; line-height:1.5; }
+  pre .k { color:#7dd3fc; }
+  pre .s { color:#fcd34d; }
+  pre .c { color:#94a3b8; font-style:italic; }
+  table { width:100%; border-collapse:collapse; margin:.5rem 0 1rem; font-size:.92rem; }
+  th, td { text-align:left; padding:.55rem .6rem; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { background:var(--soft); font-weight:600; font-size:.82rem; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
+  td.field code { background:var(--soft); padding:2px 6px; border-radius:4px; color:var(--brand); font-weight:600; }
+  .req { color:#dc2626; font-weight:600; }
+  .opt { color:#94a3b8; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.72rem; font-weight:600; vertical-align:middle; }
+  .pill-post { background:#10b981; color:#fff; }
+  .url { background:var(--soft); padding:.65rem .85rem; border-radius:8px; font-family:monospace; font-size:.95rem; word-break:break-all; display:flex; gap:.5rem; align-items:center; }
+  .copy-btn { background:var(--brand); color:#fff; border:none; padding:.35rem .75rem; border-radius:6px; cursor:pointer; font-size:.8rem; }
+  .copy-btn:active { transform:scale(.95); }
+  ul { padding-left:1.4rem; }
+  li { margin-bottom:.3rem; }
+  .tabs { display:flex; gap:.4rem; border-bottom:2px solid var(--border); margin-bottom:0; flex-wrap:wrap; }
+  .tab { padding:.65rem 1rem; cursor:pointer; border:none; background:transparent; color:var(--muted); font-weight:500; font-size:.9rem; border-bottom:2px solid transparent; margin-bottom:-2px; }
+  .tab.active { color:var(--brand); border-bottom-color:var(--brand); }
+  .tab-body { display:none; }
+  .tab-body.active { display:block; }
+  .nav-back { display:inline-block; color:#fff; text-decoration:none; opacity:.85; margin-bottom:.5rem; font-size:.85rem; }
+  .nav-back:hover { opacity:1; }
+  .alert { background:#fef3c7; border-left:4px solid #f59e0b; padding:.75rem 1rem; border-radius:6px; margin:1rem 0; font-size:.9rem; }
+</style>
+</head><body>
+<header>
+  <a class="nav-back" href="/">← Back to CRM</a>
+  <h1>📚 Lead CRM — API Documentation</h1>
+  <p>Send leads from your website, landing page, ad platform or any external system into the CRM.</p>
+</header>
+<main>
+
+<div class="card">
+  <h2>1. Endpoint</h2>
+  <p><span class="pill pill-post">POST</span> Send leads to:</p>
+  <div class="url">
+    <code id="endpoint">${endpoint}</code>
+    <button class="copy-btn" onclick="copyText('${endpoint}', this)">Copy</button>
+  </div>
+  <p style="margin-top:1rem">Every successful POST creates a new lead, applies your assignment rules, and triggers any matching automations (email/WhatsApp).</p>
+</div>
+
+<div class="card">
+  <h2>2. Authentication</h2>
+  <p>All requests must include your API key in the <code>x-api-key</code> header.</p>
+  <pre><span class="k">x-api-key</span>: leadcrm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</pre>
+  <p>Get your key from <a href="/">CRM</a> → Settings → API tab. Click <b>🔄 Regenerate</b> if it ever leaks.</p>
+  <div class="alert">⚠️ Keep your key secret. Don't put it in client-side JavaScript or a public GitHub repo. Use a server-side proxy if your form is on a static site.</div>
+</div>
+
+<div class="card">
+  <h2>3. Request body</h2>
+  <p>Send a JSON body with these fields (all optional except <code>name</code> + at least one of <code>phone</code>/<code>email</code>):</p>
+  <table>
+    <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td class="field"><code>name</code> <span class="req">*</span></td><td>string</td><td>Lead's full name</td></tr>
+      <tr><td class="field"><code>phone</code></td><td>string</td><td>Phone with country code, e.g. <code>+919876543210</code>. Aliases: <code>mobile</code></td></tr>
+      <tr><td class="field"><code>whatsapp</code></td><td>string</td><td>WhatsApp number. Falls back to <code>phone</code> if omitted.</td></tr>
+      <tr><td class="field"><code>email</code></td><td>string</td><td>Email address</td></tr>
+      <tr><td class="field"><code>source</code></td><td>string</td><td>Where the lead came from. e.g. <code>Website</code>, <code>Facebook Lead Ad</code>, <code>Landing Page</code>. Default: <code>Website</code></td></tr>
+      <tr><td class="field"><code>product</code></td><td>string</td><td>Product or plan they're interested in</td></tr>
+      <tr><td class="field"><code>notes</code></td><td>string</td><td>Free-form notes / their message. Alias: <code>message</code></td></tr>
+      <tr><td class="field"><code>tags</code> <span style="color:#10b981;font-weight:600">★</span></td><td>string OR array</td><td><b>Labels.</b> Use comma-separated string <code>"hot,vip,priority"</code> or JSON array <code>["hot","vip"]</code>. Alias: <code>labels</code></td></tr>
+      <tr><td class="field"><code>company</code></td><td>string</td><td>Company name</td></tr>
+      <tr><td class="field"><code>city</code></td><td>string</td><td>City</td></tr>
+      <tr><td class="field"><code>state</code></td><td>string</td><td>State / province</td></tr>
+      <tr><td class="field"><code>country</code></td><td>string</td><td>Country</td></tr>
+      <tr><td class="field"><code>pincode</code></td><td>string</td><td>Postal/ZIP. Alias: <code>zip</code></td></tr>
+      <tr><td class="field"><code>address</code></td><td>string</td><td>Street address</td></tr>
+      <tr><td class="field"><code>value</code></td><td>number</td><td>Estimated deal value</td></tr>
+      <tr><td class="field"><code>currency</code></td><td>string</td><td>e.g. <code>INR</code>, <code>USD</code></td></tr>
+      <tr><td class="field"><code>next_followup_at</code></td><td>ISO datetime</td><td>e.g. <code>2026-05-01T10:00:00Z</code></td></tr>
+      <tr><td class="field"><code>source_ref</code></td><td>string</td><td>External reference — campaign ID, ad ID. Alias: <code>utm_campaign</code></td></tr>
+      <tr><td class="field"><code>utm_source</code> / <code>utm_medium</code> / <code>utm_campaign</code> / <code>utm_term</code> / <code>utm_content</code></td><td>string</td><td>UTM parameters — auto-stored in lead's <code>meta_json</code> for reporting</td></tr>
+      <tr><td class="field"><code>landing_page</code></td><td>string</td><td>URL the lead submitted from</td></tr>
+      <tr><td class="field"><code>meta</code></td><td>object</td><td>Any additional structured data (kept on the lead)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>4. Code samples</h2>
+  <p>Click each tab to see how to call the API from your stack:</p>
+  <div class="tabs">
+    <button class="tab active" data-tab="curl">cURL</button>
+    <button class="tab" data-tab="js">JavaScript (Node)</button>
+    <button class="tab" data-tab="js-form">HTML form (browser)</button>
+    <button class="tab" data-tab="php">PHP</button>
+    <button class="tab" data-tab="python">Python</button>
+    <button class="tab" data-tab="wp">WordPress</button>
+  </div>
+
+  <div class="tab-body active" data-tab="curl">
+<pre><span class="c"># Replace YOUR_API_KEY below</span>
+curl -X POST <span class="s">'${endpoint}'</span> \\
+  -H <span class="s">"x-api-key: YOUR_API_KEY"</span> \\
+  -H <span class="s">"Content-Type: application/json"</span> \\
+  -d <span class="s">'{
+    "name": "Rajesh Kumar",
+    "phone": "+919876543210",
+    "email": "rajesh@example.com",
+    "source": "Website Contact Form",
+    "product": "Premium Plan",
+    "notes": "Wants a demo this week",
+    "tags": "hot,demo-requested,enterprise",
+    "city": "Mumbai",
+    "value": 50000,
+    "currency": "INR",
+    "utm_source": "google",
+    "utm_campaign": "summer-sale"
+  }'</span></pre>
+  </div>
+
+  <div class="tab-body" data-tab="js">
+<pre><span class="c">// Node.js / Next.js / any backend</span>
+<span class="k">const</span> response = <span class="k">await</span> fetch(<span class="s">'${endpoint}'</span>, {
+  method: <span class="s">'POST'</span>,
+  headers: {
+    <span class="s">'x-api-key'</span>: process.env.LEADCRM_API_KEY,
+    <span class="s">'Content-Type'</span>: <span class="s">'application/json'</span>
+  },
+  body: JSON.stringify({
+    name: <span class="s">'Rajesh Kumar'</span>,
+    phone: <span class="s">'+919876543210'</span>,
+    email: <span class="s">'rajesh@example.com'</span>,
+    source: <span class="s">'Website'</span>,
+    tags: [<span class="s">'hot'</span>, <span class="s">'demo-requested'</span>],   <span class="c">// ← labels as array</span>
+    notes: <span class="s">'Wants a demo this week'</span>,
+    utm_source: <span class="s">'google'</span>,
+    utm_campaign: <span class="s">'summer-sale'</span>
+  })
+});
+<span class="k">const</span> data = <span class="k">await</span> response.json();
+console.log(data); <span class="c">// { ok: true, lead_id: 1234, assigned_to: 5 }</span></pre>
+  </div>
+
+  <div class="tab-body" data-tab="js-form">
+<pre>&lt;<span class="k">form</span> id=<span class="s">"lead-form"</span>&gt;
+  &lt;<span class="k">input</span> name=<span class="s">"name"</span> required /&gt;
+  &lt;<span class="k">input</span> name=<span class="s">"phone"</span> required /&gt;
+  &lt;<span class="k">input</span> name=<span class="s">"email"</span> /&gt;
+  &lt;<span class="k">textarea</span> name=<span class="s">"message"</span>&gt;&lt;/textarea&gt;
+  &lt;<span class="k">button</span>&gt;Submit&lt;/button&gt;
+&lt;/<span class="k">form</span>&gt;
+
+&lt;<span class="k">script</span>&gt;
+document.getElementById(<span class="s">'lead-form'</span>).addEventListener(<span class="s">'submit'</span>, <span class="k">async</span> (e) =&gt; {
+  e.preventDefault();
+  <span class="k">const</span> data = Object.fromEntries(<span class="k">new</span> FormData(e.target));
+  data.source = <span class="s">'Landing Page'</span>;
+  data.tags = [<span class="s">'website-form'</span>, <span class="s">'auto-captured'</span>];
+  <span class="k">const</span> r = <span class="k">await</span> fetch(<span class="s">'${endpoint}'</span>, {
+    method: <span class="s">'POST'</span>,
+    headers: { <span class="s">'x-api-key'</span>: <span class="s">'YOUR_KEY'</span>, <span class="s">'Content-Type'</span>: <span class="s">'application/json'</span> },
+    body: JSON.stringify(data)
+  });
+  alert(r.ok ? <span class="s">'Thanks — we will reach out!'</span> : <span class="s">'Something went wrong'</span>);
+});
+&lt;/<span class="k">script</span>&gt;</pre>
+    <div class="alert">⚠️ For static sites, route the call through your own backend. Don't put the API key directly in browser JS.</div>
+  </div>
+
+  <div class="tab-body" data-tab="php">
+<pre>&lt;?<span class="k">php</span>
+$data = [
+    <span class="s">'name'</span>     =&gt; <span class="s">'Rajesh Kumar'</span>,
+    <span class="s">'phone'</span>    =&gt; <span class="s">'+919876543210'</span>,
+    <span class="s">'email'</span>    =&gt; <span class="s">'rajesh@example.com'</span>,
+    <span class="s">'source'</span>   =&gt; <span class="s">'Website'</span>,
+    <span class="s">'tags'</span>     =&gt; <span class="s">'hot,demo-requested'</span>,   <span class="c">// or as JSON array</span>
+    <span class="s">'notes'</span>    =&gt; <span class="s">'Wants a demo'</span>,
+];
+$ch = curl_init(<span class="s">'${endpoint}'</span>);
+curl_setopt_array($ch, [
+    CURLOPT_POST           =&gt; <span class="k">true</span>,
+    CURLOPT_RETURNTRANSFER =&gt; <span class="k">true</span>,
+    CURLOPT_HTTPHEADER     =&gt; [
+        <span class="s">'x-api-key: '</span> . getenv(<span class="s">'LEADCRM_API_KEY'</span>),
+        <span class="s">'Content-Type: application/json'</span>,
+    ],
+    CURLOPT_POSTFIELDS     =&gt; json_encode($data),
+]);
+$response = curl_exec($ch);
+$result = json_decode($response, <span class="k">true</span>);
+curl_close($ch);
+?&gt;</pre>
+  </div>
+
+  <div class="tab-body" data-tab="python">
+<pre><span class="k">import</span> requests, os
+
+response = requests.post(
+    <span class="s">"${endpoint}"</span>,
+    headers={
+        <span class="s">"x-api-key"</span>: os.environ[<span class="s">"LEADCRM_API_KEY"</span>],
+        <span class="s">"Content-Type"</span>: <span class="s">"application/json"</span>,
+    },
+    json={
+        <span class="s">"name"</span>: <span class="s">"Rajesh Kumar"</span>,
+        <span class="s">"phone"</span>: <span class="s">"+919876543210"</span>,
+        <span class="s">"email"</span>: <span class="s">"rajesh@example.com"</span>,
+        <span class="s">"source"</span>: <span class="s">"Website"</span>,
+        <span class="s">"tags"</span>: [<span class="s">"hot"</span>, <span class="s">"demo-requested"</span>],
+        <span class="s">"notes"</span>: <span class="s">"Wants a demo"</span>,
+        <span class="s">"utm_source"</span>: <span class="s">"google"</span>,
+    },
+    timeout=10,
+)
+<span class="k">print</span>(response.json())</pre>
+  </div>
+
+  <div class="tab-body" data-tab="wp">
+<pre><span class="c">// Add to your theme's functions.php — sends every Contact Form 7 submission to CRM</span>
+add_action(<span class="s">'wpcf7_mail_sent'</span>, <span class="k">function</span>($contact_form) {
+    $submission = WPCF7_Submission::get_instance();
+    <span class="k">if</span> (!$submission) <span class="k">return</span>;
+    $data = $submission-&gt;get_posted_data();
+
+    wp_remote_post(<span class="s">'${endpoint}'</span>, [
+        <span class="s">'headers'</span> =&gt; [
+            <span class="s">'x-api-key'</span>   =&gt; <span class="s">'YOUR_API_KEY'</span>,
+            <span class="s">'Content-Type'</span> =&gt; <span class="s">'application/json'</span>,
+        ],
+        <span class="s">'body'</span> =&gt; wp_json_encode([
+            <span class="s">'name'</span>    =&gt; $data[<span class="s">'your-name'</span>] ?? <span class="s">''</span>,
+            <span class="s">'email'</span>   =&gt; $data[<span class="s">'your-email'</span>] ?? <span class="s">''</span>,
+            <span class="s">'phone'</span>   =&gt; $data[<span class="s">'your-phone'</span>] ?? <span class="s">''</span>,
+            <span class="s">'notes'</span>   =&gt; $data[<span class="s">'your-message'</span>] ?? <span class="s">''</span>,
+            <span class="s">'source'</span>  =&gt; <span class="s">'WordPress CF7'</span>,
+            <span class="s">'tags'</span>    =&gt; <span class="s">'cf7,wordpress'</span>,
+        ]),
+    ]);
+}, 10, 1);</pre>
+  </div>
+</div>
+
+<div class="card">
+  <h2>5. Adding labels (tags)</h2>
+  <p>Labels group leads in the CRM — you can filter by label, route them to specific salespeople via assignment rules, and trigger automations on labels.</p>
+  <h3>Two ways to send labels:</h3>
+  <p><b>As an array (preferred):</b></p>
+<pre>{
+  <span class="s">"name"</span>: <span class="s">"Rajesh"</span>,
+  <span class="s">"tags"</span>: [<span class="s">"hot"</span>, <span class="s">"enterprise"</span>, <span class="s">"demo-requested"</span>]
+}</pre>
+  <p><b>As a comma-separated string:</b></p>
+<pre>{
+  <span class="s">"name"</span>: <span class="s">"Rajesh"</span>,
+  <span class="s">"tags"</span>: <span class="s">"hot,enterprise,demo-requested"</span>
+}</pre>
+  <p>Both forms produce identical results. The field name <code>labels</code> works as a synonym for <code>tags</code>.</p>
+  <h3>Common label patterns</h3>
+  <ul>
+    <li><code>hot</code>, <code>warm</code>, <code>cold</code> — temperature</li>
+    <li><code>vip</code>, <code>enterprise</code>, <code>smb</code> — segment</li>
+    <li><code>demo-requested</code>, <code>pricing-page</code>, <code>contact-form</code> — intent signal</li>
+    <li><code>fb-ad-{campaign-id}</code>, <code>google-ad-{ad-id}</code> — ad source</li>
+    <li><code>retargeting</code>, <code>newsletter</code>, <code>partner</code> — channel</li>
+  </ul>
+  <p>You can then build assignment rules like "if tag contains <b>vip</b> → assign to senior sales rep" or automations like "if tag contains <b>demo-requested</b> → send WhatsApp template <i>demo_confirmation</i>".</p>
+</div>
+
+<div class="card">
+  <h2>6. Response</h2>
+  <p>On success the API returns:</p>
+<pre>{
+  <span class="s">"ok"</span>: <span class="k">true</span>,
+  <span class="s">"lead_id"</span>: 1234,
+  <span class="s">"assigned_to"</span>: 5,
+  <span class="s">"is_duplicate"</span>: <span class="k">false</span>
+}</pre>
+  <p>If <code>is_duplicate</code> is <code>true</code>, the existing lead's ID is returned (the duplicate policy from CRM Settings decides whether to create a new lead, update the existing one, or merge).</p>
+  <p>On error:</p>
+<pre>{ <span class="s">"error"</span>: <span class="s">"Invalid API key"</span> }</pre>
+  <table>
+    <thead><tr><th>HTTP code</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>200</code></td><td>Lead created (or duplicate detected — check <code>is_duplicate</code>)</td></tr>
+      <tr><td><code>400</code></td><td>Invalid request body</td></tr>
+      <tr><td><code>401</code></td><td>Missing or wrong API key</td></tr>
+      <tr><td><code>500</code></td><td>Server error</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h2>7. CSV bulk upload</h2>
+  <p>For one-time imports use the CSV uploader instead of the API:</p>
+  <ul>
+    <li>Download the <a href="/api/sample.csv" download>sample CSV template</a></li>
+    <li>Open the CRM → Leads → ⬆️ Upload CSV</li>
+    <li>Drag your filled-in CSV file in</li>
+  </ul>
+</div>
+
+</main>
+<script>
+function copyText(t, btn) {
+  navigator.clipboard.writeText(t).then(() => {
+    const o = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => btn.textContent = o, 1500);
+  });
+}
+document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-body').forEach(t => t.classList.remove('active'));
+  b.classList.add('active');
+  document.querySelector('.tab-body[data-tab="' + b.dataset.tab + '"]').classList.add('active');
+}));
+</script>
+</body></html>`;
 }
 
 (async () => {
