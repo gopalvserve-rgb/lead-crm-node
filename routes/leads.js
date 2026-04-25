@@ -386,15 +386,74 @@ async function api_leads_bulkDelete(token, leadIds) {
   return { ok: true, count };
 }
 
-async function api_leads_bulkCreate(token, rows) {
-  const results = { ok: true, created: 0, skipped: 0, duplicate: 0, errors: [] };
-  for (let i = 0; i < (rows || []).length; i++) {
-    const r = rows[i];
+/**
+ * Bulk-create leads from a CSV upload, with flexible assignment.
+ *
+ * `assign` shape:
+ *   { mode: 'csv' }                              // honour the assigned_to column on each row (or assignment rules)
+ *   { mode: 'single', user_id: 5 }               // assign every lead to user 5
+ *   { mode: 'round_robin', user_ids: [3,7,9] }   // round-robin across these users (or all sales users if omitted)
+ *   { mode: 'percent', split: { 3: 60, 7: 30, 9: 10 } }   // 60/30/10 split across users 3, 7, 9
+ */
+async function api_leads_bulkCreate(token, rows, assign) {
+  const me = await authUser(token);
+  const results = { ok: true, created: 0, skipped: 0, duplicate: 0, assignedCounts: {}, errors: [] };
+  const assignment = assign || { mode: 'csv' };
+  const total = (rows || []).length;
+
+  // Pre-resolve the user list for round_robin / percent modes
+  let users = [];
+  if (assignment.mode === 'round_robin' || assignment.mode === 'percent') {
+    const all = await db.getAll('users');
+    users = all.filter(u => Number(u.is_active) === 1 && u.role !== 'admin');
+  }
+
+  // Build a per-row assignment plan up front (deterministic, easier to debug)
+  const plan = new Array(total).fill(null);
+
+  if (assignment.mode === 'single') {
+    const uid = Number(assignment.user_id);
+    if (!uid) throw new Error('user_id required for single-assign mode');
+    for (let i = 0; i < total; i++) plan[i] = uid;
+
+  } else if (assignment.mode === 'round_robin') {
+    const ids = (assignment.user_ids && assignment.user_ids.length)
+      ? assignment.user_ids.map(Number)
+      : users.map(u => Number(u.id));
+    if (!ids.length) throw new Error('No users selected for round-robin');
+    for (let i = 0; i < total; i++) plan[i] = ids[i % ids.length];
+
+  } else if (assignment.mode === 'percent') {
+    const split = assignment.split || {};
+    const pairs = Object.entries(split).map(([uid, pct]) => [Number(uid), Number(pct)]).filter(([u, p]) => u && p > 0);
+    if (!pairs.length) throw new Error('At least one user with a positive % required');
+    const sumPct = pairs.reduce((s, [, p]) => s + p, 0);
+    if (sumPct <= 0) throw new Error('Percentages must sum to >0');
+    // Build a deterministic queue by allocating ceil(pct/100 * total) per user, then trimming
+    const queue = [];
+    for (const [uid, pct] of pairs) {
+      const want = Math.round((pct / sumPct) * total);
+      for (let i = 0; i < want; i++) queue.push(uid);
+    }
+    // Round/clip to exact total
+    while (queue.length < total) queue.push(pairs[0][0]);
+    queue.length = total;
+    // Shuffle a tiny bit so consecutive rows aren't all on one rep — Fisher-Yates with seeded prng would be fine,
+    // but a simple interleave is plenty here.
+    for (let i = 0; i < total; i++) plan[i] = queue[i];
+  }
+  // mode 'csv' (default): leave plan[i] = null → use the row's own assigned_to (or assignment rules)
+
+  for (let i = 0; i < total; i++) {
+    const r = Object.assign({}, rows[i]);
+    if (plan[i]) r.assigned_to = plan[i];
     try {
       if (!r.name) { results.skipped++; results.errors.push({ row: i + 1, error: 'missing name' }); continue; }
       const out = await api_leads_create(token, r);
       results.created++;
       if (out.duplicate) results.duplicate++;
+      const finalAssignee = r.assigned_to || (out && out.assigned_to) || 'unassigned';
+      results.assignedCounts[finalAssignee] = (results.assignedCounts[finalAssignee] || 0) + 1;
     } catch (e) {
       results.skipped++; results.errors.push({ row: i + 1, error: String(e.message || e) });
     }

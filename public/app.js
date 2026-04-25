@@ -881,28 +881,232 @@ function exportCSV() {
   URL.revokeObjectURL(a.href);
 }
 function openBulkUpload() {
+  const users = (CRM.cache.users || []).filter(u => u.role !== 'admin' && Number(u.is_active ?? 1) === 1);
+
+  let parsedRows = [];
+  let assignMode = 'csv';
+
+  // -------- Modal layout --------
+  const fileInput = h('input', { type: 'file', accept: '.csv,text/csv', id: 'csv-file', style: { width: '100%' } });
+  const fileInfo = h('div', { class: 'muted', id: 'csv-file-info', style: { fontSize: '.85rem', marginTop: '.4rem' } }, 'No file selected.');
+
+  // Mode picker as 4 cards
+  const modeCard = (id, title, desc) => h('label', {
+    class: 'assign-mode-card',
+    'data-mode': id,
+    onclick: () => { assignMode = id; updateMode(); }
+  },
+    h('input', { type: 'radio', name: 'assign-mode', value: id, checked: id === 'csv' ? 'checked' : null }),
+    h('div', { class: 'assign-mode-text' },
+      h('div', { class: 'assign-mode-title' }, title),
+      h('div', { class: 'assign-mode-desc' }, desc)
+    )
+  );
+  const modePicker = h('div', { class: 'assign-mode-grid' },
+    modeCard('single',     '👤 One employee',           'Assign every lead to a single person.'),
+    modeCard('round_robin','🔁 Round-robin (multi)',    'Pick 2+ employees — leads divided equally between them.'),
+    modeCard('percent',    '📊 Percentage split',       'Custom share — e.g. 60% / 30% / 10%.'),
+    modeCard('csv',        '📄 Use CSV value',           'Honour the assigned_to column on each row, or fall back to your assignment rules.')
+  );
+
+  // Mode-specific bodies
+  const singleSel = h('select', { id: 'assign-single-user', class: 'assign-single-input' },
+    h('option', { value: '' }, '— pick employee —'),
+    ...users.map(u => h('option', { value: u.id }, `${u.name} (${u.role})`))
+  );
+  const singleBody = h('div', { class: 'assign-mode-body', 'data-for': 'single' },
+    h('label', {}, 'Assign all leads to:'), singleSel
+  );
+
+  const rrChecks = users.map(u => h('label', { class: 'assign-rr-check' },
+    h('input', { type: 'checkbox', name: 'rr-user', value: u.id }),
+    h('span', {}, ` ${u.name}`),
+    h('span', { class: 'muted', style: { fontSize: '.78rem', marginLeft: '.35rem' } }, u.role)
+  ));
+  const rrBody = h('div', { class: 'assign-mode-body', 'data-for': 'round_robin' },
+    h('label', {}, 'Pick the employees to share these leads:'),
+    h('div', { class: 'assign-rr-grid' }, ...rrChecks),
+    h('div', { class: 'actions', style: { marginTop: '.5rem' } },
+      h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { rrChecks.forEach(c => c.querySelector('input').checked = true); previewAssignment(); } }, 'Select all'),
+      h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { rrChecks.forEach(c => c.querySelector('input').checked = false); previewAssignment(); } }, 'Clear')
+    )
+  );
+  rrBody.querySelectorAll('input').forEach(i => i.addEventListener('change', previewAssignment));
+
+  const percentRows = users.map(u => h('div', { class: 'assign-pct-row' },
+    h('label', { class: 'assign-pct-name' }, u.name + ' '),
+    h('input', { type: 'number', min: 0, max: 100, step: 1, value: 0, 'data-uid': u.id, class: 'assign-pct-input', oninput: previewAssignment }),
+    h('span', { class: 'muted' }, '%')
+  ));
+  const pctTotalEl = h('div', { class: 'assign-pct-total muted', id: 'pct-total' }, 'Total: 0%');
+  const percentBody = h('div', { class: 'assign-mode-body', 'data-for': 'percent' },
+    h('label', {}, 'Assign by percentage (must add up to 100%):'),
+    h('div', { class: 'assign-pct-grid' }, ...percentRows),
+    pctTotalEl
+  );
+
+  const csvBody = h('div', { class: 'assign-mode-body', 'data-for': 'csv' },
+    h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Each row keeps its own ',
+      h('code', {}, 'assigned_to'),
+      ' value (or stays empty for your assignment rules / round-robin defaults to apply).'
+    )
+  );
+
+  const previewEl = h('div', { class: 'assign-preview' });
+  const importBtn = h('button', { class: 'btn primary', disabled: 'disabled', onclick: doImport }, 'Import');
+
+  function updateMode() {
+    [...modePicker.children].forEach(c => c.classList.toggle('active', c.dataset.mode === assignMode));
+    modePicker.querySelectorAll('input[type=radio]').forEach(r => r.checked = r.value === assignMode);
+    [singleBody, rrBody, percentBody, csvBody].forEach(b => b.style.display = b.dataset.for === assignMode ? '' : 'none');
+    previewAssignment();
+  }
+  singleSel.addEventListener('change', previewAssignment);
+
+  function readPercentSplit() {
+    const split = {};
+    let total = 0;
+    percentRows.forEach(r => {
+      const inp = r.querySelector('input');
+      const v = Number(inp.value) || 0;
+      const uid = Number(inp.dataset.uid);
+      if (v > 0 && uid) { split[uid] = v; total += v; }
+    });
+    return { split, total };
+  }
+
+  function previewAssignment() {
+    previewEl.innerHTML = '';
+    if (!parsedRows.length) {
+      importBtn.disabled = 'disabled';
+      return;
+    }
+    const userById = Object.fromEntries(users.map(u => [Number(u.id), u]));
+    let plan = [];
+    let valid = false;
+
+    if (assignMode === 'csv') {
+      valid = true;
+      previewEl.appendChild(h('div', { class: 'muted' }, `${parsedRows.length} rows — assignment per row's CSV value or your rules.`));
+
+    } else if (assignMode === 'single') {
+      const uid = Number(singleSel.value);
+      if (!uid) {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Pick an employee to continue.'));
+      } else {
+        valid = true;
+        const u = userById[uid];
+        previewEl.appendChild(h('div', {}, `All ${parsedRows.length} leads → `, h('b', {}, u.name)));
+      }
+
+    } else if (assignMode === 'round_robin') {
+      const ids = [...rrBody.querySelectorAll('input[name=rr-user]:checked')].map(i => Number(i.value));
+      if (!ids.length) {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Pick at least one employee.'));
+      } else {
+        valid = true;
+        const counts = {};
+        for (let i = 0; i < parsedRows.length; i++) {
+          const uid = ids[i % ids.length];
+          counts[uid] = (counts[uid] || 0) + 1;
+        }
+        const lines = Object.entries(counts).map(([uid, n]) =>
+          h('div', {}, `${userById[Number(uid)]?.name || ('User ' + uid)}: `, h('b', {}, n + ' leads'))
+        );
+        previewEl.appendChild(h('div', { class: 'preview-grid' }, ...lines));
+      }
+
+    } else if (assignMode === 'percent') {
+      const { split, total } = readPercentSplit();
+      pctTotalEl.textContent = 'Total: ' + total + '%';
+      pctTotalEl.classList.toggle('warn', total !== 100);
+      pctTotalEl.classList.toggle('ok', total === 100);
+      if (total === 100) {
+        valid = true;
+        const lines = Object.entries(split).map(([uid, pct]) => {
+          const n = Math.round((pct / 100) * parsedRows.length);
+          return h('div', {}, `${userById[Number(uid)]?.name || ('User ' + uid)}: `, h('b', {}, `${n} leads (${pct}%)`));
+        });
+        previewEl.appendChild(h('div', { class: 'preview-grid' }, ...lines));
+      } else {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Percentages must add up to exactly 100%.'));
+      }
+    }
+    importBtn.disabled = (parsedRows.length && valid) ? null : 'disabled';
+  }
+
+  fileInput.addEventListener('change', async (e) => {
+    parsedRows = [];
+    const f = e.target.files[0];
+    if (!f) { fileInfo.textContent = 'No file selected.'; previewAssignment(); return; }
+    try {
+      const text = await f.text();
+      parsedRows = parseCSV(text);
+      fileInfo.textContent = `${f.name} — ${parsedRows.length} rows parsed`;
+      previewAssignment();
+    } catch (err) {
+      fileInfo.textContent = '⚠️ Could not parse file: ' + err.message;
+    }
+  });
+
+  async function doImport() {
+    if (!parsedRows.length) return toast('Choose a file first', 'warn');
+    let assign;
+    if (assignMode === 'csv') {
+      assign = { mode: 'csv' };
+    } else if (assignMode === 'single') {
+      const uid = Number(singleSel.value);
+      if (!uid) return toast('Pick an employee', 'warn');
+      assign = { mode: 'single', user_id: uid };
+    } else if (assignMode === 'round_robin') {
+      const ids = [...rrBody.querySelectorAll('input[name=rr-user]:checked')].map(i => Number(i.value));
+      if (!ids.length) return toast('Pick at least one employee', 'warn');
+      assign = { mode: 'round_robin', user_ids: ids };
+    } else if (assignMode === 'percent') {
+      const { split, total } = readPercentSplit();
+      if (total !== 100) return toast('Percentages must sum to 100%', 'warn');
+      assign = { mode: 'percent', split };
+    }
+    importBtn.disabled = 'disabled';
+    importBtn.textContent = 'Importing…';
+    try {
+      const r = await api('api_leads_bulkCreate', parsedRows, assign);
+      const lines = [`✅ Imported ${r.created} of ${parsedRows.length}`];
+      if (r.duplicate) lines.push(`${r.duplicate} duplicates`);
+      if (r.skipped) lines.push(`${r.skipped} skipped`);
+      toast(lines.join(' · '));
+      modal.remove();
+      loadLeads();
+    } catch (e) {
+      toast(e.message, 'err');
+      importBtn.disabled = null;
+      importBtn.textContent = 'Import';
+    }
+  }
+
   const modal = h('div', { class: 'modal-backdrop' },
-    h('div', { class: 'modal' },
-      h('div', { class: 'modal-head' }, h('h3', {}, 'Bulk upload leads'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
-      h('p', { class: 'muted' }, 'CSV format — first row = headers. Columns supported: name, phone, email, whatsapp, source, product, notes, city, tags, next_followup_at, plus any custom field keys.'),
-      h('input', { type: 'file', accept: '.csv,text/csv', id: 'csv-file' }),
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' }, h('h3', {}, '⬆️ Bulk upload leads'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+      h('p', { class: 'muted' }, 'Step 1: pick a CSV file. Columns: name, phone, email, whatsapp, source, product, notes, city, tags, next_followup_at, plus any custom field keys.'),
+      fileInput,
+      fileInfo,
+      h('p', { style: { marginTop: '1rem' } }, h('a', { href: '/api/sample.csv', download: '' }, '⬇️ Download sample CSV')),
+      h('h4', { style: { marginTop: '1.5rem' } }, 'Step 2: how should these leads be assigned?'),
+      modePicker,
+      singleBody, rrBody, percentBody, csvBody,
+      h('div', { class: 'assign-preview-wrap' },
+        h('h5', { style: { margin: '1rem 0 .5rem' } }, 'Preview'),
+        previewEl
+      ),
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
-        h('button', { class: 'btn primary', onclick: async () => {
-          const f = $('#csv-file').files[0];
-          if (!f) return toast('Choose a file', 'warn');
-          try {
-            const text = await f.text();
-            const rows = parseCSV(text);
-            const r = await api('api_leads_bulkCreate', rows);
-            toast(`Imported ${r.inserted || rows.length} leads`);
-            modal.remove(); loadLeads();
-          } catch (e) { toast(e.message, 'err'); }
-        } }, 'Import')
+        importBtn
       )
     )
   );
   document.body.appendChild(modal);
+  updateMode();
 }
 function parseCSV(text) {
   const lines = text.split(/\r?\n/).filter(Boolean);
