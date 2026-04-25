@@ -180,10 +180,24 @@ async function sendPushToUser(userId, payload) {
       sent++;
     } catch (e) {
       failed++;
-      // 404/410 = subscription gone / unsubscribed; 401 = invalid keys; clean them up.
+      // 404/410 = subscription gone / unsubscribed; safe to delete BUT only if
+      // the row is at least 60s old — fresh subscriptions can briefly return
+      // 410 while FCM propagates. 401 means our auth is wrong, not the
+      // subscription's fault, so don't delete on 401.
       const code = (e && e.statusCode) || 0;
-      if (code === 404 || code === 410 || code === 401) {
-        try { await db.query(`DELETE FROM push_subscriptions WHERE id = $1`, [row.id]); } catch (_) {}
+      if (code === 404 || code === 410) {
+        try {
+          const { rows: ageRows } = await db.query(
+            `SELECT EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_s FROM push_subscriptions WHERE id = $1`,
+            [row.id]
+          );
+          const ageS = Number(ageRows[0]?.age_s || 0);
+          if (ageS > 60) {
+            await db.query(`DELETE FROM push_subscriptions WHERE id = $1`, [row.id]);
+          } else {
+            console.warn('[push] new subscription returned ' + code + ', keeping (age ' + Math.round(ageS) + 's)');
+          }
+        } catch (_) {}
       } else {
         console.warn('[push] send failed:', code, e.message);
       }
