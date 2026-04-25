@@ -77,6 +77,17 @@ async function api_admin_setConfig(token, keyOrPatch, maybeValue) {
 // Legacy alias — older frontend called api_admin_saveConfig(patch)
 const api_admin_saveConfig = api_admin_setConfig;
 
+// Generate a fresh Website API key, save it, return it.
+async function api_admin_regenerateApiKey(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const crypto = require('crypto');
+  const key = 'leadcrm_' + crypto.randomBytes(16).toString('hex');
+  await db.setConfig('WEBSITE_API_KEY', key);
+  process.env.WEBSITE_API_KEY = key;
+  return { ok: true, key };
+}
+
 async function api_admin_urls(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
@@ -136,6 +147,7 @@ module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
   api_admin_setConfig, api_admin_saveConfig,
+  api_admin_regenerateApiKey,
   api_admin_urls,
   api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp
 };

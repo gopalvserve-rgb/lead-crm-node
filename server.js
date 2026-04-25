@@ -321,6 +321,21 @@ async function bootstrap() {
       for (const n of defaults) await db.insert('sources', { name: n, is_active: 1 });
       console.log(`[boot] inserted ${defaults.length} default sources.`);
     }
+
+    // Auto-generate a Website API key on first boot if none exists.
+    // Format: leadcrm_<32 hex chars>. Stored in the config table.
+    const existingKey = await db.findOneBy('config', 'key', 'WEBSITE_API_KEY').catch(() => null);
+    if (!existingKey || !existingKey.value) {
+      const crypto = require('crypto');
+      const key = 'leadcrm_' + crypto.randomBytes(16).toString('hex');
+      await db.setConfig('WEBSITE_API_KEY', key);
+      process.env.WEBSITE_API_KEY = key;
+      console.log(`[boot] generated WEBSITE_API_KEY: ${key}`);
+    } else if (!process.env.WEBSITE_API_KEY) {
+      // Make sure the in-process env mirrors the DB value so /hook/website works
+      process.env.WEBSITE_API_KEY = existingKey.value;
+      console.log('[boot] loaded WEBSITE_API_KEY from config table');
+    }
   } catch (e) {
     console.error('[boot] bootstrap error:', e.message);
     console.error(e.stack);
