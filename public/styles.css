@@ -1217,6 +1217,48 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   border: 1px solid #d0d3f9;
 }
 
+/* Password reset block inside the user-edit modal */
+.pwd-reset-block {
+  margin-top: 1.25rem; padding: 1rem 1.1rem;
+  background: var(--bg-alt); border: 1px solid var(--border-light);
+  border-radius: var(--radius); border-left: 4px solid var(--warn, #f59e0b);
+}
+.pwd-reset-block h4 {
+  margin: 0 0 .35rem; font-size: 1rem; color: var(--brand-dark, #1B233A);
+}
+.pwd-reset-row {
+  display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+  margin-top: .65rem;
+}
+.pwd-reset-row input {
+  flex: 1 1 220px; min-width: 180px;
+  padding: .55rem .75rem;
+  border: 1.5px solid var(--border-light); border-radius: 8px;
+  font-size: .9rem;
+}
+.pwd-reset-row .btn { flex: 0 0 auto; }
+.pwd-reset-row .btn.warn {
+  background: var(--warn, #f59e0b); color: #fff; border-color: var(--warn, #f59e0b);
+}
+.pwd-reset-row .btn.warn:hover { filter: brightness(0.95); }
+
+.pwd-reset-result {
+  margin-top: .85rem; padding: .85rem 1rem;
+  background: #ecfdf5; border: 1px solid #a7f3d0;
+  border-radius: 8px;
+}
+.pwd-reveal-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+}
+.pwd-reveal {
+  font-family: "SF Mono", Consolas, Monaco, monospace;
+  font-size: 1rem; font-weight: 700; color: #065f46;
+  background: #fff; padding: .35rem .65rem;
+  border: 1px dashed #10b981; border-radius: 6px;
+  user-select: all;
+  letter-spacing: 0.5px;
+}
+
 /* Multiselect rendered as a checkbox grid (replaces native <select multiple>) */
 .cf-multi-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

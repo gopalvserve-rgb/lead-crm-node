@@ -3137,6 +3137,8 @@ function configForm(cfg, keys, meta) {
 /* ---------------- Users ---------------- */
 VIEWS.users = async (view) => {
   const users = await api('api_users_list');
+  const me = CRM.user || {};
+  const canReset = ['admin', 'manager'].includes(me.role);
   view.innerHTML = '';
   view.append(
     h('div', { class: 'toolbar' },
@@ -3147,7 +3149,14 @@ VIEWS.users = async (view) => {
       h('tbody', {}, ...users.map(u => h('tr', {},
         h('td', {}, u.name), h('td', {}, u.email), h('td', {}, u.role),
         h('td', {}, u.parent_name || '—'), h('td', {}, u.department || ''),
-        h('td', {}, h('button', { class: 'btn sm', onclick: () => openUserModal(u) }, '✎'))
+        h('td', { style: { whiteSpace: 'nowrap' } },
+          h('button', { class: 'btn sm', onclick: () => openUserModal(u), title: 'Edit' }, '✎'),
+          canReset ? h('button', {
+            class: 'btn sm ghost', style: { marginLeft: '.3rem' },
+            title: 'Reset password',
+            onclick: () => openUserModal(u)   // opens the modal where the reset block lives
+          }, '🔑') : null
+        )
       )))
     ))
   );
@@ -3155,9 +3164,13 @@ VIEWS.users = async (view) => {
 async function openUserModal(u) {
   u = u || { role: 'sales', is_active: 1 };
   const parents = CRM.cache.users || await api('api_users_list');
+  // The password-reset section is only built for existing users — there's no
+  // user_id to target until after the row is created.
+  const passwordResetBlock = u.id ? buildPasswordResetBlock(u) : null;
+
   const modal = h('div', { class: 'modal-backdrop' },
-    h('div', { class: 'modal' },
-      h('div', { class: 'modal-head' }, h('h3', {}, u.id ? 'Edit user' : 'New user'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' }, h('h3', {}, u.id ? 'Edit user — ' + u.name : 'New user'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
       h('form', { id: 'u-form', class: 'form-grid' },
         field('name', 'Name *', u.name, { required: true }),
         field('email', 'Email *', u.email, { required: true, type: 'email' }),
@@ -3168,6 +3181,7 @@ async function openUserModal(u) {
         field('designation', 'Designation', u.designation),
         !u.id ? field('password', 'Password *', '', { type: 'password', required: true }) : null
       ),
+      passwordResetBlock,
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
@@ -3186,6 +3200,108 @@ async function openUserModal(u) {
     )
   );
   document.body.appendChild(modal);
+}
+
+/**
+ * Password reset section inside the user edit modal. Lets an admin (or
+ * manager-of-this-user) set a custom password OR generate a random one,
+ * apply it, and copy the plaintext to share with the employee.
+ *
+ * Only the bcrypt hash is stored on the server. The plaintext shown here is
+ * the one moment it's available — the admin should copy it and send it to
+ * the user via WhatsApp / email immediately.
+ */
+function buildPasswordResetBlock(u) {
+  const me = CRM.user || {};
+  // Hide for users who can't reset others — keeps the UI clean for non-admins.
+  if (!['admin', 'manager'].includes(me.role)) return null;
+
+  const wrap = h('div', { class: 'pwd-reset-block' });
+  wrap.appendChild(h('h4', {}, '🔑 Reset password'));
+  wrap.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+    'Set a new password for ', h('b', {}, u.name),
+    '. Leave the field empty and click Generate to auto-create a strong one.'));
+
+  const input = h('input', {
+    type: 'text', name: 'pwd_new',
+    placeholder: 'Type a new password (min 6 chars), or click Generate',
+    autocomplete: 'new-password',
+    style: { fontFamily: 'monospace' }
+  });
+
+  const result = h('div', { class: 'pwd-reset-result', hidden: 'hidden' });
+
+  const generateBtn = h('button', { type: 'button', class: 'btn', onclick: () => {
+    input.value = generateTempPasswordClient();
+    input.focus();
+    input.select();
+  } }, '🎲 Generate');
+
+  const applyBtn = h('button', { type: 'button', class: 'btn warn', onclick: async () => {
+    const proposed = String(input.value || '').trim();
+    if (proposed && proposed.length < 6) {
+      toast('Password must be at least 6 characters (or leave it empty to auto-generate).', 'err');
+      return;
+    }
+    if (!await confirmDialog(
+      `Reset password for ${u.name}?\n\nThis will not log them out of existing sessions, but their old password will stop working. Make sure to share the new one with them.`
+    )) return;
+    applyBtn.disabled = 'disabled';
+    applyBtn.textContent = 'Resetting…';
+    try {
+      const out = await api('api_users_resetPassword', u.id, proposed);
+      // Show the new password — this is the only chance to see it.
+      result.innerHTML = '';
+      const pwdSpan = h('code', { class: 'pwd-reveal' }, out.password);
+      result.appendChild(h('div', { class: 'pwd-reveal-row' },
+        h('span', { class: 'muted', style: { marginRight: '.5rem' } }, '✅ New password:'),
+        pwdSpan,
+        h('button', { type: 'button', class: 'btn sm ghost', onclick: () => {
+          navigator.clipboard.writeText(out.password).then(
+            () => toast('Copied to clipboard'),
+            () => toast('Copy failed — select and copy manually.', 'err')
+          );
+        } }, '📋 Copy')
+      ));
+      result.appendChild(h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.5rem' } },
+        '⚠️ This password is shown only once. Send it to ', h('b', {}, u.name),
+        ' now (WhatsApp / email). Closing this modal will not be able to recover it.'
+      ));
+      result.hidden = null;
+      input.value = '';
+      toast('Password reset for ' + u.name);
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      applyBtn.disabled = null;
+      applyBtn.textContent = 'Apply reset';
+    }
+  } }, 'Apply reset');
+
+  wrap.appendChild(h('div', { class: 'pwd-reset-row' }, input, generateBtn, applyBtn));
+  wrap.appendChild(result);
+  return wrap;
+}
+
+/**
+ * Client-side password generator — same character set as the server's
+ * _generateTempPassword. Used only for previewing in the input; the server
+ * generates its own when the field is left empty.
+ */
+function generateTempPasswordClient() {
+  const upper  = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower  = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const punct  = '@#$%&*';
+  const all = upper + lower + digits + punct;
+  const pick = (set) => set[Math.floor(Math.random() * set.length)];
+  const chars = [pick(upper), pick(lower), pick(digits), pick(punct)];
+  while (chars.length < 12) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
 }
 
 /* ---------------- HR views ---------------- */
