@@ -997,3 +997,30 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
     .topbar { padding-top: max(env(safe-area-inset-top, 0), .85rem); }
   }
 }
+
+/* ---------------- After-call recording status ---------------- */
+.modal-rec-status {
+  background: var(--bg-alt, #f8fafc);
+  border-radius: 12px;
+  padding: .65rem .85rem;
+  margin: .85rem 0;
+  font-size: .9rem;
+}
+.modal-rec-status .rec-spinner {
+  display: inline-block;
+  margin-right: .4rem;
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.rec-status-row { display: flex; align-items: center; gap: .35rem; }
+.rec-status-row.ok { color: #059669; font-weight: 500; }
+.rec-status-row.warn { color: #b45309; font-size: .82rem; line-height: 1.4; }
+
+/* Settings toggle */
+.toggle-row {
+  display: flex; align-items: center; gap: .65rem;
+  padding: .6rem .15rem; cursor: pointer; font-size: .9rem;
+}
+.toggle-row input[type=checkbox] {
+  width: 18px; height: 18px; accent-color: var(--brand, #6366f1);
+}

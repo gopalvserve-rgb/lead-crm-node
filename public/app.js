@@ -582,28 +582,30 @@ function renderLeadsMobile(rows) {
   });
 }
 
-/** Click-to-call with after-call modal. Stores the lead being called so the
- *  Page Visibility handler can fire the follow-up prompt when user returns
- *  from a real call (>10s away). On native (Capacitor) the 'call_ended' event
- *  from PhoneStateReceiver will fire the modal directly. */
+/** Click-to-call with after-call modal + targeted recording sync. */
 function callLead(lead) {
   const raw = String(lead.phone || '');
   const digits = raw.replace(/\D/g, '');
   if (!digits) return toast('No phone number', 'warn');
-  CRM.pendingCall = { lead, startedAt: Date.now() };
-  // Preserve a leading + only if the original phone started with one.
+  const startedAt = Date.now();
+  CRM.pendingCall = { lead, startedAt, dialedPhone: digits };
+
+  // Tell the native side this call belongs to us, so it can:
+  //  (a) treat call_ended for this number as "our call" → open modal
+  //  (b) target the recording sync to just this number after the call ends
+  if (window.LeadCRMNative && typeof LeadCRMNative.registerOutgoingCall === 'function') {
+    try {
+      LeadCRMNative.registerOutgoingCall(
+        digits, lead.id ? String(lead.id) : '', startedAt
+      );
+    } catch (e) { console.warn('[leadcrm] registerOutgoingCall:', e); }
+  }
+
   const hasPlus = raw.trim().startsWith('+');
   const telTarget = (hasPlus ? '+' : '') + digits;
-  // On Capacitor / Android, use window.open to trigger the native dialer
-  // without leaving the webview for too long on desktop.
   const a = document.createElement('a');
   a.href = 'tel:' + telTarget;
   a.click();
-  // NOTE: no safety-net setTimeout — the after-call modal should fire ONLY on
-  // real call end. Desktop users see no modal. On Android, either:
-  //   (a) the Capacitor native bridge fires onLeadCRMCallEvent('call_ended',...),
-  //   (b) or the visibilitychange listener below fires when returning from the
-  //       system dialer after a genuine (≥10s) call.
 }
 
 // Fire after-call modal when user returns from the dialer, but only if they
@@ -1180,6 +1182,26 @@ function renderDialerSettings() {
           h('p', { class: 'muted' }, 'No folder connected yet. Pick the folder where your phone saves call recordings.'),
           h('button', { class: 'btn primary', onclick: () => setupRecordingFolder() }, '📁 Pick recordings folder')
         )
+  ));
+
+  // Filter card
+  const includeUnmatched = localStorage.getItem('rec_include_unmatched') === '1';
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, '🎯 Sync filter'),
+    h('p', { class: 'muted' },
+      'By default the app only uploads recordings whose phone number matches a lead in your CRM. ' +
+      'Personal calls (family, courier, OTP) are skipped.'),
+    h('label', { class: 'toggle-row' },
+      h('input', {
+        type: 'checkbox',
+        checked: includeUnmatched ? 'checked' : null,
+        onchange: ev => {
+          localStorage.setItem('rec_include_unmatched', ev.target.checked ? '1' : '0');
+          toast(ev.target.checked ? 'Will upload all recordings' : 'Lead-only filter active');
+        }
+      }),
+      h('span', {}, 'Include unmatched recordings (upload everything)')
+    )
   ));
 
   // Help card
@@ -2885,8 +2907,20 @@ async function syncRecordings(opts) {
     } catch (_) {}
   }
 
+  // Build a set of "last 7 digits" for every phone we know across leads —
+  // used to filter out personal/family calls.
+  const knownTails = new Set();
+  for (const l of CRM.cache.lastLeads || []) {
+    for (const fld of ['phone', 'whatsapp', 'alt_phone']) {
+      const d = String(l[fld] || '').replace(/\D/g, '');
+      if (d.length >= 7) knownTails.add(d.slice(-7));
+    }
+  }
+  const includeUnmatched = !!opts.includeUnmatched
+    || localStorage.getItem('rec_include_unmatched') === '1';
+
   const uploaded = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
-  let success = 0, failed = 0, skipped = 0;
+  let success = 0, failed = 0, skipped = 0, skippedNoMatch = 0;
 
   // Show progress in dialer view if visible
   const progress = $('#sync-progress');
@@ -2897,6 +2931,13 @@ async function syncRecordings(opts) {
     if (uploaded[f.uri]) { skipped++; continue; }
     const meta = parseRecordingFilename(f.name, f.modified);
     const digits = String(meta.phone || '').replace(/\D/g, '');
+    const tail = digits.slice(-7);
+    // SKIP files whose phone number doesn't match a lead in your CRM
+    // (personal calls, family, courier, OTPs, etc.)
+    if (!includeUnmatched && (!tail || !knownTails.has(tail))) {
+      skippedNoMatch++;
+      continue;
+    }
     const lead = digits ? (CRM.cache.lastLeads || []).find(l =>
       String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
     ) : null;
@@ -2936,7 +2977,12 @@ async function syncRecordings(opts) {
 
   localStorage.setItem('rec_uploaded', JSON.stringify(uploaded));
   localStorage.setItem('rec_last_sync', String(Date.now()));
-  toast(`✅ Synced ${success} new · ${skipped} already up-to-date${failed ? ' · ' + failed + ' failed' : ''}`);
+  const parts = [];
+  parts.push(`✅ ${success} synced`);
+  if (skipped) parts.push(`${skipped} already uploaded`);
+  if (skippedNoMatch) parts.push(`${skippedNoMatch} skipped (not in CRM)`);
+  if (failed) parts.push(`${failed} failed`);
+  toast(parts.join(' · '));
   if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
 }
 
@@ -3007,34 +3053,120 @@ window.onLeadCRMCallEvent = function (event, number) {
   try {
     console.log('[leadcrm] native call event:', event, number);
     if (!CRM.user) return;
-    // Find matching lead by phone
     const digits = String(number || '').replace(/\D/g, '');
-    const lead = (CRM.cache.lastLeads || []).find(l =>
+    // Match either the lead currently being dialed (pendingCall) or any lead
+    // matching the number that just rang.
+    const ctx = CRM.pendingCall;
+    const ctxLead = ctx && ctx.lead;
+    const matchByNumber = (CRM.cache.lastLeads || []).find(l =>
       digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
     );
+    const lead = matchByNumber || ctxLead;
 
-    // Log the event in our call_events timeline (best-effort, non-blocking)
-    if (event !== 'recording_saved' && digits) {
+    // Log every call into the timeline (best-effort)
+    if (digits) {
       const direction = (event === 'incoming_ringing') ? 'in' : 'out';
       api('api_call_logEvent', { phone: number, direction, event }).catch(() => {});
     }
 
-    if (event === 'incoming_ringing' && !lead && digits) {
+    if (event === 'incoming_ringing' && !matchByNumber && digits) {
       promptSaveAsLead(number);
     } else if (event === 'call_ended') {
       if (lead) {
+        // Open the update modal IMMEDIATELY — don't make the user wait
+        const callContext = ctx && ctx.lead && ctx.lead.id === lead.id
+          ? ctx
+          : { lead, startedAt: Date.now() - 30_000, dialedPhone: digits };
         CRM.pendingCall = null;
-        // Native already verified the call ended — open modal directly
-        setTimeout(() => openAfterCallModal(lead), 500);
+        setTimeout(() => openAfterCallModalWithRecording(lead, callContext), 400);
       } else if (digits) {
         promptSaveAsLead(number);
       }
       if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
     }
-    // 'recording_saved' is no longer fired — auto-recording is intentionally
-    // disabled. Use the folder-watcher (Dialer → Settings → Sync now) instead.
   } catch (e) { console.error('[leadcrm] callEvent handler:', e); }
 };
+
+/**
+ * Open the after-call update modal + auto-sync the single recording for THIS
+ * call (filename matches dialed phone, modified after call started). The
+ * modal stays open while we look — when the file lands we splice in an
+ * <audio> player so the user can hear it before saving the update.
+ */
+async function openAfterCallModalWithRecording(lead, callContext) {
+  await openAfterCallModal(lead);
+
+  // Only the Android app can sync — on web we just open the modal.
+  if (!window.LeadCRMNative || typeof LeadCRMNative.syncCallRecording !== 'function') return;
+
+  const modal = document.querySelector('.after-call-modal .modal');
+  if (!modal) return;
+  const status = h('div', { class: 'modal-rec-status' },
+    h('span', { class: 'rec-spinner' }, '⏳'),
+    h('span', {}, 'Looking for the call recording…')
+  );
+  // Insert right before the Save/Skip actions row
+  const actions = modal.querySelector('.actions');
+  if (actions) modal.insertBefore(status, actions); else modal.appendChild(status);
+
+  // Wait 5s for the OS recorder to finalise the file, then trigger native sync.
+  await new Promise(r => setTimeout(r, 5000));
+
+  const cbName = '__cbCallRec_' + Math.random().toString(36).slice(2, 10);
+  const result = await new Promise(resolve => {
+    window[cbName] = (ok, detail) => {
+      delete window[cbName];
+      resolve({ ok, detail });
+    };
+    try {
+      LeadCRMNative.syncCallRecording(
+        callContext.dialedPhone, lead.id ? String(lead.id) : '',
+        Math.max(0, callContext.startedAt - 60_000),
+        location.origin, CRM.token || '', cbName
+      );
+    } catch (e) {
+      delete window[cbName];
+      resolve({ ok: false, detail: e.message });
+    }
+  });
+
+  status.innerHTML = '';
+  if (result.ok) {
+    let recId = null;
+    try {
+      const parsed = JSON.parse(result.detail);
+      if (parsed && parsed.id) recId = parsed.id;
+    } catch (_) {}
+    status.appendChild(h('div', { class: 'rec-status-row ok' },
+      h('span', {}, '✅'), h('span', {}, ' Recording synced')
+    ));
+    if (recId) {
+      const audio = document.createElement('audio');
+      audio.controls = true;
+      audio.preload = 'metadata';
+      audio.src = '/api/recordings/' + recId + '/audio?token=' + encodeURIComponent(CRM.token || '');
+      audio.style.width = '100%';
+      audio.style.marginTop = '.5rem';
+      status.appendChild(audio);
+    }
+    if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+  } else {
+    const errCode = String(result.detail || '');
+    let msg;
+    if (errCode === 'no_folder') {
+      msg = 'Pick your call-recording folder in Dialer → Settings to enable sync.';
+    } else if (errCode === 'no_match') {
+      msg = 'No recording found for this call. Make sure call recording is turned on in your phone\'s dialer.';
+    } else if (errCode === 'folder_unreachable') {
+      msg = 'Folder is no longer accessible. Re-pick it in Dialer → Settings.';
+    } else {
+      msg = 'Could not sync recording: ' + errCode;
+    }
+    status.appendChild(h('div', { class: 'rec-status-row warn' },
+      h('span', {}, '⚠️'), h('span', {}, ' ' + msg)
+    ));
+  }
+}
 
 // Shared-intent handler — when user shares a phone number into the app
 window.onLeadCRMSharedLead = function (text) {
