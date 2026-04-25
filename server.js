@@ -246,11 +246,18 @@ app.get('/api/sample.csv', (req, res) => {
   res.type('text/csv').attachment('lead-crm-sample.csv').send(csv);
 });
 
-// Config for the frontend (non-secret; used to pre-populate CRM.webAppUrl etc.)
-app.get('/config.json', (req, res) => {
+// Config for the frontend (non-secret; used to pre-populate CRM.webAppUrl etc.).
+// Reads from the config table so updates to brand name/logo show up immediately
+// without restarting the server.
+app.get('/config.json', async (req, res) => {
+  let cfg = {};
+  try {
+    const rows = await db.getAll('config');
+    rows.forEach(r => { cfg[r.key] = r.value; });
+  } catch (_) { /* DB unavailable — fall through to env defaults */ }
   res.json({
-    company_name: process.env.COMPANY_NAME || 'Lead CRM',
-    company_logo_url: process.env.COMPANY_LOGO_URL || '',
+    company_name:     cfg.COMPANY_NAME     || process.env.COMPANY_NAME     || 'Lead CRM',
+    company_logo_url: cfg.COMPANY_LOGO_URL || process.env.COMPANY_LOGO_URL || '',
     base_url: (req.protocol + '://' + req.get('host'))
   });
 });

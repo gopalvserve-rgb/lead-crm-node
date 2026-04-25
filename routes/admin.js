@@ -88,6 +88,30 @@ async function api_admin_regenerateApiKey(token) {
   return { ok: true, key };
 }
 
+/**
+ * Save a company logo. Accepts a `data:image/...;base64,...` URL the
+ * client made by reading a chosen file via FileReader. Stored directly
+ * in the config table so it lives across deploys.
+ */
+async function api_admin_uploadLogo(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const url = (payload && payload.data_url) || '';
+  if (!url || !url.startsWith('data:image/')) throw new Error('Expected a data:image/* URL');
+  if (url.length > 2 * 1024 * 1024) throw new Error('Logo too large (max ~1.5 MB image — please resize)');
+  await db.setConfig('COMPANY_LOGO_URL', url);
+  process.env.COMPANY_LOGO_URL = url;
+  return { ok: true };
+}
+
+async function api_admin_clearLogo(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  await db.setConfig('COMPANY_LOGO_URL', '');
+  process.env.COMPANY_LOGO_URL = '';
+  return { ok: true };
+}
+
 async function api_admin_urls(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
@@ -148,6 +172,7 @@ module.exports = {
   api_admin_getConfig, api_admin_config,
   api_admin_setConfig, api_admin_saveConfig,
   api_admin_regenerateApiKey,
+  api_admin_uploadLogo, api_admin_clearLogo,
   api_admin_urls,
   api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp
 };

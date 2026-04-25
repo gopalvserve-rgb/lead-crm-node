@@ -1256,3 +1256,93 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .pagination-nav .btn.sm:nth-child(1),
   .pagination-nav .btn.sm:nth-last-child(1) { display: none; } /* hide First/Last on phones */
 }
+
+/* ============================================================
+   Global API loader — top progress bar
+   ============================================================ */
+#global-loader {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: 3px;
+  background: transparent;
+  z-index: 100000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .15s;
+}
+#global-loader.active { opacity: 1; }
+#global-loader .gl-fill {
+  height: 100%;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, var(--brand, #6366f1), var(--accent, #ec4899), transparent);
+  animation: gl-slide 1.1s ease-in-out infinite;
+}
+@keyframes gl-slide {
+  0%   { margin-left: -30%; width: 30%; }
+  50%  { margin-left: 35%;  width: 40%; }
+  100% { margin-left: 110%; width: 30%; }
+}
+
+/* Sit just below the gradient topbar on mobile so it's visible */
+@media (max-width: 780px) {
+  #global-loader {
+    top: env(safe-area-inset-top, 0);
+  }
+}
+
+/* ============================================================
+   Brand identity card (Settings → Company)
+   ============================================================ */
+.brand-card { padding: 1.25rem 1.5rem; }
+.brand-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.25rem;
+  margin-top: .85rem;
+  align-items: flex-start;
+}
+.brand-logo-col, .brand-name-col { min-width: 0; }
+.brand-logo-preview {
+  width: 200px; height: 200px;
+  background: var(--bg-alt, #f8fafc);
+  border: 2px dashed var(--border, #e5e7eb);
+  border-radius: var(--radius-lg, 14px);
+  display: grid; place-items: center;
+  margin-bottom: .65rem;
+  overflow: hidden;
+}
+.brand-logo-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.brand-fallback { font-size: 4rem; opacity: .35; }
+.brand-upload-btn { display: inline-flex; align-items: center; cursor: pointer; }
+
+.brand-advanced {
+  margin-top: 1rem; padding: 1rem 1.25rem; background: var(--bg-alt, #f8fafc);
+  border: 1px solid var(--border, #e5e7eb); border-radius: var(--radius, 10px);
+}
+.brand-advanced summary { font-weight: 500; cursor: pointer; user-select: none; }
+.brand-advanced summary:hover { color: var(--brand, #6366f1); }
+
+@media (max-width: 780px) {
+  .brand-row { grid-template-columns: 1fr; }
+  .brand-logo-preview { width: 160px; height: 160px; margin: 0 auto .65rem; }
+  .brand-logo-col { text-align: center; }
+}
+
+/* ============================================================
+   Defensive: prevent any rogue horizontal scroll on phones
+   ============================================================ */
+@media (max-width: 780px) {
+  html, body { overflow-x: hidden !important; max-width: 100vw; }
+  .shell, .main, #view { max-width: 100vw; }
+  /* Tables/scrollers must contain their own horizontal scrollbar */
+  .table-wrap, .pipeline, .kanban {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  /* Forms must not overflow */
+  input, select, textarea, .btn { max-width: 100%; }
+  pre, code { max-width: 100%; overflow-x: auto; word-break: break-word; }
+  /* Modal can never exceed viewport */
+  .modal-backdrop { padding: 0 !important; }
+  .modal { max-width: 100vw; box-sizing: border-box; }
+}

@@ -16,18 +16,43 @@ const CRM = {
 };
 
 /* ---------------- API helper ---------------- */
-async function api(fn, ...args) {
-  const res = await fetch('/api', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fn, args: [CRM.token, ...args] })
-  });
-  const j = await res.json();
-  if (!res.ok || j.error) {
-    if (j.error && /token|User inactive/i.test(j.error)) logout();
-    throw new Error(j.error || 'API error');
+// Global "in-flight" counter — drives the top loading bar.
+let _apiInFlight = 0;
+function _bumpApiLoader(delta) {
+  _apiInFlight = Math.max(0, _apiInFlight + delta);
+  let bar = document.getElementById('global-loader');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'global-loader';
+    bar.innerHTML = '<div class="gl-fill"></div>';
+    document.body.appendChild(bar);
   }
-  return j.result;
+  bar.classList.toggle('active', _apiInFlight > 0);
+}
+
+// Endpoints we DON'T want to show the top loader for (background pollers):
+const _SILENT_FNS = new Set([
+  'api_notifications_mine', 'api_call_logEvent', 'api_company_info'
+]);
+
+async function api(fn, ...args) {
+  const silent = _SILENT_FNS.has(fn);
+  if (!silent) _bumpApiLoader(+1);
+  try {
+    const res = await fetch('/api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fn, args: [CRM.token, ...args] })
+    });
+    const j = await res.json();
+    if (!res.ok || j.error) {
+      if (j.error && /token|User inactive/i.test(j.error)) logout();
+      throw new Error(j.error || 'API error');
+    }
+    return j.result;
+  } finally {
+    if (!silent) _bumpApiLoader(-1);
+  }
 }
 async function apiRaw(fn, ...args) {
   const res = await fetch('/api', {
@@ -1598,9 +1623,16 @@ function renderDialpad() {
     class: 'dialpad-display',
     placeholder: 'Enter number or name…',
     value: _dialerState.digits,
-    oninput: ev => { _dialerState.digits = ev.target.value; renderMatches(); }
+    oninput: ev => { _dialerState.digits = ev.target.value; debouncedRenderMatches(); }
   });
   const matches = h('div', { class: 'dialpad-matches' });
+
+  // Debounce so we don't re-filter the lead list on every keystroke
+  let _matchTimer = null;
+  function debouncedRenderMatches() {
+    if (_matchTimer) clearTimeout(_matchTimer);
+    _matchTimer = setTimeout(renderMatches, 80);
+  }
 
   function renderMatches() {
     matches.innerHTML = '';
@@ -1659,7 +1691,7 @@ function renderDialpad() {
           _dialerState.digits += d;
         }
         display.value = _dialerState.digits;
-        renderMatches();
+        debouncedRenderMatches();
       },
       onmousedown: () => { if (d === '0') _dialerLongPress0Timer = setTimeout(() => { _dialerLongPress0 = true; }, 600); },
       onmouseup: () => { clearTimeout(_dialerLongPress0Timer); setTimeout(() => { _dialerLongPress0 = false; }, 50); },
@@ -1779,9 +1811,23 @@ function renderRecordingsList() {
 function refreshDialerHistory() {
   if (!_dialerState || !_dialerState.view) return;
   if (location.hash !== '#/dialer') return;
-  // Re-render the active tab
-  const fn = VIEWS.dialer;
-  if (typeof fn === 'function') fn(_dialerState.view);
+  // NEVER re-render the whole dialer — that nukes the dialpad input focus
+  // and the digits the user is typing. Only refresh the History/Recordings
+  // tabs (those don't have user inputs).
+  if (_dialerState.tab === 'history') {
+    const body = _dialerState.view.querySelector('.dialer-body');
+    if (body && typeof renderHistory === 'function') {
+      body.innerHTML = '';
+      body.appendChild(renderHistory());
+    }
+  } else if (_dialerState.tab === 'recordings') {
+    const body = _dialerState.view.querySelector('.dialer-body');
+    if (body && typeof renderRecordingsList === 'function') {
+      body.innerHTML = '';
+      body.appendChild(renderRecordingsList());
+    }
+  }
+  // Dialpad / Settings tabs intentionally NOT auto-refreshed.
 }
 
 /* ---------------- Pipeline ---------------- */
@@ -2105,7 +2151,112 @@ async function showAdminTab(id) {
 
 async function adminCompany() {
   const cfg = await api('api_admin_getConfig');
-  return configForm(cfg, ['COMPANY_NAME', 'COMPANY_LOGO_URL']);
+  const wrap = h('div', {});
+
+  // ---- Brand identity card ----
+  const card = h('div', { class: 'card brand-card' },
+    h('h4', {}, '🎨 Company branding'),
+    h('p', { class: 'muted' }, 'Your brand name and logo show up on the login screen, the sidebar, the topbar, and the Android app icon area.')
+  );
+  wrap.appendChild(card);
+
+  // Live preview
+  const previewLogo = h('div', { class: 'brand-logo-preview' });
+  function setPreview(url) {
+    previewLogo.innerHTML = '';
+    if (url) {
+      const img = h('img', { src: url, alt: 'logo' });
+      img.onerror = () => { previewLogo.innerHTML = '<span class="muted">⚠️ Could not load image</span>'; };
+      previewLogo.appendChild(img);
+    } else {
+      previewLogo.appendChild(h('span', { class: 'brand-fallback' }, '🎯'));
+    }
+  }
+  setPreview(cfg.COMPANY_LOGO_URL);
+
+  // Name input
+  const nameInput = h('input', { type: 'text', value: cfg.COMPANY_NAME || 'Lead CRM', placeholder: 'e.g. Acme CRM' });
+
+  card.appendChild(h('div', { class: 'brand-row' },
+    h('div', { class: 'brand-logo-col' },
+      h('label', {}, 'Logo'),
+      previewLogo,
+      h('div', { class: 'actions' },
+        h('label', { class: 'btn primary brand-upload-btn' },
+          '📤 Upload logo',
+          h('input', {
+            type: 'file', accept: 'image/png,image/jpeg,image/svg+xml,image/webp',
+            style: { display: 'none' },
+            onchange: async ev => {
+              const f = ev.target.files[0];
+              if (!f) return;
+              if (f.size > 1.5 * 1024 * 1024) { toast('Logo too large — please use an image under 1.5 MB', 'warn'); return; }
+              const dataUrl = await new Promise((resolve, reject) => {
+                const r = new FileReader();
+                r.onload = () => resolve(r.result); r.onerror = reject;
+                r.readAsDataURL(f);
+              });
+              try {
+                await api('api_admin_uploadLogo', { data_url: dataUrl });
+                setPreview(dataUrl);
+                CRM.config.company_logo_url = dataUrl;
+                // Refresh sidebar + topbar logos in real time
+                document.querySelectorAll('img.sidebar-logo, img.login-logo, .brand-img').forEach(i => i.src = dataUrl);
+                toast('Logo updated');
+              } catch (e) { toast(e.message, 'err'); }
+            }
+          })
+        ),
+        cfg.COMPANY_LOGO_URL
+          ? h('button', {
+              class: 'btn ghost', onclick: async () => {
+                if (!await confirmDialog('Remove the company logo? The 🎯 default icon will be used.')) return;
+                try {
+                  await api('api_admin_clearLogo');
+                  setPreview('');
+                  CRM.config.company_logo_url = '';
+                  document.querySelectorAll('img.sidebar-logo, img.login-logo').forEach(i => i.remove());
+                  toast('Logo removed');
+                } catch (e) { toast(e.message, 'err'); }
+              }
+            }, '🗑️ Remove')
+          : null
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.4rem' } },
+        'Recommended: square PNG, 256×256 to 512×512, transparent background. Max 1.5 MB.'
+      )
+    ),
+    h('div', { class: 'brand-name-col' },
+      h('label', {}, 'Company name *'),
+      nameInput,
+      h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.3rem' } },
+        'Shown on the login screen, sidebar, and emails.'
+      ),
+      h('div', { class: 'actions', style: { marginTop: '1rem' } },
+        h('button', { class: 'btn primary', onclick: async () => {
+          const newName = nameInput.value.trim();
+          if (!newName) return toast('Name cannot be empty', 'warn');
+          try {
+            await api('api_admin_setConfig', { COMPANY_NAME: newName });
+            CRM.config.company_name = newName;
+            document.title = newName;
+            const brandSpan = document.querySelector('.brand-name');
+            if (brandSpan) brandSpan.textContent = newName;
+            toast('Saved');
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Save name')
+      )
+    )
+  ));
+
+  // ---- Advanced: paste a URL instead of uploading ----
+  wrap.appendChild(h('details', { class: 'card brand-advanced' },
+    h('summary', {}, 'Advanced — paste a logo URL instead of uploading'),
+    h('p', { class: 'muted' }, 'If you host your logo elsewhere (e.g. on a CDN), you can paste the URL here.'),
+    configForm(cfg, ['COMPANY_LOGO_URL'])
+  ));
+
+  return wrap;
 }
 
 /* ---- Website API / sample CSV ---- */
@@ -3740,6 +3891,9 @@ async function refreshLeads() {
  */
 async function checkNewLeads() {
   if (!CRM.user) return;
+  // Skip polling while the user is actively typing on the dialpad — the
+  // tiny background fetch + DOM updates were causing keystroke lag.
+  if (location.hash === '#/dialer' && _dialerState && _dialerState.tab === 'pad') return;
   try {
     const d = await api('api_leads_list', { limit: 5 });
     const leads = (d && (d.leads || d)) || [];
