@@ -19,7 +19,8 @@ async function metaVerify(req, res) {
   const mode     = req.query['hub.mode'];
   const token    = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  const expected = process.env.META_VERIFY_TOKEN || '';
+  // Read from DB config first; fall back to env var so existing setups keep working.
+  const expected = (await db.getConfig('META_VERIFY_TOKEN', process.env.META_VERIFY_TOKEN || '')) || '';
   if (mode === 'subscribe' && token === expected) {
     return res.status(200).send(challenge);
   }
@@ -59,8 +60,22 @@ async function metaEvent(req, res) {
 }
 
 async function _processLeadgen(leadgenId, pageId, formId) {
-  const pageToken = await db.getConfig('META_PAGE_ACCESS_TOKEN');
-  if (!pageToken) throw new Error('No META_PAGE_ACCESS_TOKEN configured');
+  // Resolve page-specific access token + the configured default operator/source/status
+  // for incoming Meta leads. Falls back to the legacy single-page token if the
+  // multi-page config isn't set up yet (back-compat for old deployments).
+  let ctx = { access_token: '', default_source: 'Facebook Lead Ad', default_user_id: null, default_status_id: null };
+  try {
+    const fb = require('./fb');
+    if (typeof fb._pageContextForWebhook === 'function') {
+      ctx = await fb._pageContextForWebhook(pageId);
+    }
+  } catch (_) { /* ignore — fall back below */ }
+  let pageToken = ctx.access_token;
+  if (!pageToken) {
+    pageToken = await db.getConfig('META_PAGE_ACCESS_TOKEN', '');
+  }
+  if (!pageToken) throw new Error('No access token for page ' + pageId + ' — admin must connect with Facebook and monitor this page.');
+
   const r = await fetch(`${GRAPH}/${leadgenId}?access_token=${pageToken}`);
   const j = await r.json();
   if (j.error) throw new Error('Graph: ' + j.error.message);
@@ -76,12 +91,14 @@ async function _processLeadgen(leadgenId, pageId, formId) {
     phone:    payload.phone_number || payload.phone || '',
     email:    payload.email || '',
     whatsapp: payload.phone_number || payload.phone || '',
-    source:   'Facebook Lead Ad',
-    notes:    'Imported from Meta Lead Ad',
+    source:   ctx.default_source || 'Facebook Lead Ad',
+    notes:    'Imported from Meta Lead Ad' + (ctx.page_name ? ' — page: ' + ctx.page_name : ''),
     meta_json: { leadgen_id: leadgenId, page_id: pageId, form_id: formId, raw: j },
     created_at: db.nowIso(),
     updated_at: db.nowIso()
   };
+  if (ctx.default_user_id) lead.assigned_to = ctx.default_user_id;
+  if (ctx.default_status_id) lead.status_id = ctx.default_status_id;
 
   await _createLeadFromWebhook(lead);
 }

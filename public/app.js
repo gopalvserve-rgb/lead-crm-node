@@ -2728,22 +2728,182 @@ async function loadWATemplates() {
   }
 }
 async function adminFb() {
-  const [cfg, status] = await Promise.all([api('api_admin_getConfig'), api('api_fb_status').catch(() => ({ connected: false }))]);
-  const card = h('div', {});
-  card.appendChild(configForm(cfg, ['META_APP_ID', 'META_APP_SECRET', 'META_VERIFY_TOKEN']));
-  card.appendChild(h('div', { class: 'card' },
-    h('h4', {}, '🔗 Connection'),
-    h('p', { class: 'muted' }, status.connected ? `Connected to page: ${status.page_name || status.page_id}` : 'Not connected.'),
-    h('div', { class: 'toolbar' },
-      h('button', { class: 'btn primary', onclick: connectFacebook }, '🔗 Connect with Facebook'),
-      status.connected ? h('button', { class: 'btn', onclick: async () => { await api('api_fb_disconnect'); toast('Disconnected'); showAdminTab('fb'); } }, 'Disconnect') : null,
-      h('button', { class: 'btn ghost', onclick: async () => { const r = await api('api_admin_testMeta'); toast(r.ok ? 'Page: ' + r.page.name : (r.error || 'Failed'), r.ok ? 'ok' : 'err'); } }, 'Test'),
-      h('button', { class: 'btn ghost', onclick: async () => { const r = await api('api_admin_subscribeMetaLeadgen'); toast(r.ok ? 'Subscribed' : r.error, r.ok ? 'ok' : 'err'); } }, 'Subscribe leadgen')
-    ),
-    h('p', { class: 'muted' }, 'Webhook URL to paste in Meta app → Webhooks: ',
-      h('code', {}, location.origin + '/hook/meta'))
+  // Pull live state — settings, status, page list, lookup data for the dropdowns.
+  const [settings, status, pages, sources, statuses, users] = await Promise.all([
+    api('api_fb_settings_get').catch(e => { console.warn(e); return {}; }),
+    api('api_fb_status').catch(() => ({ connected: false })),
+    api('api_fb_pages_list').catch(() => []),
+    api('api_sources_list').catch(() => []),
+    api('api_statuses_list').catch(() => []),
+    api('api_users_list').catch(() => [])
+  ]);
+
+  const wrap = h('div', { class: 'fb-admin' });
+  wrap.appendChild(h('h3', { style: { margin: '0 0 1rem' } }, 'Facebook Leads Integration'));
+
+  // ============ 1. Application Settings ============
+  const appCard = h('div', { class: 'card' });
+  appCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Facebook Application Settings'));
+  const appForm = h('form', { class: 'form-grid', onsubmit: async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    try {
+      await api('api_fb_settings_set', {
+        app_id: fd.get('app_id'),
+        app_secret: fd.get('app_secret')   // empty = leave existing untouched
+      });
+      toast('Application settings saved');
+      showAdminTab('fb');
+    } catch (e) { toast(e.message, 'err'); }
+  }});
+  appForm.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Facebook Application ID'),
+    h('input', { name: 'app_id', value: settings.app_id || '', placeholder: 'e.g. 1234567890123456' })
   ));
-  return card;
+  appForm.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Facebook Application Secret',
+      settings.app_secret_present ? h('span', { class: 'muted', style: { fontSize: '.75rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null
+    ),
+    h('input', { name: 'app_secret', type: 'password', autocomplete: 'new-password',
+      placeholder: settings.app_secret_present ? '••••••••••••••' : 'paste from Meta App Dashboard' })
+  ));
+  appForm.appendChild(h('div', { class: 'f-row full' },
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save application settings')
+  ));
+  appCard.appendChild(appForm);
+  wrap.appendChild(appCard);
+
+  // ============ 2. Module Settings ============
+  const modCard = h('div', { class: 'card' });
+  modCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Module Settings'));
+  const modForm = h('form', { class: 'form-grid', onsubmit: async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    try {
+      await api('api_fb_settings_set', {
+        verify_token:      fd.get('verify_token'),
+        default_user_id:   fd.get('default_user_id'),
+        default_source:    fd.get('default_source'),
+        default_status_id: fd.get('default_status_id')
+      });
+      toast('Module settings saved');
+    } catch (e) { toast(e.message, 'err'); }
+  }});
+  modForm.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Webhook Verify Token ',
+      h('span', { class: 'muted', style: { fontWeight: 'normal' } }, '(you can change this if you want)')),
+    h('input', { name: 'verify_token', value: settings.verify_token || '',
+      placeholder: 'e.g. token654321 — paste this same value into Meta → Webhooks → Verify Token' })
+  ));
+  modForm.appendChild(h('div', { class: 'f-row full', style: { marginTop: '.5rem' } },
+    h('label', {}, 'Select an operator / source / status for leads that will be captured:')
+  ));
+  // Three dropdowns side-by-side (matching the screenshot)
+  const trio = h('div', { class: 'fb-trio' },
+    h('select', { name: 'default_user_id' },
+      h('option', { value: '' }, '— Use assignment rules —'),
+      ...users.map(u => h('option', {
+        value: u.id,
+        selected: String(u.id) === String(settings.default_user_id) ? 'selected' : null
+      }, u.name + (u.role ? ' (' + u.role + ')' : '')))
+    ),
+    h('select', { name: 'default_source' },
+      ...['Facebook', 'Facebook Lead Ad', 'Instagram', 'Meta Ads', ...sources.map(s => s.name)]
+        .filter((v, i, a) => v && a.indexOf(v) === i)   // dedupe
+        .map(s => h('option', {
+          value: s,
+          selected: s === (settings.default_source || 'Facebook') ? 'selected' : null
+        }, s))
+    ),
+    h('select', { name: 'default_status_id' },
+      h('option', { value: '' }, '— Default New —'),
+      ...statuses.map(s => h('option', {
+        value: s.id,
+        selected: String(s.id) === String(settings.default_status_id) ? 'selected' : null
+      }, s.name))
+    )
+  );
+  modForm.appendChild(h('div', { class: 'f-row full' }, trio));
+  // Webhook URL display (read-only)
+  modForm.appendChild(h('div', { class: 'f-row full', style: { marginTop: '.5rem' } },
+    h('label', {}, 'Your unique webhook callback URL is:'),
+    h('input', { value: location.origin + '/hook/meta', readonly: 'readonly',
+      style: { background: '#f1f5f9', fontFamily: 'monospace', cursor: 'text' },
+      onclick: ev => ev.target.select() })
+  ));
+  modForm.appendChild(h('div', { class: 'f-row full' },
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save module settings')
+  ));
+  modCard.appendChild(modForm);
+  wrap.appendChild(modCard);
+
+  // ============ 3. Pages list ============
+  const pagesCard = h('div', { class: 'card' });
+  pagesCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Fetch / relist Facebook pages'));
+  const pagesToolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem' } });
+
+  // "Connect with Facebook" — only shown when not connected
+  if (!status.connected) {
+    pagesToolbar.appendChild(
+      h('button', { class: 'btn primary', onclick: connectFacebook }, '🔗 Connect with Facebook')
+    );
+    pagesToolbar.appendChild(h('span', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Log in once and pick which pages to monitor below.'
+    ));
+  } else {
+    pagesToolbar.appendChild(
+      h('button', { class: 'btn primary', onclick: async () => {
+        try { const r = await api('api_fb_pages_refetch'); toast('Found ' + r.count + ' pages'); showAdminTab('fb'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🔄 Fetch Facebook Pages')
+    );
+    pagesToolbar.appendChild(
+      h('button', { class: 'btn ghost', onclick: connectFacebook }, '🔁 Re-login (different account)')
+    );
+    pagesToolbar.appendChild(
+      h('button', { class: 'btn ghost', onclick: async () => {
+        if (!await confirmDialog('Disconnect Facebook? This will unsubscribe all monitored pages.')) return;
+        try { await api('api_fb_disconnect'); toast('Disconnected'); showAdminTab('fb'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Disconnect')
+    );
+  }
+  pagesCard.appendChild(pagesToolbar);
+
+  if (status.connected && pages.length === 0) {
+    pagesCard.appendChild(h('p', { class: 'muted' },
+      'Connected, but no pages are showing yet. Click ', h('b', {}, 'Fetch Facebook Pages'), ' to load them.'
+    ));
+  }
+
+  if (pages.length > 0) {
+    const tbl = h('table', { class: 'mini-table fb-pages' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Page Name'), h('th', { style: { textAlign: 'right' } }, 'Action')
+      )),
+      h('tbody', {}, ...pages.map(pg => h('tr', {},
+        h('td', {},
+          h('div', {}, pg.page_name || ('Page ' + pg.page_id)),
+          pg.category ? h('div', { class: 'muted', style: { fontSize: '.75rem' } }, pg.category) : null
+        ),
+        h('td', { style: { textAlign: 'right' } },
+          pg.is_monitored
+            ? h('button', { class: 'btn sm danger', onclick: async () => {
+                try { await api('api_fb_pages_toggle', pg.page_id, false); toast('Unmonitored ' + pg.page_name); showAdminTab('fb'); }
+                catch (e) { toast(e.message, 'err'); }
+              } }, 'Unmonitor')
+            : h('button', { class: 'btn sm primary', onclick: async () => {
+                try { await api('api_fb_pages_toggle', pg.page_id, true); toast('Monitoring ' + pg.page_name); showAdminTab('fb'); }
+                catch (e) { toast(e.message, 'err'); }
+              } }, 'Monitor')
+        )
+      )))
+    );
+    pagesCard.appendChild(tbl);
+  }
+
+  wrap.appendChild(pagesCard);
+  return wrap;
 }
 async function adminWhatsapp() {
   const cfg = await api('api_admin_getConfig');
@@ -3831,13 +3991,17 @@ VIEWS.bank = async (view) => {
 function connectFacebook() {
   const doLogin = () => FB.login(async resp => {
     if (!resp.authResponse) return toast('Cancelled', 'warn');
-    try { const r = await api('api_fb_connect', resp.authResponse.accessToken); toast('Connected: ' + (r.page_name || r.page_id)); showAdminTab('fb'); }
+    try {
+      const r = await api('api_fb_connect', resp.authResponse.accessToken);
+      toast(`Connected — ${r.pages_count} page${r.pages_count === 1 ? '' : 's'} fetched. Pick which to monitor below.`);
+      showAdminTab('fb');
+    }
     catch (e) { toast(e.message, 'err'); }
   }, { scope: 'pages_show_list,pages_manage_metadata,leads_retrieval,pages_read_engagement' });
 
   if (window.FB) return doLogin();
   api('api_fb_status').then(({ app_id }) => {
-    if (!app_id) return toast('Set META_APP_ID in Admin → Facebook first', 'err');
+    if (!app_id) return toast('Set Facebook Application ID first (Admin → Facebook → Application Settings)', 'err');
     const s = document.createElement('script');
     s.src = 'https://connect.facebook.net/en_US/sdk.js';
     s.async = true;
