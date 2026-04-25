@@ -1133,3 +1133,40 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .assign-rr-grid { grid-template-columns: 1fr; }
   .preview-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------------- Bulk upload modal — fixes for mobile + scrolling ---------------- */
+/* Make the bulk upload modal scrollable so the Import button is always reachable */
+.modal.modal-lg {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  overflow: hidden;
+}
+.modal.modal-lg > .modal-head { flex-shrink: 0; }
+.modal.modal-lg > .actions { flex-shrink: 0; padding-top: .75rem; border-top: 1px solid #f1f5f9; margin-top: .85rem; background: #fff; }
+.modal.modal-lg > *:not(.modal-head):not(.actions) { /* let the body parts flow */ }
+
+/* Inactive mode body — bulletproof hide */
+.assign-mode-body[hidden] { display: none !important; }
+
+/* Tighten on mobile so all 4 cards + a body fit comfortably */
+@media (max-width: 780px) {
+  .modal.modal-lg {
+    max-height: 92vh !important;
+    overflow-y: auto !important;
+  }
+  .modal.modal-lg .actions {
+    position: sticky; bottom: 0; background: #fff;
+    box-shadow: 0 -4px 8px rgba(0,0,0,.04);
+    margin-left: -1.1rem; margin-right: -1.1rem;
+    padding-left: 1.1rem; padding-right: 1.1rem;
+  }
+  .assign-mode-grid { grid-template-columns: 1fr 1fr; gap: .35rem; }
+  .assign-mode-card { padding: .55rem .6rem; }
+  .assign-mode-title { font-size: .82rem; }
+  .assign-mode-desc { font-size: .72rem; }
+  .assign-mode-body { padding: .65rem .75rem; }
+  .assign-rr-grid { grid-template-columns: 1fr; max-height: 180px; }
+  .assign-pct-grid { max-height: 200px; }
+  .preview-grid { grid-template-columns: 1fr; }
+}

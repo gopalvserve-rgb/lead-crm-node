@@ -881,7 +881,9 @@ function exportCSV() {
   URL.revokeObjectURL(a.href);
 }
 function openBulkUpload() {
-  const users = (CRM.cache.users || []).filter(u => u.role !== 'admin' && Number(u.is_active ?? 1) === 1);
+  // Include admin too, since admin may want to assign to themselves
+  const users = (CRM.cache.users || []).filter(u => Number(u.is_active ?? 1) === 1);
+  const noUsers = users.length === 0;
 
   let parsedRows = [];
   let assignMode = 'csv';
@@ -914,7 +916,7 @@ function openBulkUpload() {
     h('option', { value: '' }, '— pick employee —'),
     ...users.map(u => h('option', { value: u.id }, `${u.name} (${u.role})`))
   );
-  const singleBody = h('div', { class: 'assign-mode-body', 'data-for': 'single' },
+  const singleBody = h('div', { class: 'assign-mode-body', 'data-for': 'single', hidden: true, style: { display: 'none' } },
     h('label', {}, 'Assign all leads to:'), singleSel
   );
 
@@ -923,7 +925,7 @@ function openBulkUpload() {
     h('span', {}, ` ${u.name}`),
     h('span', { class: 'muted', style: { fontSize: '.78rem', marginLeft: '.35rem' } }, u.role)
   ));
-  const rrBody = h('div', { class: 'assign-mode-body', 'data-for': 'round_robin' },
+  const rrBody = h('div', { class: 'assign-mode-body', 'data-for': 'round_robin', hidden: true, style: { display: 'none' } },
     h('label', {}, 'Pick the employees to share these leads:'),
     h('div', { class: 'assign-rr-grid' }, ...rrChecks),
     h('div', { class: 'actions', style: { marginTop: '.5rem' } },
@@ -939,7 +941,7 @@ function openBulkUpload() {
     h('span', { class: 'muted' }, '%')
   ));
   const pctTotalEl = h('div', { class: 'assign-pct-total muted', id: 'pct-total' }, 'Total: 0%');
-  const percentBody = h('div', { class: 'assign-mode-body', 'data-for': 'percent' },
+  const percentBody = h('div', { class: 'assign-mode-body', 'data-for': 'percent', hidden: true, style: { display: 'none' } },
     h('label', {}, 'Assign by percentage (must add up to 100%):'),
     h('div', { class: 'assign-pct-grid' }, ...percentRows),
     pctTotalEl
@@ -959,7 +961,11 @@ function openBulkUpload() {
   function updateMode() {
     [...modePicker.children].forEach(c => c.classList.toggle('active', c.dataset.mode === assignMode));
     modePicker.querySelectorAll('input[type=radio]').forEach(r => r.checked = r.value === assignMode);
-    [singleBody, rrBody, percentBody, csvBody].forEach(b => b.style.display = b.dataset.for === assignMode ? '' : 'none');
+    [singleBody, rrBody, percentBody, csvBody].forEach(b => {
+      const visible = b.dataset.for === assignMode;
+      b.hidden = !visible;
+      b.style.display = visible ? '' : 'none';
+    });
     previewAssignment();
   }
   singleSel.addEventListener('change', previewAssignment);
