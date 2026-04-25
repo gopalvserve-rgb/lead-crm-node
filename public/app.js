@@ -1590,19 +1590,42 @@ function selectOpts(id, items, value) {
     ...items.map(i => h('option', { value: i.id, selected: String(value) === String(i.id) ? 'selected' : null }, i.name))
   );
 }
+function parseFieldOptions(raw) {
+  // Lenient parser: accept pipe-, comma-, or newline-separated lists.
+  // Backwards compatible with existing pipe-separated data.
+  return String(raw || '').split(/[|,\n]/).map(s => s.trim()).filter(Boolean);
+}
 function customFieldInput(cf, val) {
   const name = 'cf_' + cf.key;
-  const opts = String(cf.options || '').split('|').filter(Boolean);
+  const opts = parseFieldOptions(cf.options);
   let input;
   if (cf.field_type === 'textarea') input = h('textarea', { name }, val || '');
   else if (cf.field_type === 'select') input = h('select', { name },
     h('option', { value: '' }, '—'),
     ...opts.map(o => h('option', { value: o, selected: val === o ? 'selected' : null }, o)));
-  else if (cf.field_type === 'multiselect') input = h('select', { name, multiple: true },
-    ...opts.map(o => h('option', { value: o, selected: String(val || '').split(',').includes(o) ? 'selected' : null }, o)));
+  else if (cf.field_type === 'multiselect') {
+    // Render as a checkbox grid instead of a native <select multiple>.
+    // Native multi-select requires Ctrl/Cmd+click and is unusable on touch.
+    // FormData.getAll('cf_<key>') still returns the same array of checked values,
+    // so the existing save logic at line ~1549 works unchanged.
+    const selectedSet = new Set(String(val || '').split(',').map(s => s.trim()).filter(Boolean));
+    if (opts.length === 0) {
+      input = h('div', { class: 'cf-opts-help' },
+        '⚠️ No options defined yet — add some in Admin → Custom fields.');
+    } else {
+      input = h('div', { class: 'cf-multi-grid' },
+        ...opts.map(o => h('label', {},
+          h('input', { type: 'checkbox', name, value: o, checked: selectedSet.has(o) ? 'checked' : null }),
+          ' ', o
+        ))
+      );
+    }
+  }
   else if (cf.field_type === 'checkbox') input = h('input', { type: 'checkbox', name, checked: val ? 'checked' : null, value: '1' });
   else input = h('input', { name, value: val || '', type: cf.field_type === 'number' ? 'number' : cf.field_type === 'date' ? 'date' : 'text' });
-  return h('div', { class: 'f-row' }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
+  // Long-form fields span both columns in the grid for breathing room.
+  const rowClass = (cf.field_type === 'multiselect' || cf.field_type === 'textarea') ? 'f-row full' : 'f-row';
+  return h('div', { class: rowClass }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
 }
 
 function recordingsBlock(leadId) {
@@ -2865,15 +2888,57 @@ function editCustomField(field) {
 /** Shared form for create/edit. `onSave` receives the field payload. */
 function buildCustomFieldForm(initial, onSave, submitLabel, onCancel) {
   const optsString = Array.isArray(initial.options) ? initial.options.join('|') : (initial.options || '');
+
+  // --- Options field (textarea + chip preview, only visible for select/multiselect) ---
+  const optsTextarea = h('textarea', {
+    name: 'options',
+    placeholder: 'One option per line, e.g.\nLow\nMedium\nHigh',
+    rows: '4'
+  });
+  optsTextarea.value = optsString.replace(/\|/g, '\n');
+  const chipsBox = h('div', { class: 'cf-opts-chips' });
+  const optsHelp = h('div', { class: 'cf-opts-help' },
+    'Type one option per line (or separate with commas / pipes). These are the choices the user picks from on the lead form.');
+  function renderChips() {
+    chipsBox.innerHTML = '';
+    parseFieldOptions(optsTextarea.value).forEach(o =>
+      chipsBox.appendChild(h('span', { class: 'cf-opts-chip' }, o)));
+  }
+  optsTextarea.addEventListener('input', renderChips);
+  const optsRow = h('div', { class: 'f-row full' },
+    h('label', {}, 'Options *'),
+    optsTextarea, optsHelp, chipsBox
+  );
+
+  // --- Type selector — toggles the visibility of the Options row ---
+  const typeRow = selectField('field_type', 'Type', initial.field_type || 'text',
+    ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox']);
+  const typeSelect = typeRow.querySelector('select');
+  function syncOptsVisibility() {
+    const needsOpts = typeSelect.value === 'select' || typeSelect.value === 'multiselect';
+    optsRow.style.display = needsOpts ? '' : 'none';
+    optsTextarea.toggleAttribute('required', needsOpts);
+    if (needsOpts) renderChips();
+  }
+  typeSelect.addEventListener('change', syncOptsVisibility);
+
   const form = h('form', { class: 'form-grid', onsubmit: async ev => {
     ev.preventDefault();
     const f = ev.target;
+    const fieldType = f.field_type.value;
+    const needsOpts = fieldType === 'select' || fieldType === 'multiselect';
+    if (needsOpts && parseFieldOptions(optsTextarea.value).length === 0) {
+      toast('Please add at least one option for ' + fieldType + ' fields.', 'err');
+      optsTextarea.focus();
+      return;
+    }
     try {
       await onSave({
         key: f.key.value,
         label: f.label.value,
-        field_type: f.field_type.value,
-        options: f.options.value,
+        field_type: fieldType,
+        // Always store as pipe-separated for backwards compatibility with the DB.
+        options: needsOpts ? parseFieldOptions(optsTextarea.value).join('|') : '',
         show_in_list: f.show_in_list.checked ? 1 : 0,
         is_required: f.is_required.checked ? 1 : 0,
         sort_order: Number(f.sort_order.value) || 10
@@ -2882,9 +2947,8 @@ function buildCustomFieldForm(initial, onSave, submitLabel, onCancel) {
   }},
     field('key', 'Key *', initial.key || '', { required: true }),
     field('label', 'Label *', initial.label || '', { required: true }),
-    selectField('field_type', 'Type', initial.field_type || 'text',
-      ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox']),
-    field('options', 'Options (pipe-separated, e.g. low|medium|high)', optsString),
+    typeRow,
+    optsRow,
     field('sort_order', 'Sort order', String(initial.sort_order != null ? initial.sort_order : 10), { type: 'number' }),
     h('div', { class: 'f-row' }, h('label', { class: 'cb' },
       h('input', { name: 'show_in_list', type: 'checkbox', checked: initial.show_in_list ? 'checked' : null }),
@@ -2897,6 +2961,10 @@ function buildCustomFieldForm(initial, onSave, submitLabel, onCancel) {
       h('button', { type: 'submit', class: 'btn primary' }, submitLabel)
     )
   );
+
+  // Initial visibility + chip render once the form is mounted.
+  syncOptsVisibility();
+  renderChips();
   return form;
 }
 async function adminRules() {
