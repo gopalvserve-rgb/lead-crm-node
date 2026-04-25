@@ -999,8 +999,14 @@ function openBulkUpload() {
   let assignMode = 'csv';
 
   // -------- Modal layout --------
-  const fileInput = h('input', { type: 'file', accept: '.csv,text/csv', id: 'csv-file', style: { width: '100%' } });
-  const fileInfo = h('div', { class: 'muted', id: 'csv-file-info', style: { fontSize: '.85rem', marginTop: '.4rem' } }, 'No file selected.');
+  const fileInput = h('input', {
+    type: 'file',
+    accept: '.csv,.xlsx,.xls,.xlsm,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    id: 'csv-file',
+    style: { width: '100%' }
+  });
+  const fileInfo = h('div', { class: 'muted', id: 'csv-file-info', style: { fontSize: '.85rem', marginTop: '.4rem' } }, 'No file selected. Accepts .csv, .xlsx and .xls.');
+  const filePreview = h('div', { class: 'csv-preview', id: 'csv-preview', hidden: true });
 
   // Mode picker as 4 button cards — no radios, no labels, no flex weirdness.
   const modeCard = (id, icon, title, desc) => h('button', {
@@ -1155,12 +1161,26 @@ function openBulkUpload() {
 
   fileInput.addEventListener('change', async (e) => {
     parsedRows = [];
+    filePreview.hidden = true;
+    filePreview.innerHTML = '';
     const f = e.target.files[0];
     if (!f) { fileInfo.textContent = 'No file selected.'; previewAssignment(); return; }
+    fileInfo.textContent = '⏳ Parsing ' + f.name + '…';
     try {
-      const text = await f.text();
-      parsedRows = parseCSV(text);
-      fileInfo.textContent = `${f.name} — ${parsedRows.length} rows parsed`;
+      parsedRows = await parseSpreadsheet(f);
+      // Surface a quick preview so the user can sanity-check before importing
+      const cols = parsedRows.length ? Object.keys(parsedRows[0]) : [];
+      const sample = parsedRows.slice(0, 3);
+      fileInfo.textContent = `✅ ${f.name} — ${parsedRows.length} rows · ${cols.length} columns`;
+      if (sample.length) {
+        const tbl = h('table', { class: 'mini-table csv-preview-table' });
+        const thead = h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {}, c))));
+        const tbody = h('tbody', {}, ...sample.map(r => h('tr', {}, ...cols.map(c => h('td', {}, String(r[c] || ''))))));
+        tbl.append(thead, tbody);
+        filePreview.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem', marginBottom: '.35rem' } }, 'Preview — first 3 rows:'));
+        filePreview.appendChild(tbl);
+        filePreview.hidden = false;
+      }
       previewAssignment();
     } catch (err) {
       fileInfo.textContent = '⚠️ Could not parse file: ' + err.message;
@@ -1205,9 +1225,15 @@ function openBulkUpload() {
   const modal = h('div', { class: 'modal-backdrop' },
     h('div', { class: 'modal modal-lg' },
       h('div', { class: 'modal-head' }, h('h3', {}, '⬆️ Bulk upload leads'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
-      h('p', { class: 'muted' }, 'Step 1: pick a CSV file. Columns: name, phone, email, whatsapp, source, product, notes, city, tags, next_followup_at, plus any custom field keys.'),
+      h('p', { class: 'muted' }, 'Step 1: pick a CSV or Excel (.xlsx) file. Columns: name, phone, email, whatsapp, source, product, notes, city, tags, next_followup_at, assigned_to, plus any custom field keys.'),
+      h('p', { class: 'muted', style: { fontSize: '.82rem' } },
+        h('b', {}, 'Tip: '), 'You can pre-assign leads to specific employees by adding an ',
+        h('code', {}, 'assigned_to'),
+        ' column with the rep\'s email or full name. Or use Step 2 below to assign in bulk.'
+      ),
       fileInput,
       fileInfo,
+      filePreview,
       h('p', { style: { marginTop: '1rem' } }, h('a', { href: '/api/sample.csv', download: '' }, '⬇️ Download sample CSV')),
       h('h4', { style: { marginTop: '1.5rem' } }, 'Step 2: how should these leads be assigned?'),
       modePicker,
@@ -1225,25 +1251,126 @@ function openBulkUpload() {
   document.body.appendChild(modal);
   updateMode();
 }
-function parseCSV(text) {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  const headers = splitCSVLine(lines[0]).map(h => h.trim().toLowerCase());
-  return lines.slice(1).map(line => {
-    const vals = splitCSVLine(line);
-    const o = {};
-    headers.forEach((h, i) => { o[h] = (vals[i] || '').trim(); });
-    return o;
+/* ---------------- Spreadsheet parsing (CSV + XLSX) ---------------- */
+
+/** Lazy-load SheetJS only when the user actually opens an Excel file. */
+let _xlsxLib = null;
+async function ensureXLSX() {
+  if (window.XLSX) return window.XLSX;
+  if (_xlsxLib) return _xlsxLib;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
   });
+  _xlsxLib = window.XLSX;
+  return _xlsxLib;
 }
-function splitCSVLine(line) {
-  const out = []; let cur = ''; let inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (inQ) { if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') inQ = false; else cur += c; }
-    else { if (c === '"') inQ = true; else if (c === ',') { out.push(cur); cur = ''; } else cur += c; }
+
+/** Normalize a column header into a snake_case key (lowercase, spaces+dashes → _). */
+function normalizeKey(k) {
+  return String(k || '').replace(/^﻿/, '').trim().toLowerCase().replace(/[\s\-]+/g, '_');
+}
+
+/**
+ * Clean up a single cell value:
+ *  - convert numbers to strings (Excel returns numbers for digit cells)
+ *  - strip leading apostrophe (Excel uses ' to force text)
+ *  - strip BOM, trim whitespace
+ *  - convert scientific-notation phone numbers back to plain digits
+ *  - lowercase + trim emails
+ */
+function cleanCell(key, val) {
+  if (val == null) return '';
+  if (val instanceof Date && !isNaN(val)) return val.toISOString();
+  if (typeof val === 'number') val = String(val);
+  let s = String(val).replace(/^﻿/, '').trim();
+  s = s.replace(/^'/, '');
+  // Scientific notation? Reconstruct (e.g. "9.876543E+9" → "9876543000")
+  if (/^\d+(\.\d+)?[eE][+-]?\d+$/.test(s)) {
+    const n = Number(s);
+    if (!isNaN(n) && isFinite(n)) s = String(n.toFixed(0));
   }
-  out.push(cur);
-  return out;
+  if (key === 'email') s = s.toLowerCase();
+  return s;
+}
+
+/**
+ * Parse a CSV or XLSX file → array of normalized row objects.
+ * Handles BOM, multi-line cells, Excel quirks, scientific-notation phones.
+ */
+async function parseSpreadsheet(file) {
+  const name = (file.name || '').toLowerCase();
+  // ---- XLSX / XLS path ----
+  if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.xlsm')) {
+    const XLSX = await ensureXLSX();
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true, raw: false });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false, blankrows: false });
+    return rows.map(r => {
+      const out = {};
+      for (const [k, v] of Object.entries(r)) {
+        const key = normalizeKey(k);
+        out[key] = cleanCell(key, v);
+      }
+      return out;
+    }).filter(r => Object.values(r).some(v => v !== ''));
+  }
+  // ---- CSV path ----
+  let text = await file.text();
+  text = text.replace(/^﻿/, ''); // strip UTF-8 BOM (Excel always adds one)
+  const rows = parseCSVText(text);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map(normalizeKey);
+  return rows.slice(1).map(line => {
+    if (line.every(c => c === '' || c == null)) return null;
+    const o = {};
+    headers.forEach((h, i) => { o[h] = cleanCell(h, line[i]); });
+    return o;
+  }).filter(Boolean);
+}
+
+/**
+ * Full CSV parser — handles quoted multi-line fields, escaped quotes,
+ * CRLF or LF line endings. Returns an array of arrays.
+ */
+function parseCSVText(text) {
+  const out = [];
+  let row = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { row.push(cur); cur = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++; // swallow LF after CR
+        row.push(cur); cur = '';
+        out.push(row); row = [];
+      } else cur += c;
+    }
+  }
+  if (cur !== '' || row.length) { row.push(cur); out.push(row); }
+  return out.filter(r => r.length > 1 || (r[0] && r[0].trim()));
+}
+
+// Backwards-compat shim — older code calls parseCSV(text) on already-loaded text
+function parseCSV(text) {
+  const stripped = String(text || '').replace(/^﻿/, '');
+  const rows = parseCSVText(stripped);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map(normalizeKey);
+  return rows.slice(1).map(line => {
+    if (line.every(c => c === '' || c == null)) return null;
+    const o = {};
+    headers.forEach((h, i) => { o[h] = cleanCell(h, line[i]); });
+    return o;
+  }).filter(Boolean);
 }
 
 /* --- Column chooser --- */

@@ -238,10 +238,11 @@ app.get('/api-docs', (req, res) => {
 
 app.get('/api/sample.csv', (req, res) => {
   const csv = [
-    'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at',
-    'John Doe,+911234567890,john@example.com,+911234567890,Website,Basic Plan,Mumbai,"hot,vip","Demo requested",2026-05-01 10:00',
-    'Jane Smith,+919876543210,jane@example.com,+919876543210,Facebook Lead Ad,Premium,Delhi,vip,"Referred by John",',
-    'Alex Kumar,+917777777777,,,WhatsApp,,Bangalore,cold,,'
+    'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at,assigned_to',
+    // assigned_to accepts an employee email OR full name. Leave blank to use assignment rules.
+    'John Doe,+911234567890,john@example.com,+911234567890,Website,Basic Plan,Mumbai,"hot,vip","Demo requested",2026-05-01 10:00,sales1@yourcompany.com',
+    'Jane Smith,+919876543210,jane@example.com,+919876543210,Facebook Lead Ad,Premium,Delhi,vip,"Referred by John",,Rajesh Kumar',
+    'Alex Kumar,+917777777777,,,WhatsApp,,Bangalore,cold,,,'
   ].join('\n');
   res.type('text/csv').attachment('lead-crm-sample.csv').send(csv);
 });

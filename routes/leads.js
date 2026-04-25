@@ -194,16 +194,39 @@ async function api_leads_create(token, payload) {
   const me = await authUser(token);
   const p = payload || {};
   if (!p.name) throw new Error('name required');
+
+  // Resolve assigned_to: accepts integer ID, email, or full name
+  // (used by the bulk-upload "assigned_to" / "assigned email" CSV column)
+  let resolvedAssignee = '';
+  const rawAssign = p.assigned_to != null ? String(p.assigned_to).trim() : '';
+  if (rawAssign) {
+    if (/^\d+$/.test(rawAssign)) {
+      resolvedAssignee = Number(rawAssign);
+    } else {
+      const allUsers = await db.getAll('users');
+      const lower = rawAssign.toLowerCase();
+      const byEmail = allUsers.find(u => String(u.email || '').toLowerCase() === lower);
+      const byName  = allUsers.find(u => String(u.name  || '').toLowerCase() === lower);
+      if (byEmail) resolvedAssignee = Number(byEmail.id);
+      else if (byName) resolvedAssignee = Number(byName.id);
+      // If we couldn't resolve, leave blank so assignment rules can take over
+    }
+  }
+
+  // Normalize phone — strip Excel artefacts (leading apostrophe used to force text)
+  const cleanPhone = String(p.phone || '').trim().replace(/^'/, '');
+  const cleanWA    = String(p.whatsapp || cleanPhone || '').trim().replace(/^'/, '');
+
   let base = {
-    name: p.name,
-    email: p.email || '',
-    phone: p.phone || '',
-    whatsapp: p.whatsapp || p.phone || '',
+    name: String(p.name).trim(),
+    email: String(p.email || '').trim(),
+    phone: cleanPhone,
+    whatsapp: cleanWA,
     source: p.source || 'manual',
     source_ref: p.source_ref || '',
     product_id: p.product_id || '',
     status_id: p.status_id || (await _newStatusId()),
-    assigned_to: p.assigned_to || me.id,
+    assigned_to: resolvedAssignee || me.id,
     city: p.city || '',
     tags: p.tags || '',
     notes: p.notes || '',
