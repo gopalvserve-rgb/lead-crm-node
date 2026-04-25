@@ -55,6 +55,10 @@ async function apiRaw(fn, ...args) {
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
       refreshNotifs();
+      // Silent background sweep on each app launch: pick up any recordings
+      // that were missed (app was killed, network blip, etc.). Lead-only,
+      // no toasts unless something needs the user's action.
+      setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
   } else {
     renderLogin();
@@ -3088,84 +3092,98 @@ window.onLeadCRMCallEvent = function (event, number) {
 };
 
 /**
- * Open the after-call update modal + auto-sync the single recording for THIS
- * call (filename matches dialed phone, modified after call started). The
- * modal stays open while we look — when the file lands we splice in an
- * <audio> player so the user can hear it before saving the update.
+ * Open the after-call update modal — purely for manual remark + status entry.
+ * Recording match + upload happens silently in the background; the user just
+ * fills in their note and saves. The recording will be linked to the lead by
+ * the time they look at the lead detail again.
  */
 async function openAfterCallModalWithRecording(lead, callContext) {
   await openAfterCallModal(lead);
+  // Fire the silent background sync — runs independently while the user types.
+  if (window.LeadCRMNative && typeof LeadCRMNative.syncCallRecording === 'function') {
+    triggerBackgroundRecordingSync(lead, callContext);
+  }
+}
 
-  // Only the Android app can sync — on web we just open the modal.
-  if (!window.LeadCRMNative || typeof LeadCRMNative.syncCallRecording !== 'function') return;
-
-  const modal = document.querySelector('.after-call-modal .modal');
-  if (!modal) return;
-  const status = h('div', { class: 'modal-rec-status' },
-    h('span', { class: 'rec-spinner' }, '⏳'),
-    h('span', {}, 'Looking for the call recording…')
-  );
-  // Insert right before the Save/Skip actions row
-  const actions = modal.querySelector('.actions');
-  if (actions) modal.insertBefore(status, actions); else modal.appendChild(status);
-
-  // Wait 5s for the OS recorder to finalise the file, then trigger native sync.
-  await new Promise(r => setTimeout(r, 5000));
-
-  const cbName = '__cbCallRec_' + Math.random().toString(36).slice(2, 10);
-  const result = await new Promise(resolve => {
-    window[cbName] = (ok, detail) => {
-      delete window[cbName];
-      resolve({ ok, detail });
+/**
+ * Background: wait 5s for the OS recorder to finalise the file, then ask the
+ * native bridge to find the matching recording and upload it. No spinners,
+ * no audio players in the modal — the user only sees the remark/status form.
+ *
+ * Surfaces problems via toast only when there's something the user can fix
+ * (folder not picked, folder unreachable). "No recording found" is silent —
+ * it usually means the user hasn't enabled call recording on their dialer,
+ * which is their choice.
+ */
+/**
+ * Silent background sweep: walks the recording folder, uploads any new
+ * lead-matched files since the last sweep. No toasts unless the user
+ * needs to act (folder not picked, folder unreachable). Used on app
+ * launch so missed-call recordings get picked up automatically.
+ */
+async function silentBackgroundSync() {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
+  try {
+    const folder = LeadCRMNative.getRecordingFolder();
+    if (!folder) return; // user hasn't picked a folder yet — don't nag here
+    // Save a stash of toast() so we can suppress info-toasts during the silent run
+    const realToast = window.toast;
+    let suppressedSuccess = 0;
+    window.toast = function (msg, kind) {
+      // only let warnings through
+      if (kind === 'warn' || kind === 'err') return realToast(msg, kind);
+      if (typeof msg === 'string' && msg.startsWith('✅')) suppressedSuccess++;
     };
     try {
-      LeadCRMNative.syncCallRecording(
-        callContext.dialedPhone, lead.id ? String(lead.id) : '',
-        Math.max(0, callContext.startedAt - 60_000),
-        location.origin, CRM.token || '', cbName
-      );
-    } catch (e) {
-      delete window[cbName];
-      resolve({ ok: false, detail: e.message });
+      await syncRecordings({});
+    } finally {
+      window.toast = realToast;
     }
-  });
-
-  status.innerHTML = '';
-  if (result.ok) {
-    let recId = null;
-    try {
-      const parsed = JSON.parse(result.detail);
-      if (parsed && parsed.id) recId = parsed.id;
-    } catch (_) {}
-    status.appendChild(h('div', { class: 'rec-status-row ok' },
-      h('span', {}, '✅'), h('span', {}, ' Recording synced')
-    ));
-    if (recId) {
-      const audio = document.createElement('audio');
-      audio.controls = true;
-      audio.preload = 'metadata';
-      audio.src = '/api/recordings/' + recId + '/audio?token=' + encodeURIComponent(CRM.token || '');
-      audio.style.width = '100%';
-      audio.style.marginTop = '.5rem';
-      status.appendChild(audio);
+    if (suppressedSuccess) {
+      console.log('[leadcrm] background sweep done, ' + suppressedSuccess + ' new');
     }
-    if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
-  } else {
-    const errCode = String(result.detail || '');
-    let msg;
-    if (errCode === 'no_folder') {
-      msg = 'Pick your call-recording folder in Dialer → Settings to enable sync.';
-    } else if (errCode === 'no_match') {
-      msg = 'No recording found for this call. Make sure call recording is turned on in your phone\'s dialer.';
-    } else if (errCode === 'folder_unreachable') {
-      msg = 'Folder is no longer accessible. Re-pick it in Dialer → Settings.';
-    } else {
-      msg = 'Could not sync recording: ' + errCode;
-    }
-    status.appendChild(h('div', { class: 'rec-status-row warn' },
-      h('span', {}, '⚠️'), h('span', {}, ' ' + msg)
-    ));
+  } catch (e) {
+    console.warn('[leadcrm] silent sweep error:', e);
   }
+}
+
+function triggerBackgroundRecordingSync(lead, callContext) {
+  setTimeout(async () => {
+    const cbName = '__cbBgRec_' + Math.random().toString(36).slice(2, 10);
+    const result = await new Promise(resolve => {
+      window[cbName] = (ok, detail) => {
+        delete window[cbName];
+        resolve({ ok, detail });
+      };
+      try {
+        LeadCRMNative.syncCallRecording(
+          callContext.dialedPhone, lead.id ? String(lead.id) : '',
+          Math.max(0, callContext.startedAt - 60_000),
+          location.origin, CRM.token || '', cbName
+        );
+      } catch (e) {
+        delete window[cbName];
+        resolve({ ok: false, detail: e.message });
+      }
+    });
+
+    if (result.ok) {
+      console.log('[leadcrm] bg recording sync ok');
+      // Tiny success toast — non-intrusive
+      toast('📼 Recording linked to ' + (lead.name || 'lead'));
+      if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+    } else {
+      const code = String(result.detail || '');
+      if (code === 'no_folder') {
+        toast('Pick recordings folder in Dialer → Settings to enable auto-sync', 'warn');
+      } else if (code === 'folder_unreachable') {
+        toast('Recordings folder no longer accessible — re-pick it in Settings', 'warn');
+      } else {
+        // 'no_match' / network errors / etc — log but don't bother the user
+        console.warn('[leadcrm] bg sync skipped:', code);
+      }
+    }
+  }, 5000);
 }
 
 // Shared-intent handler — when user shares a phone number into the app
