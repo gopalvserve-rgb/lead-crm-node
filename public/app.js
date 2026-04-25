@@ -423,7 +423,8 @@ VIEWS.leads = async (view) => {
     selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to),
     selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup),
     h('button', { class: 'btn', onclick: loadLeads }, '🔎'),
-    h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset' }, '✕'),
+    h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
+    h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
     h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
     h('button', { class: 'btn ghost', onclick: openBulkUpload, title: 'Upload CSV' }, '⬆️'),
     h('button', { class: 'btn ghost', onclick: exportCSV, title: 'Export CSV' }, '⬇️'),
@@ -3338,9 +3339,118 @@ function promptSaveAsLead(number) {
 
 /* ---------------- Notifications + follow-up popup ---------------- */
 let followupPollTimer = null;
+let newLeadPollTimer = null;
 function startFollowupPolling() {
   if (followupPollTimer) clearInterval(followupPollTimer);
   followupPollTimer = setInterval(refreshNotifs, 60_000);
+  // Poll for new leads every 30s — fires a popup + toast when one arrives
+  if (newLeadPollTimer) clearInterval(newLeadPollTimer);
+  newLeadPollTimer = setInterval(checkNewLeads, 30_000);
+  // Also fire an immediate check so the baseline ID is set
+  checkNewLeads();
+}
+
+/**
+ * Refresh the Leads listing. Re-fetches without leaving the page,
+ * spins the icon while loading, and surfaces a toast when done.
+ */
+async function refreshLeads() {
+  const btn = document.getElementById('btn-refresh-leads');
+  if (btn) { btn.classList.add('spinning'); btn.disabled = true; }
+  try {
+    await loadLeads();
+    // Update baseline so the new-lead poller doesn't re-fire for leads
+    // we just pulled in.
+    const list = (CRM.cache.lastLeads || []);
+    if (list.length) CRM._lastSeenLeadId = Math.max(...list.map(l => Number(l.id) || 0));
+    toast('🔄 Leads refreshed (' + list.length + ')');
+  } catch (e) { toast(e.message, 'err'); }
+  finally {
+    if (btn) { btn.classList.remove('spinning'); btn.disabled = false; }
+  }
+}
+
+/**
+ * Background poller — checks every 30s for new leads with id > last seen.
+ * Shows a popup + toast when a new lead arrives. Auto-pulls them into the
+ * leads listing if it's currently visible.
+ */
+async function checkNewLeads() {
+  if (!CRM.user) return;
+  try {
+    const d = await api('api_leads_list', { limit: 5 });
+    const leads = (d && (d.leads || d)) || [];
+    if (!leads.length) return;
+    const newest = Math.max(...leads.map(l => Number(l.id) || 0));
+    const baseline = Number(CRM._lastSeenLeadId || 0);
+    if (!baseline) {
+      // First poll — set baseline silently
+      CRM._lastSeenLeadId = newest;
+      return;
+    }
+    if (newest > baseline) {
+      const fresh = leads
+        .filter(l => Number(l.id) > baseline)
+        .sort((a, b) => Number(a.id) - Number(b.id));
+      CRM._lastSeenLeadId = newest;
+      if (fresh.length === 0) return;
+      // Show toast + system notification (if granted) + in-app popup
+      const summary = fresh.length === 1
+        ? `🎯 New lead: ${fresh[0].name || fresh[0].phone || 'Unknown'}`
+        : `🎯 ${fresh.length} new leads received`;
+      toast(summary);
+      try {
+        if ('Notification' in window && Notification.permission === 'granted') {
+          fresh.slice(0, 3).forEach(l => new Notification('🎯 New lead', {
+            body: `${l.name || ''} ${l.phone || ''}\nSource: ${l.source || '—'}`,
+            tag: 'lead-' + l.id
+          }));
+        } else if ('Notification' in window && Notification.permission === 'default') {
+          // Ask once on first arrival
+          Notification.requestPermission().catch(() => {});
+        }
+      } catch (_) {}
+      popupNewLeads(fresh);
+      // If the user is on the leads page, refresh inline
+      if (location.hash === '#/leads' && typeof loadLeads === 'function') {
+        loadLeads();
+      }
+    }
+  } catch (e) { console.warn('[leadcrm] new-lead poll error:', e.message); }
+}
+
+let _newLeadPopupShown = false;
+function popupNewLeads(leads) {
+  if (_newLeadPopupShown) return;
+  _newLeadPopupShown = true;
+  const close = () => { modal.remove(); _newLeadPopupShown = false; };
+  const modal = h('div', { class: 'modal-backdrop popup-new-lead', onclick: ev => { if (ev.target === modal) close(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '🎯 ' + (leads.length === 1 ? 'New lead' : leads.length + ' new leads')),
+        h('button', { class: 'btn icon', onclick: close }, '✕')
+      ),
+      h('ul', { class: 'new-lead-list' }, ...leads.slice(0, 6).map(l => h('li', {},
+        h('div', { class: 'new-lead-row' },
+          h('div', { class: 'nl-meta' },
+            h('div', {}, h('b', {}, l.name || '—')),
+            h('div', { class: 'muted' }, (l.phone || '') + ' · ' + (l.source || '—'))
+          ),
+          h('button', { class: 'btn sm primary', onclick: () => { close(); openLeadModal(l.id); } }, 'Open')
+        )
+      ))),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: close }, 'Dismiss'),
+        h('button', { class: 'btn primary', onclick: () => { close(); navigateTo('leads'); } }, 'See all leads')
+      )
+    )
+  );
+  document.body.appendChild(modal);
+  // Try to play a soft notification ping (browser-policy permitting)
+  try {
+    const audio = new Audio('data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjQ1LjEwMAAAAAAAAAAAAAAA//tQwAAACQAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAAEAAABIADAwMDAwMDAwMDAwMDAwMDAwMDA');
+    audio.volume = 0.3; audio.play().catch(() => {});
+  } catch (_) {}
 }
 async function refreshNotifs() {
   try {

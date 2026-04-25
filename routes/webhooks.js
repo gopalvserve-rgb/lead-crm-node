@@ -147,13 +147,60 @@ async function websiteHook(req, res) {
     else if (Array.isArray(b.labels)) tags = b.labels.join(',');
     else if (b.labels) tags = String(b.labels);
 
+    // ---- Google Ads ValueTrack normalisation ----------------------
+    // Landing pages like:  ?campaign={campaignid}&network={network}&keyword={keyword}&gclid={gclid}
+    // map directly into our utm_* + source_ref + meta_json columns.
+    const campaignId   = b.campaign || b.campaign_id || b.campaignid || b.utm_campaign || '';
+    const campaignName = b.campaign_name || b.campaignname || '';
+    const network      = b.network || b.utm_medium || '';   // search | content | youtube | display
+    const keyword      = b.keyword || b.utm_term || '';
+    const gclid        = b.gclid || b.clickid || b.click_id || '';
+    const adgroupid    = b.adgroupid || b.adgroup_id || '';
+    const matchtype    = b.matchtype || b.match_type || '';
+    const device       = b.device || '';
+    const placement    = b.placement || '';
+    const adposition   = b.adposition || b.ad_position || '';
+    const utmSource    = b.utm_source || (gclid ? 'google' : '');
+
+    // If we received Google Ads params, force source = "Google Ads" so it shows
+    // up cleanly in reports/segmentation. Manual b.source overrides.
+    const source = b.source || (gclid || campaignId ? 'Google Ads' : 'Website');
+
+    // Build meta_json — keep every Google Ads param + UTM aliases + landing URL
+    const adsMeta = {};
+    if (campaignId)   adsMeta.campaign_id   = campaignId;
+    if (campaignName) adsMeta.campaign_name = campaignName;
+    if (network)      adsMeta.network       = network;
+    if (keyword)      adsMeta.keyword       = keyword;
+    if (gclid)        adsMeta.gclid         = gclid;
+    if (adgroupid)    adsMeta.adgroup_id    = adgroupid;
+    if (matchtype)    adsMeta.match_type    = matchtype;
+    if (device)       adsMeta.device        = device;
+    if (placement)    adsMeta.placement     = placement;
+    if (adposition)   adsMeta.ad_position   = adposition;
+    if (utmSource)    adsMeta.utm_source    = utmSource;
+    if (network)      adsMeta.utm_medium    = network;
+    if (campaignId)   adsMeta.utm_campaign  = campaignId;
+    if (keyword)      adsMeta.utm_term      = keyword;
+    if (b.utm_content)  adsMeta.utm_content  = b.utm_content;
+    if (b.landing_page) adsMeta.landing_page = b.landing_page;
+    if (b.referrer)     adsMeta.referrer     = b.referrer;
+
+    // Tag the lead with the campaign name (or ID) so it's filterable
+    if (campaignName && !tags.includes(campaignName)) {
+      tags = tags ? tags + ',' + campaignName : campaignName;
+    }
+    if (network && !tags.toLowerCase().includes(network.toLowerCase())) {
+      tags = tags ? tags + ',' + network : network;
+    }
+
     const lead = {
       name:      b.name || '',
       phone:     b.phone || b.mobile || '',
       whatsapp:  b.whatsapp || b.phone || '',
       email:     b.email || '',
-      source:    b.source || 'Website',
-      source_ref:b.source_ref || b.utm_campaign || '',
+      source,
+      source_ref: b.source_ref || campaignName || campaignId || '',
       product:   b.product || '',
       notes:     b.notes || b.message || '',
       city:      b.city || '',
@@ -162,15 +209,11 @@ async function websiteHook(req, res) {
       company:   b.company || '',
       address:   b.address || '',
       pincode:   b.pincode || b.zip || '',
-      tags:      tags,
-      value:     b.value != null ? Number(b.value) : null,
+      tags,
+      value:     (b.value != null && b.value !== '' && !isNaN(Number(b.value))) ? Number(b.value) : null,
       currency:  b.currency || '',
       next_followup_at: b.next_followup_at || null,
-      meta_json: b.meta || (b.utm_source || b.utm_campaign ? {
-        utm_source: b.utm_source, utm_medium: b.utm_medium,
-        utm_campaign: b.utm_campaign, utm_term: b.utm_term, utm_content: b.utm_content,
-        landing_page: b.landing_page, referrer: b.referrer
-      } : null),
+      meta_json: Object.keys(adsMeta).length ? Object.assign({}, b.meta || {}, adsMeta) : (b.meta || null),
       created_at: db.nowIso(),
       updated_at: db.nowIso()
     };

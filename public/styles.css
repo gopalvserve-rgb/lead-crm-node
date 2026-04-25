@@ -1024,3 +1024,40 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
 .toggle-row input[type=checkbox] {
   width: 18px; height: 18px; accent-color: var(--brand, #6366f1);
 }
+
+/* ---------------- Refresh button ---------------- */
+#btn-refresh-leads.spinning {
+  animation: spin-360 .8s linear infinite;
+  pointer-events: none;
+  opacity: .7;
+}
+@keyframes spin-360 { to { transform: rotate(360deg); } }
+
+/* ---------------- New-lead popup ---------------- */
+.popup-new-lead .modal {
+  border-top: 4px solid #10b981;
+  max-width: 480px;
+}
+.popup-new-lead .modal-head h3 {
+  color: #10b981;
+}
+.new-lead-list {
+  list-style: none; padding: 0; margin: .5rem 0 1rem;
+  max-height: 380px; overflow-y: auto;
+}
+.new-lead-list li {
+  padding: .65rem 0; border-bottom: 1px solid #f1f5f9;
+}
+.new-lead-list li:last-child { border-bottom: none; }
+.new-lead-row {
+  display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+}
+.nl-meta { flex: 1; min-width: 0; line-height: 1.4; }
+.nl-meta .muted { font-size: .82rem; }
+
+@media (max-width: 780px) {
+  .popup-new-lead .modal {
+    border-top-left-radius: 22px;
+    border-top-right-radius: 22px;
+  }
+}
