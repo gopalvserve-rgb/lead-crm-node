@@ -384,18 +384,53 @@ VIEWS.dashboard = async (view) => {
   const grid = h('div', { class: 'dash-grid' });
   view.appendChild(grid);
 
-  // Upcoming follow-ups card
-  const allDue = [...(due.overdue || []), ...(due.due_today || []), ...(due.upcoming || [])].slice(0, 8);
-  const fuCard = h('div', { class: 'card' },
-    h('h3', {}, '⏰ Upcoming follow-ups'),
-    allDue.length === 0
-      ? h('p', { class: 'muted' }, 'No follow-ups scheduled.')
-      : h('ul', { class: 'fu-dash-list' }, ...allDue.map(f => h('li', {},
-          h('div', { class: 'fu-name', onclick: () => openLeadModal(f.lead_id) }, f.lead_name || '—'),
-          h('div', { class: 'fu-phone muted' }, f.lead_phone || ''),
-          h('div', { class: 'fu-due ' + (new Date(f.due_at) < new Date() ? 'overdue' : '') }, fmtDate(f.due_at, 'relative'))
-        )))
-  );
+  // Follow-ups card — three tabs in one box: Upcoming / Overdue / Due today.
+  // Renders the same row markup for each list so the user has a consistent
+  // glance at upcoming work no matter which tab they're on.
+  const fuCard = h('div', { class: 'card fu-tabs-card' });
+  const tabs = [
+    { key: 'upcoming',  label: 'Upcoming',  rows: due.upcoming || [] },
+    { key: 'overdue',   label: 'Overdue',   rows: due.overdue  || [] },
+    { key: 'due_today', label: 'Due today', rows: due.due_today || [] }
+  ];
+  const tabBar = h('div', { class: 'fu-tabbar' });
+  const tabBody = h('div', { class: 'fu-tabbody' });
+  function renderFuTab(activeKey) {
+    [...tabBar.children].forEach(btn => btn.classList.toggle('active', btn.dataset.key === activeKey));
+    const tab = tabs.find(t => t.key === activeKey);
+    tabBody.innerHTML = '';
+    if (!tab.rows.length) {
+      tabBody.appendChild(h('p', { class: 'muted', style: { padding: '.5rem' } },
+        activeKey === 'overdue' ? 'No overdue follow-ups. 🎉' :
+        activeKey === 'due_today' ? 'Nothing due today.' :
+        'No upcoming follow-ups.'));
+      return;
+    }
+    tabBody.appendChild(h('ul', { class: 'fu-dash-list' },
+      ...tab.rows.slice(0, 8).map(f => h('li', {},
+        h('div', { class: 'fu-name', onclick: () => openLeadModal(f.lead_id) }, f.lead_name || '—'),
+        h('div', { class: 'fu-phone muted' }, f.lead_phone || ''),
+        h('div', { class: 'fu-due ' + (new Date(f.due_at) < new Date() ? 'overdue' : '') }, fmtDate(f.due_at, 'relative'))
+      ))
+    ));
+    if (tab.rows.length > 8) {
+      tabBody.appendChild(h('div', { class: 'muted', style: { fontSize: '.8rem', textAlign: 'center', padding: '.4rem' } },
+        '+ ' + (tab.rows.length - 8) + ' more — see Follow-ups'));
+    }
+  }
+  tabs.forEach(t => tabBar.appendChild(
+    h('button', { class: 'fu-tab' + (t.key === 'upcoming' ? ' active' : ''), 'data-key': t.key,
+      onclick: () => renderFuTab(t.key) },
+      t.label, t.rows.length ? h('span', { class: 'fu-tab-count' }, t.rows.length) : null
+    )
+  ));
+  fuCard.appendChild(h('div', { class: 'fu-tabs-head' },
+    h('h3', { style: { margin: 0 } }, '⏰ Follow-ups'),
+    h('a', { href: '#/followups', class: 'btn sm ghost' }, 'See all →')
+  ));
+  fuCard.appendChild(tabBar);
+  fuCard.appendChild(tabBody);
+  renderFuTab('upcoming');
   grid.appendChild(fuCard);
 
   // Pie chart — leads by status
@@ -2252,14 +2287,45 @@ VIEWS.followups = async (view) => {
     );
     if (!rows.length) { wrap.appendChild(h('p', { class: 'muted' }, 'Nothing here.')); view.appendChild(wrap); return; }
     const tbl = h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, h('th', {}, 'Lead'), h('th', {}, 'Phone'), h('th', {}, 'Due'), h('th', {}, 'Note'), h('th', {}))),
-      h('tbody', {}, ...rows.map(r => h('tr', {},
-        h('td', {}, r.lead_name || ''),
-        h('td', {}, r.lead_phone || ''),
-        h('td', { class: klass === 'err' ? 'overdue' : '' }, fmtDate(r.due_at)),
-        h('td', {}, r.note || ''),
-        h('td', {}, h('button', { class: 'btn sm', onclick: async () => { await api('api_followup_done', r.id); toast('Done'); navigateTo('followups'); } }, '✓ Done'))
-      )))
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Lead'),
+        h('th', {}, 'Phone'),
+        h('th', {}, 'Due'),
+        h('th', {}, 'Latest remark'),
+        h('th', {}, 'Note'),
+        h('th', { style: { textAlign: 'right' } }, 'Actions')
+      )),
+      h('tbody', {}, ...rows.map(r => {
+        const phone = String(r.lead_phone || '').trim();
+        const telHref = phone ? 'tel:' + phone.replace(/[^\d+]/g, '') : null;
+        const waHref  = phone ? 'https://wa.me/' + phone.replace(/[^\d]/g, '') : null;
+        return h('tr', {},
+          h('td', {},
+            h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')
+          ),
+          h('td', {}, phone || ''),
+          h('td', { class: klass === 'err' ? 'overdue' : '' }, fmtDate(r.due_at)),
+          h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
+            r.latest_remark
+              ? h('span', {}, String(r.latest_remark).slice(0, 120) + (String(r.latest_remark).length > 120 ? '…' : ''))
+              : h('span', { class: 'muted' }, '—')
+          ),
+          h('td', { class: 'muted' }, r.note || ''),
+          h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+            telHref ? h('a', { class: 'btn sm primary', href: telHref, title: 'Call ' + phone }, '📞 Call') : null,
+            waHref  ? h('a', { class: 'btn sm ghost', href: waHref, target: '_blank', rel: 'noopener',
+              style: { marginLeft: '.3rem' }, title: 'WhatsApp' }, '💬') : null,
+            h('button', { class: 'btn sm', style: { marginLeft: '.3rem' },
+              onclick: () => openLeadModal(r.lead_id), title: 'Open lead' }, '✎'),
+            r.id ? h('button', { class: 'btn sm', style: { marginLeft: '.3rem' },
+              onclick: async () => {
+                try { await api('api_followup_done', r.id); toast('Marked done'); navigateTo('followups'); }
+                catch (e) { toast(e.message, 'err'); }
+              }
+            }, '✓ Done') : null
+          )
+        );
+      }))
     ));
     wrap.appendChild(tbl);
     view.appendChild(wrap);
@@ -4896,25 +4962,66 @@ async function refreshNotifs() {
     if ((d.counts.due_today || 0) + (d.counts.overdue || 0) > 0) popupFollowupDue(d);
   } catch (_) {}
 }
+
+// Track which follow-ups we've already fired the popup for so each new reminder
+// pops exactly once when its time arrives, instead of either spamming or
+// firing only once per session.
+const _firedFollowupIds = new Set();
 let _popupShown = false;
+
 function popupFollowupDue(d) {
+  // Filter the urgent items down to ones we have NOT yet shown a popup for.
+  // Use the followup id when available, otherwise lead_id+due_at as a stable key.
+  const all = [...(d.overdue || []), ...(d.due_today || [])];
+  const fresh = all.filter(f => {
+    const key = f.id ? 'fu:' + f.id : 'lead:' + f.lead_id + '@' + f.due_at;
+    if (_firedFollowupIds.has(key)) return false;
+    _firedFollowupIds.add(key);
+    return true;
+  });
+  if (!fresh.length) return;
+
+  // Browser-level Notification (desktop / Android lock screen) — request
+  // permission once on first follow-up arrival; subsequent fires use the
+  // already-granted permission silently.
+  try {
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        fresh.slice(0, 3).forEach(f => new Notification('⏰ Follow-up due', {
+          body: `${f.lead_name || ''} ${f.lead_phone ? '· ' + f.lead_phone : ''}\nDue: ${new Date(f.due_at).toLocaleString()}` +
+            (f.latest_remark ? `\n${String(f.latest_remark).slice(0, 80)}` : ''),
+          tag: 'fu-' + (f.id || (f.lead_id + '-' + f.due_at)),
+          requireInteraction: true
+        }));
+      } else if (Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+    }
+  } catch (_) {}
+
   if (_popupShown) return;
-  const urgent = [...(d.overdue || []), ...(d.due_today || [])].slice(0, 5);
-  if (!urgent.length) return;
+  const urgent = fresh.slice(0, 5);
   _popupShown = true;
   const close = () => { modal.remove(); _popupShown = false; };
   const modal = h('div', { class: 'modal-backdrop popup-followup' },
     h('div', { class: 'modal' },
       h('div', { class: 'modal-head' }, h('h3', {}, '⏰ Follow-ups due'), h('button', { class: 'btn icon', onclick: close }, '✕')),
-      h('ul', { class: 'followup-list' }, ...urgent.map(f => h('li', {},
-        h('b', {}, f.lead_name || '—'), ' — ', f.lead_phone || '',
-        h('div', { class: 'muted' }, 'Due: ', fmtDate(f.due_at)),
-        f.note ? h('div', {}, f.note) : null,
-        h('div', { class: 'actions' },
-          h('button', { class: 'btn sm', onclick: async () => { await api('api_followup_done', f.id); toast('Marked done'); refreshNotifs(); } }, '✓ Done'),
-          h('button', { class: 'btn sm ghost', onclick: () => { close(); navigateTo('leads'); setTimeout(() => openLeadModal(f.lead_id), 300); } }, 'Open lead')
-        )
-      ))),
+      h('ul', { class: 'followup-list' }, ...urgent.map(f => {
+        const phone = String(f.lead_phone || '').trim();
+        const telHref = phone ? 'tel:' + phone.replace(/[^\d+]/g, '') : null;
+        return h('li', {},
+          h('b', {}, f.lead_name || '—'), ' — ', f.lead_phone || '',
+          h('div', { class: 'muted' }, 'Due: ', fmtDate(f.due_at)),
+          f.latest_remark ? h('div', { class: 'fu-latest-remark', style: { marginTop: '.25rem' } },
+            '💬 ', String(f.latest_remark).slice(0, 160) + (String(f.latest_remark).length > 160 ? '…' : '')) : null,
+          f.note ? h('div', {}, f.note) : null,
+          h('div', { class: 'actions' },
+            telHref ? h('a', { class: 'btn sm primary', href: telHref }, '📞 Call') : null,
+            f.id ? h('button', { class: 'btn sm', onclick: async () => { await api('api_followup_done', f.id); toast('Marked done'); refreshNotifs(); } }, '✓ Done') : null,
+            h('button', { class: 'btn sm ghost', onclick: () => { close(); navigateTo('leads'); setTimeout(() => openLeadModal(f.lead_id), 300); } }, 'Open lead')
+          )
+        );
+      })),
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: close }, 'Later'),
         h('button', { class: 'btn primary', onclick: () => { close(); navigateTo('followups'); } }, 'See all')

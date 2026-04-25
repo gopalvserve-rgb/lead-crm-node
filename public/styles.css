@@ -1217,6 +1217,37 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   border: 1px solid #d0d3f9;
 }
 
+/* Dashboard follow-up 3-tab card */
+.fu-tabs-card { display: flex; flex-direction: column; }
+.fu-tabs-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: .35rem;
+}
+.fu-tabbar {
+  display: flex; gap: .25rem; padding: .25rem;
+  background: var(--bg-alt); border-radius: 8px;
+  margin-bottom: .65rem;
+}
+.fu-tab {
+  flex: 1; display: flex; align-items: center; justify-content: center; gap: .35rem;
+  padding: .5rem .35rem; border: none; background: transparent;
+  border-radius: 6px; cursor: pointer; font-size: .85rem; font-weight: 500;
+  color: var(--muted, #64748b); transition: background .15s, color .15s;
+}
+.fu-tab:hover { background: rgba(99,102,241,.06); }
+.fu-tab.active { background: #fff; color: var(--brand); box-shadow: 0 1px 2px rgba(15,23,42,.06); }
+.fu-tab-count {
+  background: var(--brand-soft, #eef2ff); color: var(--brand);
+  font-size: .68rem; padding: .1rem .42rem; border-radius: 999px;
+  font-weight: 700;
+}
+.fu-tab.active .fu-tab-count { background: var(--brand); color: #fff; }
+.fu-tabbody { min-height: 60px; }
+.fu-latest-remark {
+  font-size: .82rem; color: var(--text, #334155);
+  max-width: 280px; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* Facebook integration admin page */
 .fb-admin .card { margin-bottom: 1rem; }
 .fb-trio {

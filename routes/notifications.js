@@ -51,6 +51,22 @@ async function api_notifications_mine(token) {
     });
   });
 
+  // Attach the latest remark per lead — used by the Follow-ups list and the
+  // dashboard popup so the user sees context without opening the lead.
+  const allRemarks = await db.getAll('remarks');
+  const latestByLead = {};
+  allRemarks.forEach(r => {
+    const lid = Number(r.lead_id);
+    if (!lid) return;
+    const cur = latestByLead[lid];
+    if (!cur || String(r.created_at || '') > String(cur.created_at || '')) latestByLead[lid] = r;
+  });
+  items.forEach(row => {
+    const lr = latestByLead[Number(row.lead_id)];
+    row.latest_remark = lr ? (lr.remark || '') : '';
+    row.latest_remark_at = lr ? (lr.created_at || null) : null;
+  });
+
   const overdue = [], due_today = [], upcoming = [];
   items.forEach(row => {
     const due = String(row.due_at);
