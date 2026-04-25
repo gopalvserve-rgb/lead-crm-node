@@ -66,7 +66,16 @@ app.post('/api', async (req, res) => {
   const { fn, args } = req.body || {};
   if (!fn || !API[fn]) return res.status(404).json({ error: 'Unknown function: ' + fn });
   try {
-    const result = await API[fn](...(args || []));
+    // Pass request metadata to api_login so it can fingerprint the device
+    // for the "new device login" notification.
+    const finalArgs = (args || []).slice();
+    if (fn === 'api_login') {
+      finalArgs.push({
+        ua: String(req.headers['user-agent'] || ''),
+        ip: String(req.headers['x-forwarded-for'] || req.connection?.remoteAddress || '').split(',')[0].trim()
+      });
+    }
+    const result = await API[fn](...finalArgs);
     res.json({ ok: true, result });
   } catch (e) {
     console.error('[api]', fn, e.message, e.stack?.split('\n').slice(0, 5).join('\n'));
@@ -164,6 +173,10 @@ app.get('/hook/whatsapp',  webhooks.whatsappVerify);
 app.post('/hook/whatsapp', webhooks.whatsappEvent);
 app.post('/hook/website',  webhooks.websiteHook);
 app.post('/hook/other',    webhooks.otherHook);
+
+// Facebook OAuth callback — server-side flow that bypasses the JS SDK.
+// User clicks Connect → redirected here with code → we fetch pages → redirect back.
+app.get('/fb/auth/callback', routes.fb.expressOAuthCallback);
 
 // Lead sample CSV + website API docs
 app.get('/api/docs', (req, res) => {

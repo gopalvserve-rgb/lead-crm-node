@@ -333,10 +333,131 @@ async function _pageContextForWebhook(pageId) {
   };
 }
 
+// =====================================================================
+// Server-side OAuth flow — bypasses the FB JS SDK entirely.
+// User clicks "Connect" → redirected to facebook.com → logs in → FB
+// redirects to our /fb/auth/callback with a `code` → server exchanges for
+// access token → fetches pages → persists everything → redirects user
+// back to /#/admin/fb. No popup, no SDK, no browser permission needed.
+// =====================================================================
+
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+
+const FB_OAUTH_SCOPE = [
+  'public_profile',
+  'pages_show_list',
+  'pages_manage_metadata',
+  'pages_read_engagement',
+  'pages_read_user_content',
+  'pages_manage_ads',
+  'leads_retrieval',
+  'ads_management',
+  'ads_read',
+  'business_management'
+].join(',');
+
+/**
+ * Frontend calls this. Returns a Facebook OAuth URL the user can navigate to.
+ * State token is signed with our JWT secret + 10-min expiry, carrying the
+ * admin's user_id so the callback knows who to attribute the connection to.
+ */
+async function api_fb_oauth_url(token, baseUrl) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const { app_id } = await _appCreds();
+  if (!app_id) throw new Error('Set Facebook Application ID first.');
+  const stateToken = jwt.sign({ uid: me.id, t: 'fb_oauth' }, JWT_SECRET, { expiresIn: '10m' });
+  // Use the configured BASE_URL or the URL the frontend told us.
+  const cfgBase = await db.getConfig('BASE_URL', '');
+  const origin = (cfgBase || baseUrl || '').replace(/\/+$/, '');
+  if (!origin) throw new Error('BASE_URL not configured. Set it in Admin → Company Settings.');
+  const redirectUri = origin + '/fb/auth/callback';
+  const params = new URLSearchParams({
+    client_id: app_id,
+    redirect_uri: redirectUri,
+    state: stateToken,
+    response_type: 'code',
+    auth_type: 'rerequest',
+    scope: FB_OAUTH_SCOPE
+  });
+  return {
+    auth_url: 'https://www.facebook.com/v19.0/dialog/oauth?' + params.toString(),
+    redirect_uri: redirectUri
+  };
+}
+
+/**
+ * Express handler — mounted at GET /fb/auth/callback by server.js.
+ * NOT an api_* function (uses real query params, not the /api dispatcher).
+ */
+async function expressOAuthCallback(req, res) {
+  const code = (req.query.code || '').toString();
+  const stateRaw = (req.query.state || '').toString();
+  const errMsg = (req.query.error_description || req.query.error || '').toString();
+  // We always end on the admin Facebook tab, with a flash param the SPA
+  // can show as a toast.
+  const adminUrl = '/#/admin/fb';
+  function done(flash) { return res.redirect(adminUrl + (flash ? '?fb=' + encodeURIComponent(flash) : '')); }
+
+  try {
+    if (errMsg) return done('error: ' + errMsg);
+    if (!code) return done('error: missing code');
+    let payload;
+    try { payload = jwt.verify(stateRaw, JWT_SECRET); }
+    catch (_) { return done('error: invalid state (link expired or tampered)'); }
+    if (payload.t !== 'fb_oauth' || !payload.uid) return done('error: bad state');
+
+    // Confirm the user is still an admin
+    const user = await db.findById('users', payload.uid);
+    if (!user || user.role !== 'admin') return done('error: not an admin');
+
+    // Exchange code for access token
+    const { app_id, app_secret } = await _appCreds();
+    const cfgBase = await db.getConfig('BASE_URL', '');
+    const origin = (cfgBase || (req.protocol + '://' + req.get('host'))).replace(/\/+$/, '');
+    const redirectUri = origin + '/fb/auth/callback';
+    const tokenJson = await _gget(
+      `${GRAPH}/oauth/access_token?client_id=${app_id}&client_secret=${app_secret}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}&code=${encodeURIComponent(code)}`
+    );
+    const shortToken = tokenJson.access_token;
+    if (!shortToken) return done('error: no token from Facebook');
+
+    // Long-lived token + fetch all pages (multi-tier — direct + Business Manager)
+    const longToken = await _longLived(shortToken);
+    const pages = await _fetchAllPages(longToken);
+
+    const existing = await _readPagesList();
+    const merged = pages.map(p => {
+      const prev = existing.find(e => String(e.page_id) === String(p.id));
+      return {
+        page_id: String(p.id),
+        page_name: p.name || '',
+        category: p.category || '',
+        access_token: p.access_token || '',
+        is_monitored: prev ? !!prev.is_monitored : false,
+        added_at: prev?.added_at || db.nowIso(),
+        last_seen_at: db.nowIso()
+      };
+    });
+    await _writePagesList(merged);
+    await db.setConfig('META_USER_TOKEN', longToken);
+    await db.setConfig('META_CONNECTED_AT', db.nowIso());
+    return done(`connected:${pages.length}`);
+  } catch (e) {
+    console.error('[fb oauth callback]', e);
+    return done('error: ' + e.message);
+  }
+}
+
 module.exports = {
   api_fb_connect, api_fb_disconnect, api_fb_status,
   api_fb_settings_get, api_fb_settings_set,
   api_fb_pages_list, api_fb_pages_refetch, api_fb_pages_toggle,
+  api_fb_oauth_url,
+  // exported for server.js to mount as a plain route
+  expressOAuthCallback,
   // exported for use inside webhooks.js
   _pageContextForWebhook
 };

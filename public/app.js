@@ -2976,13 +2976,14 @@ async function adminFb() {
   pagesCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Fetch / relist Facebook pages'));
   const pagesToolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem' } });
 
-  // "Connect with Facebook" — only shown when not connected
+  // "Connect with Facebook" — only shown when not connected.
+  // Uses the SERVER-SIDE OAuth flow now (no popup, no SDK, no permission needed).
   if (!status.connected) {
     pagesToolbar.appendChild(
-      h('button', { class: 'btn primary', onclick: connectFacebook }, '🔗 Connect with Facebook')
+      h('button', { class: 'btn primary', onclick: connectFacebookServerFlow }, '🔗 Connect with Facebook')
     );
     pagesToolbar.appendChild(h('span', { class: 'muted', style: { fontSize: '.85rem' } },
-      'Log in once and pick which pages to monitor below.'
+      'You\'ll be redirected to facebook.com to log in. Pick which pages to monitor here when you return.'
     ));
   } else {
     pagesToolbar.appendChild(
@@ -2992,7 +2993,7 @@ async function adminFb() {
       } }, '🔄 Fetch Facebook Pages')
     );
     pagesToolbar.appendChild(
-      h('button', { class: 'btn ghost', onclick: connectFacebook }, '🔁 Re-login (different account)')
+      h('button', { class: 'btn ghost', onclick: connectFacebookServerFlow }, '🔁 Re-login (different account)')
     );
     pagesToolbar.appendChild(
       h('button', { class: 'btn ghost', onclick: async () => {
@@ -3003,6 +3004,21 @@ async function adminFb() {
     );
   }
   pagesCard.appendChild(pagesToolbar);
+
+  // Show a flash message if we just came back from a server-side OAuth callback.
+  // The callback redirects us with ?fb=<status> in the URL; surface it as a toast.
+  try {
+    const flash = new URLSearchParams(location.search).get('fb');
+    if (flash) {
+      if (flash.startsWith('connected:')) {
+        const n = flash.split(':')[1];
+        toast(`Connected — ${n} page${n === '1' ? '' : 's'} fetched. Pick which to monitor below.`);
+      } else if (flash.startsWith('error:')) {
+        toast(decodeURIComponent(flash), 'err');
+      }
+      history.replaceState({}, '', location.pathname + location.hash);
+    }
+  } catch (_) { /* ignore */ }
 
   if (status.connected && pages.length === 0) {
     pagesCard.appendChild(h('p', { class: 'muted' },
@@ -4169,6 +4185,23 @@ function ensureFbSdkLoaded(appId) {
     document.body.appendChild(s);
   });
   return _fbSdkLoading;
+}
+
+/**
+ * Server-side OAuth flow (the new primary method).
+ * Redirects the whole browser to facebook.com — no popup, no SDK, no
+ * browser permission needed. Facebook redirects back to /fb/auth/callback,
+ * which fetches pages, persists, and redirects back to /#/admin/fb.
+ */
+async function connectFacebookServerFlow() {
+  toast('Redirecting to Facebook…');
+  try {
+    const { auth_url } = await api('api_fb_oauth_url', location.origin);
+    if (!auth_url) throw new Error('No auth URL returned');
+    location.href = auth_url;
+  } catch (e) {
+    toast(e.message || String(e), 'err');
+  }
 }
 
 function connectFacebook() {
