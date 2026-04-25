@@ -1815,9 +1815,26 @@ async function adminCompany() {
 async function adminApi() {
   const cfg = await api('api_admin_getConfig');
   const origin = location.origin;
-  const apiKey = cfg.WEBSITE_API_KEY || '(not set — set below)';
-  const curl = `curl -X POST '${origin}/hook/website' \\\n  -H 'x-api-key: ${apiKey}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name":"John Doe","phone":"+911234567890","email":"john@example.com","source":"Website","notes":"Demo request"}'`;
+  const apiKey = cfg.WEBSITE_API_KEY || '';
   const card = h('div', {});
+
+  function rebuildCurl(key) {
+    return `curl -X POST '${origin}/hook/website' \\\n  -H 'x-api-key: ${key || '<your-api-key>'}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"name":"John Doe","phone":"+911234567890","email":"john@example.com","source":"Website","notes":"Demo request"}'`;
+  }
+
+  const keyEl = h('code', { id: 'admin-api-key' }, apiKey || '(not generated yet)');
+  const curlEl = h('pre', { class: 'code-block', id: 'admin-curl' }, rebuildCurl(apiKey));
+
+  async function regenerate() {
+    if (!confirm('Generate a new API key? Anyone using the old key will stop working until you update them.')) return;
+    try {
+      const r = await api('api_admin_regenerateApiKey');
+      keyEl.textContent = r.key;
+      curlEl.textContent = rebuildCurl(r.key);
+      toast('New API key generated');
+    } catch (e) { toast(e.message, 'err'); }
+  }
+
   card.appendChild(h('div', { class: 'card' },
     h('h4', {}, '🌐 Website lead API'),
     h('p', { class: 'muted' }, 'Send leads from your website, landing page or any external system by POSTing to this endpoint. Leads go straight into the CRM and trigger your auto-assign rules + automations.'),
@@ -1827,13 +1844,14 @@ async function adminApi() {
     ),
     h('h5', {}, 'API key'),
     h('div', { class: 'api-endpoint' },
-      h('code', {}, apiKey),
-      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(apiKey); toast('Key copied'); } }, 'Copy key')
+      keyEl,
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(keyEl.textContent); toast('Key copied'); } }, 'Copy'),
+      h('button', { class: 'btn sm', onclick: regenerate }, '🔄 Regenerate')
     ),
-    h('p', { class: 'muted' }, 'Keep this key secret. Change it any time in SMTP/Duplicates tab or here:'),
+    h('p', { class: 'muted' }, 'Keep this key secret. If it ever leaks, click Regenerate to invalidate the old one. You can also set it manually below.'),
     configForm(cfg, ['WEBSITE_API_KEY']),
     h('h5', {}, 'Try it — cURL'),
-    h('pre', { class: 'code-block' }, curl),
+    curlEl,
     h('h5', {}, 'Sample CSV for bulk upload'),
     h('p', { class: 'muted' }, 'Download the template, fill in your leads, then use Leads → ⬆️ Upload to import.'),
     h('a', { class: 'btn primary', href: '/api/sample.csv', download: 'lead-crm-sample.csv' }, '⬇️ Download sample CSV')
