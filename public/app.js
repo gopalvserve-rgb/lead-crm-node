@@ -417,12 +417,12 @@ VIEWS.leads = async (view) => {
 
   const toolbar = h('div', { class: 'toolbar' },
     h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '',
-      onkeydown: ev => { if (ev.key === 'Enter') loadLeads(); } }),
+      onkeydown: ev => { if (ev.key === 'Enter') { CRM._leadsPage = 1; loadLeads({ page: 1 }); } } }),
     selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id),
     selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source),
     selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to),
     selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup),
-    h('button', { class: 'btn', onclick: loadLeads }, '🔎'),
+    h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
     h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
     h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
@@ -444,10 +444,13 @@ VIEWS.leads = async (view) => {
   view.appendChild(h('div', { class: 'table-wrap' }, h('table', { id: 'leads-table', class: 'leads-table' })));
   // Mobile card container (only visible on ≤ 780px via CSS)
   view.appendChild(h('div', { class: 'leads-mobile', id: 'leads-mobile' }));
+  // Pagination footer placeholder (loadLeads populates it)
+  view.appendChild(h('div', { id: 'leads-pagination', class: 'pagination-bar' }));
   // Mobile FAB
   view.appendChild(h('button', { class: 'fab', onclick: () => openLeadModal(), title: 'New lead' }, '+'));
 
-  await loadLeads();
+  CRM._leadsPage = 1;
+  await loadLeads({ page: 1 });
 };
 
 function toggleHeader(show) {
@@ -461,16 +464,25 @@ function clearFilters() {
   navigateTo('leads');
 }
 
-async function loadLeads() {
+async function loadLeads(opts) {
+  opts = opts || {};
+  const pageSize = Number(localStorage.getItem('crm_page_size') || 25);
+  const page = Number(opts.page || CRM._leadsPage || 1);
+  CRM._leadsPage = page;
   const filters = {
     q:           $('#f-q')?.value || undefined,
     status_id:   $('#f-status')?.value || undefined,
     source:      $('#f-source')?.value || undefined,
     assigned_to: $('#f-assigned')?.value || undefined,
-    followup:    $('#f-followup')?.value || undefined
+    followup:    $('#f-followup')?.value || undefined,
+    page,
+    page_size:   pageSize
   };
-  CRM.prefs.filters = filters;
-  localStorage.setItem('crm_filters', JSON.stringify(filters));
+  // Save user-visible filters only (not page/page_size — those are session state)
+  const savedFilters = Object.assign({}, filters);
+  delete savedFilters.page; delete savedFilters.page_size;
+  CRM.prefs.filters = savedFilters;
+  localStorage.setItem('crm_filters', JSON.stringify(savedFilters));
 
   try {
     const res = await api('api_leads_list', filters);
@@ -478,9 +490,82 @@ async function loadLeads() {
     CRM.cache.lastStatusCounts = res.status_count;
     renderLeadsTable(res.leads);
     renderStatusChips(res.status_count);
+    renderLeadsPagination({
+      total: res.total || res.leads.length,
+      page: res.page || 1,
+      pageSize: res.page_size || pageSize
+    });
   } catch (e) {
     $('#leads-table').innerHTML = `<tbody><tr><td colspan="99" class="error-box">${esc(e.message)}</td></tr></tbody>`;
   }
+}
+
+/** Pagination footer with page-size selector + Prev/Next + page numbers. */
+function renderLeadsPagination({ total, page, pageSize }) {
+  let bar = $('#leads-pagination');
+  if (!bar) {
+    bar = h('div', { id: 'leads-pagination', class: 'pagination-bar' });
+    const tableWrap = $('#leads-table')?.closest('.table-wrap');
+    if (tableWrap && tableWrap.parentNode) {
+      tableWrap.parentNode.insertBefore(bar, tableWrap.nextSibling);
+    } else {
+      $('#view').appendChild(bar);
+    }
+  }
+  bar.innerHTML = '';
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), pages);
+  const from = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const to = Math.min(safePage * pageSize, total);
+
+  // Page-size selector
+  const sizeSel = h('select', { id: 'page-size-sel', class: 'page-size-sel',
+    onchange: ev => {
+      localStorage.setItem('crm_page_size', String(Number(ev.target.value) || 25));
+      CRM._leadsPage = 1;
+      loadLeads({ page: 1 });
+    }
+  });
+  [10, 20, 25, 50, 100, 200, 500].forEach(n => {
+    sizeSel.appendChild(h('option', { value: n, selected: n === pageSize ? 'selected' : null }, `${n} per page`));
+  });
+  bar.appendChild(h('div', { class: 'pagination-left' }, sizeSel));
+
+  // Range info
+  bar.appendChild(h('div', { class: 'pagination-info muted' },
+    total === 0 ? 'No leads' : `${from}–${to} of ${total}`
+  ));
+
+  // Page navigation
+  const nav = h('div', { class: 'pagination-nav' });
+  const goto = (p) => { CRM._leadsPage = p; loadLeads({ page: p }); };
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage === 1 ? 'disabled' : null,
+    onclick: () => goto(1)
+  }, '« First'));
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage === 1 ? 'disabled' : null,
+    onclick: () => goto(safePage - 1)
+  }, '‹ Prev'));
+
+  // Numeric page buttons (windowed: show up to 5 around current)
+  const start = Math.max(1, safePage - 2);
+  const end = Math.min(pages, start + 4);
+  for (let p = start; p <= end; p++) {
+    nav.appendChild(h('button', {
+      class: 'btn sm' + (p === safePage ? ' primary' : ''),
+      onclick: () => goto(p)
+    }, String(p)));
+  }
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage >= pages ? 'disabled' : null,
+    onclick: () => goto(safePage + 1)
+  }, 'Next ›'));
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage >= pages ? 'disabled' : null,
+    onclick: () => goto(pages)
+  }, 'Last »'));
+  bar.appendChild(nav);
 }
 
 function renderStatusChips(statusCount) {
@@ -2345,38 +2430,105 @@ async function adminCustomFields() {
   const fields = await api('api_customFields_list');
   const card = h('div', { class: 'card' }, h('h4', {}, 'Custom lead fields'));
   card.appendChild(h('table', { class: 'mini-table' },
-    h('thead', {}, h('tr', {}, h('th', {}, 'Key'), h('th', {}, 'Label'), h('th', {}, 'Type'), h('th', {}, 'In list'), h('th', {}, 'Required'), h('th', {}))),
-    h('tbody', {}, ...fields.map(f => h('tr', {},
-      h('td', {}, f.key), h('td', {}, f.label), h('td', {}, f.field_type),
-      h('td', {}, f.show_in_list ? '✓' : '—'),
-      h('td', {}, f.is_required ? '✓' : '—'),
-      h('td', {}, h('button', { class: 'btn sm danger', onclick: async () => { if (!await confirmDialog(`Delete field "${f.label}"?`)) return; await api('api_customFields_delete', f.id); toast('Deleted'); showAdminTab('customfields'); } }, 'Delete'))
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Key'), h('th', {}, 'Label'), h('th', {}, 'Type'),
+      h('th', {}, 'Options'), h('th', {}, 'Sort'),
+      h('th', {}, 'In list'), h('th', {}, 'Required'), h('th', {})
+    )),
+    h('tbody', {}, ...(fields.length === 0
+      ? [h('tr', {}, h('td', { colspan: 8, class: 'muted', style: { textAlign: 'center', padding: '1rem' } }, 'No custom fields yet — add one below.'))]
+      : fields.map(f => h('tr', {},
+          h('td', {}, h('code', {}, f.key)),
+          h('td', {}, f.label),
+          h('td', {}, f.field_type),
+          h('td', { class: 'muted' }, Array.isArray(f.options) ? f.options.join(', ') : (f.options || '—')),
+          h('td', {}, String(f.sort_order || 0)),
+          h('td', {}, f.show_in_list ? '✓' : '—'),
+          h('td', {}, f.is_required ? '✓' : '—'),
+          h('td', { style: { whiteSpace: 'nowrap' } },
+            h('button', { class: 'btn sm', onclick: () => editCustomField(f) }, '✏️ Edit'),
+            h('button', { class: 'btn sm danger', style: { marginLeft: '.3rem' },
+              onclick: async () => {
+                if (!await confirmDialog(`Delete field "${f.label}"?`)) return;
+                try { await api('api_customFields_delete', f.id); toast('Deleted'); await warmCache(); showAdminTab('customfields'); }
+                catch (e) { toast(e.message, 'err'); }
+              }
+            }, '🗑️')
+          )
     )))
-  ));
-  card.appendChild(h('form', { class: 'form-grid', onsubmit: async ev => {
+  )));
+
+  // ---- "Add new field" form ----
+  card.appendChild(h('h5', { style: { marginTop: '1.25rem' } }, '+ Add new field'));
+  card.appendChild(buildCustomFieldForm({}, async (payload) => {
+    await api('api_customFields_save', payload);
+    toast('Added');
+    await warmCache();
+    showAdminTab('customfields');
+  }, 'Add field'));
+  return card;
+}
+
+/** Open a modal to edit an existing custom field. */
+function editCustomField(field) {
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target === modal) modal.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '✏️ Edit custom field: ' + field.label),
+        h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+        'Note: changing the ', h('code', {}, 'key'), ' may break older data references — only do it if no leads have used this field yet.'
+      ),
+      buildCustomFieldForm(field, async (payload) => {
+        payload.id = field.id;
+        await api('api_customFields_save', payload);
+        toast('Saved');
+        modal.remove();
+        await warmCache();
+        showAdminTab('customfields');
+      }, 'Save changes', () => modal.remove())
+    )
+  );
+  document.body.appendChild(modal);
+}
+
+/** Shared form for create/edit. `onSave` receives the field payload. */
+function buildCustomFieldForm(initial, onSave, submitLabel, onCancel) {
+  const optsString = Array.isArray(initial.options) ? initial.options.join('|') : (initial.options || '');
+  const form = h('form', { class: 'form-grid', onsubmit: async ev => {
     ev.preventDefault();
     const f = ev.target;
     try {
-      await api('api_customFields_save', {
-        key: f.key.value, label: f.label.value,
-        field_type: f.field_type.value, options: f.options.value,
+      await onSave({
+        key: f.key.value,
+        label: f.label.value,
+        field_type: f.field_type.value,
+        options: f.options.value,
         show_in_list: f.show_in_list.checked ? 1 : 0,
         is_required: f.is_required.checked ? 1 : 0,
         sort_order: Number(f.sort_order.value) || 10
       });
-      toast('Added'); await warmCache(); showAdminTab('customfields');
     } catch (e) { toast(e.message, 'err'); }
   }},
-    field('key', 'Key *', '', { required: true }),
-    field('label', 'Label *', '', { required: true }),
-    selectField('field_type', 'Type', 'text', ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox']),
-    field('options', 'Options (pipe-separated)', ''),
-    field('sort_order', 'Sort order', '10', { type: 'number' }),
-    h('div', { class: 'f-row' }, h('label', { class: 'cb' }, h('input', { name: 'show_in_list', type: 'checkbox' }), ' Show in list')),
-    h('div', { class: 'f-row' }, h('label', { class: 'cb' }, h('input', { name: 'is_required', type: 'checkbox' }), ' Required')),
-    h('div', { class: 'f-row full' }, h('button', { type: 'submit', class: 'btn primary' }, '+ Add field'))
-  ));
-  return card;
+    field('key', 'Key *', initial.key || '', { required: true }),
+    field('label', 'Label *', initial.label || '', { required: true }),
+    selectField('field_type', 'Type', initial.field_type || 'text',
+      ['text', 'textarea', 'number', 'date', 'select', 'multiselect', 'checkbox']),
+    field('options', 'Options (pipe-separated, e.g. low|medium|high)', optsString),
+    field('sort_order', 'Sort order', String(initial.sort_order != null ? initial.sort_order : 10), { type: 'number' }),
+    h('div', { class: 'f-row' }, h('label', { class: 'cb' },
+      h('input', { name: 'show_in_list', type: 'checkbox', checked: initial.show_in_list ? 'checked' : null }),
+      ' Show in lead list')),
+    h('div', { class: 'f-row' }, h('label', { class: 'cb' },
+      h('input', { name: 'is_required', type: 'checkbox', checked: initial.is_required ? 'checked' : null }),
+      ' Required')),
+    h('div', { class: 'f-row full actions' },
+      onCancel ? h('button', { type: 'button', class: 'btn', onclick: onCancel }, 'Cancel') : null,
+      h('button', { type: 'submit', class: 'btn primary' }, submitLabel)
+    )
+  );
+  return form;
 }
 async function adminRules() {
   const rules = await api('api_rules_list');

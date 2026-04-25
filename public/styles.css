@@ -1216,3 +1216,43 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .assign-pct-grid { max-height: 200px; }
   .preview-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------------- Leads pagination bar ---------------- */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .65rem .25rem;
+  margin-top: .25rem;
+  flex-wrap: wrap;
+}
+.pagination-bar:empty { display: none; }
+.pagination-left { display: flex; align-items: center; gap: .5rem; }
+.page-size-sel { min-width: 130px; }
+.pagination-info { font-size: .85rem; }
+.pagination-nav { display: flex; gap: .25rem; flex-wrap: wrap; }
+.pagination-nav .btn.sm { min-width: 38px; padding: .35rem .55rem !important; }
+.pagination-nav .btn.sm[disabled] { opacity: .35; cursor: not-allowed; }
+.pagination-nav .btn.sm.primary {
+  background: var(--brand, #6366f1) !important;
+  color: #fff !important;
+  border-color: var(--brand, #6366f1) !important;
+}
+
+@media (max-width: 780px) {
+  .pagination-bar {
+    flex-direction: column;
+    align-items: stretch;
+    background: #fff;
+    border-radius: var(--app-card-radius, 14px);
+    padding: .75rem .85rem;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+    margin-top: .5rem;
+  }
+  .pagination-left { justify-content: center; }
+  .pagination-info { text-align: center; }
+  .pagination-nav { justify-content: center; }
+  .pagination-nav .btn.sm:nth-child(1),
+  .pagination-nav .btn.sm:nth-last-child(1) { display: none; } /* hide First/Last on phones */
+}
