@@ -3,7 +3,7 @@
  * - Fetches the latest app shell from network; falls back to cache only offline.
  * - /api requests always go to the network.
  */
-const CACHE = 'lead-crm-shell-v3';
+const CACHE = 'lead-crm-shell-v6';
 const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest'];
 
 self.addEventListener('install', ev => {
