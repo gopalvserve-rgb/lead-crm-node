@@ -55,9 +55,10 @@ async function apiRaw(fn, ...args) {
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
       refreshNotifs();
-      // Silent background sweep on each app launch: pick up any recordings
-      // that were missed (app was killed, network blip, etc.). Lead-only,
-      // no toasts unless something needs the user's action.
+      // Resume any pending call (WebView may have been killed during the call).
+      // Runs after warmCache so the lead's status options etc are loaded.
+      setTimeout(() => _resumePendingCall('boot'), 1500);
+      // Silent background sweep: pick up any missed recordings.
       setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
   } else {
@@ -586,7 +587,11 @@ function renderLeadsMobile(rows) {
   });
 }
 
-/** Click-to-call with after-call modal + targeted recording sync. */
+/** Click-to-call with after-call modal + targeted recording sync.
+ *  IMPORTANT: persist the call context to localStorage so it survives
+ *  Android killing the WebView during the call (common on Xiaomi/OnePlus/
+ *  Samsung phones with aggressive battery management). When the WebView
+ *  reloads after the call, _resumePendingCall() picks up where we left off. */
 function callLead(lead) {
   const raw = String(lead.phone || '');
   const digits = raw.replace(/\D/g, '');
@@ -594,9 +599,17 @@ function callLead(lead) {
   const startedAt = Date.now();
   CRM.pendingCall = { lead, startedAt, dialedPhone: digits };
 
-  // Tell the native side this call belongs to us, so it can:
-  //  (a) treat call_ended for this number as "our call" → open modal
-  //  (b) target the recording sync to just this number after the call ends
+  // Stash everything we need to reopen the modal even if the WebView dies.
+  try {
+    localStorage.setItem('crm_pending_call', JSON.stringify({
+      leadId: lead.id || null,
+      leadName: lead.name || '',
+      leadPhone: lead.phone || '',
+      startedAt,
+      dialedPhone: digits
+    }));
+  } catch (e) { console.warn(e); }
+
   if (window.LeadCRMNative && typeof LeadCRMNative.registerOutgoingCall === 'function') {
     try {
       LeadCRMNative.registerOutgoingCall(
@@ -612,27 +625,75 @@ function callLead(lead) {
   a.click();
 }
 
-// Fire after-call modal whenever the user returns to the app after tapping
-// Call. We DON'T wait for the native PhoneStateReceiver — that can be flaky
-// on Android 11+ for non-default-dialer apps. The visibilitychange + focus
-// listeners are the most reliable trigger because the WebView always loses
-// and regains visibility when the system dialer takes over.
-function _maybeOpenAfterCallModal(reason) {
-  if (!CRM.pendingCall) return;
-  const ctx = CRM.pendingCall;
-  const elapsed = Date.now() - ctx.startedAt;
-  // Even very short calls (>=2s) qualify — user might cut it after one ring.
-  // Less than 2s is most likely an accidental tap, skip.
+/**
+ * Called on every app launch + every visibility change. If we find a recent
+ * (within 10 minutes) pending call in localStorage that hasn't been resolved,
+ * open the modal + start the recording sync. This is the bulletproof path
+ * that works even when Android kills the WebView during the call.
+ */
+async function _resumePendingCall(reason) {
+  // Skip if a modal is already open (don't double-open)
+  if (document.querySelector('.after-call-modal')) return;
+
+  let raw;
+  try { raw = localStorage.getItem('crm_pending_call'); } catch (e) { return; }
+  if (!raw) return;
+  let data;
+  try { data = JSON.parse(raw); } catch (e) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+  if (!data || !data.startedAt) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+  const elapsed = Date.now() - data.startedAt;
+  // Skip immediate triggers (<2s = accidental tap)
   if (elapsed < 2000) return;
-  console.log('[leadcrm] after-call modal trigger:', reason, 'elapsed=' + elapsed + 'ms');
+  // Skip stale entries (>10 min old = abandoned)
+  if (elapsed > 10 * 60 * 1000) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+
+  console.log('[leadcrm] resuming pending call:', reason, 'elapsed=' + Math.round(elapsed/1000) + 's');
+
+  // Clear the stash so we don't re-trigger
+  localStorage.removeItem('crm_pending_call');
   CRM.pendingCall = null;
-  openAfterCallModalWithRecording(ctx.lead, ctx);
+
+  // Get a full lead record (so the modal has status_id, etc.)
+  let lead = null;
+  if (data.leadId) {
+    try {
+      const r = await api('api_leads_get', data.leadId);
+      lead = (r && (r.lead || r));
+    } catch (e) {
+      lead = { id: data.leadId, name: data.leadName, phone: data.leadPhone };
+    }
+  } else if (data.leadName || data.leadPhone) {
+    lead = { name: data.leadName, phone: data.leadPhone };
+  }
+  if (!lead) return;
+
+  // Slight delay so the rest of the UI has settled
+  setTimeout(() => {
+    openAfterCallModalWithRecording(lead, {
+      lead,
+      startedAt: data.startedAt,
+      dialedPhone: data.dialedPhone || ''
+    });
+  }, 600);
 }
+
+// Fire after-call modal whenever the user returns to the app after tapping
+// Call. Three triggers cover every case — WebView still alive (in-memory
+// pendingCall) AND WebView killed and recreated (localStorage stash).
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') _maybeOpenAfterCallModal('visibilitychange');
+  if (document.visibilityState === 'visible') _resumePendingCall('visibilitychange');
 });
-window.addEventListener('focus', () => _maybeOpenAfterCallModal('focus'));
-window.addEventListener('pageshow', () => _maybeOpenAfterCallModal('pageshow'));
+window.addEventListener('focus', () => _resumePendingCall('focus'));
+window.addEventListener('pageshow', () => _resumePendingCall('pageshow'));
 
 async function openAfterCallModal(lead) {
   const { statuses } = CRM.cache;
@@ -3084,16 +3145,14 @@ window.onLeadCRMCallEvent = function (event, number) {
     if (event === 'incoming_ringing' && !matchByNumber && digits) {
       promptSaveAsLead(number);
     } else if (event === 'call_ended') {
-      // Skip if the modal is already open from visibilitychange.
-      const alreadyOpen = !!document.querySelector('.after-call-modal');
-      if (!alreadyOpen && lead) {
-        const callContext = ctx && ctx.lead && ctx.lead.id === lead.id
-          ? ctx
-          : { lead, startedAt: Date.now() - 30_000, dialedPhone: digits };
-        CRM.pendingCall = null;
-        setTimeout(() => openAfterCallModalWithRecording(lead, callContext), 400);
-      } else if (!lead && digits) {
-        promptSaveAsLead(number);
+      // Native broadcast fired — try to resume from the localStorage stash
+      // (works even if WebView was destroyed). _resumePendingCall is idempotent.
+      _resumePendingCall('call_ended_native');
+      if (!matchByNumber && digits) {
+        // No lead match anywhere — offer to save as new lead
+        setTimeout(() => {
+          if (!document.querySelector('.after-call-modal')) promptSaveAsLead(number);
+        }, 1200);
       }
       if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
     }
