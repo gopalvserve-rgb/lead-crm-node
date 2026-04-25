@@ -2864,6 +2864,14 @@ async function adminFb() {
     api('api_users_list').catch(() => [])
   ]);
 
+  // Preload the FB SDK so when the user clicks "Connect with Facebook",
+  // FB.login() runs synchronously inside the click event and the browser
+  // allows the popup. If the SDK only loads on click, Chrome blocks the
+  // popup because the user gesture has already expired.
+  if (settings && settings.app_id) {
+    ensureFbSdkLoaded(settings.app_id).catch(e => console.warn('FB SDK preload:', e.message));
+  }
+
   const wrap = h('div', { class: 'fb-admin' });
   wrap.appendChild(h('h3', { style: { margin: '0 0 1rem' } }, 'Facebook Leads Integration'));
 
@@ -4134,55 +4142,88 @@ const FB_REQUIRED_PERMS = [
   'pages_show_list', 'leads_retrieval', 'pages_read_engagement', 'pages_manage_metadata'
 ];
 
-function connectFacebook() {
-  const doLogin = () => {
-    toast('Opening Facebook login…');
-    FB.login(async resp => {
-      if (!resp.authResponse) return toast('Login cancelled', 'warn');
-      // Verify the user actually granted the four permissions we need. Without
-      // this the connect appears to succeed but pages fetch returns empty.
-      FB.api('me/permissions', async (permResp) => {
-        const granted = (permResp && permResp.data || [])
-          .filter(p => p.status === 'granted')
-          .map(p => p.permission);
-        const missing = FB_REQUIRED_PERMS.filter(p => !granted.includes(p));
-        if (missing.length) {
-          toast('Missing permissions: ' + missing.join(', ') +
-            '. Click Connect again and grant ALL requested permissions in the Facebook dialog.', 'err');
-          return;
-        }
-        try {
-          toast('Connected. Fetching your Facebook pages…');
-          const r = await api('api_fb_connect', resp.authResponse.accessToken);
-          if (r.pages_count === 0) {
-            toast('Login succeeded but no pages came back. Check that your account has Facebook page admin access.', 'warn');
-          } else {
-            toast(`Connected — ${r.pages_count} page${r.pages_count === 1 ? '' : 's'} fetched. Pick which to monitor below.`);
-          }
-          showAdminTab('fb');
-        } catch (e) { toast(e.message, 'err'); }
-      });
-    }, {
-      scope: FB_LOGIN_SCOPE,
-      // rerequest forces the dialog to ask for permissions the user previously
-      // declined or skipped. Without it, FB silently reuses the partial grant.
-      auth_type: 'rerequest',
-      return_scopes: true
-    });
-  };
-
-  if (window.FB && typeof FB.login === 'function') return doLogin();
-  api('api_fb_status').then(({ app_id }) => {
-    if (!app_id) return toast('Set Facebook Application ID first (Admin → Facebook → Application Settings)', 'err');
+// Track FB SDK readiness so we can preload it when the admin Facebook tab
+// renders. Without this, the SDK loads only after the user clicks Connect —
+// and by the time FB.login runs, Chrome has expired the user gesture and
+// blocks the popup window. Result: the "Opening Facebook login…" toast fires
+// but no popup ever appears. Preloading the SDK fixes this.
+let _fbSdkLoading = null;
+function ensureFbSdkLoaded(appId) {
+  if (window.FB && typeof window.FB.login === 'function') return Promise.resolve();
+  if (_fbSdkLoading) return _fbSdkLoading;
+  _fbSdkLoading = new Promise((resolve, reject) => {
+    if (!appId) return reject(new Error('Set Facebook Application ID first (Admin → Facebook → Application Settings)'));
+    window.fbAsyncInit = function () {
+      try {
+        FB.init({ appId, cookie: true, xfbml: false, version: 'v19.0' });
+        resolve();
+      } catch (e) { reject(e); }
+    };
+    if (document.getElementById('facebook-jssdk')) return; // already in DOM, wait for fbAsyncInit
     const s = document.createElement('script');
+    s.id = 'facebook-jssdk';
     s.src = 'https://connect.facebook.net/en_US/sdk.js';
     s.async = true;
-    s.onload = () => {
-      FB.init({ appId: app_id, cookie: true, xfbml: false, version: 'v19.0' });
-      doLogin();
-    };
+    s.crossOrigin = 'anonymous';
+    s.onerror = () => reject(new Error('Failed to load Facebook SDK — check internet / ad-blocker.'));
     document.body.appendChild(s);
+  });
+  return _fbSdkLoading;
+}
+
+function connectFacebook() {
+  // Hot path: SDK is already loaded — call FB.login SYNCHRONOUSLY inside the
+  // click event so the browser allows the popup. Anything async here loses
+  // the user gesture and Chrome will block the popup silently.
+  if (window.FB && typeof window.FB.login === 'function') {
+    return _fbDoLogin();
+  }
+
+  // Cold path: SDK isn't loaded yet. Tell the user, kick off the load, and
+  // ask them to click again. We can't auto-retry inside the same handler
+  // because the user gesture has been spent.
+  toast('Loading Facebook SDK… please click Connect again in 2 seconds.', 'warn');
+  api('api_fb_status').then(({ app_id }) => {
+    return ensureFbSdkLoaded(app_id);
+  }).then(() => {
+    toast('Facebook SDK ready — click Connect with Facebook now.');
   }).catch(e => toast(e.message, 'err'));
+}
+
+function _fbDoLogin() {
+  toast('Opening Facebook login…');
+  FB.login(async resp => {
+    if (!resp.authResponse) return toast('Login cancelled or popup blocked. Allow popups for this site and try again.', 'warn');
+    // Verify the user actually granted the four permissions we need. Without
+    // this the connect appears to succeed but pages fetch returns empty.
+    FB.api('me/permissions', async (permResp) => {
+      const granted = (permResp && permResp.data || [])
+        .filter(p => p.status === 'granted')
+        .map(p => p.permission);
+      const missing = FB_REQUIRED_PERMS.filter(p => !granted.includes(p));
+      if (missing.length) {
+        toast('Missing permissions: ' + missing.join(', ') +
+          '. Click Connect again and grant ALL requested permissions in the Facebook dialog.', 'err');
+        return;
+      }
+      try {
+        toast('Connected. Fetching your Facebook pages…');
+        const r = await api('api_fb_connect', resp.authResponse.accessToken);
+        if (r.pages_count === 0) {
+          toast('Login succeeded but no pages came back. Check that your account has Facebook page admin access.', 'warn');
+        } else {
+          toast(`Connected — ${r.pages_count} page${r.pages_count === 1 ? '' : 's'} fetched. Pick which to monitor below.`);
+        }
+        showAdminTab('fb');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+  }, {
+    scope: FB_LOGIN_SCOPE,
+    // rerequest forces the dialog to ask for permissions the user previously
+    // declined or skipped. Without it, FB silently reuses the partial grant.
+    auth_type: 'rerequest',
+    return_scopes: true
+  });
 }
 
 /* ---------------- Native Android integration (Capacitor APK) ---------------- */
