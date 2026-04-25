@@ -612,19 +612,27 @@ function callLead(lead) {
   a.click();
 }
 
-// Fire after-call modal when user returns from the dialer, but only if they
-// were actually away for >= 10 seconds (a real conversation, not a misfire).
+// Fire after-call modal whenever the user returns to the app after tapping
+// Call. We DON'T wait for the native PhoneStateReceiver — that can be flaky
+// on Android 11+ for non-default-dialer apps. The visibilitychange + focus
+// listeners are the most reliable trigger because the WebView always loses
+// and regains visibility when the system dialer takes over.
+function _maybeOpenAfterCallModal(reason) {
+  if (!CRM.pendingCall) return;
+  const ctx = CRM.pendingCall;
+  const elapsed = Date.now() - ctx.startedAt;
+  // Even very short calls (>=2s) qualify — user might cut it after one ring.
+  // Less than 2s is most likely an accidental tap, skip.
+  if (elapsed < 2000) return;
+  console.log('[leadcrm] after-call modal trigger:', reason, 'elapsed=' + elapsed + 'ms');
+  CRM.pendingCall = null;
+  openAfterCallModalWithRecording(ctx.lead, ctx);
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && CRM.pendingCall) {
-    const { lead, startedAt } = CRM.pendingCall;
-    // Only if we were gone for >=10s — a real call, not an accidental open
-    if (Date.now() - startedAt >= 10000) {
-      CRM.pendingCall = null;
-      openAfterCallModal(lead);
-    }
-    // If <10s, keep pendingCall armed in case the user navigates away again
-  }
+  if (document.visibilityState === 'visible') _maybeOpenAfterCallModal('visibilitychange');
 });
+window.addEventListener('focus', () => _maybeOpenAfterCallModal('focus'));
+window.addEventListener('pageshow', () => _maybeOpenAfterCallModal('pageshow'));
 
 async function openAfterCallModal(lead) {
   const { statuses } = CRM.cache;
@@ -3076,14 +3084,15 @@ window.onLeadCRMCallEvent = function (event, number) {
     if (event === 'incoming_ringing' && !matchByNumber && digits) {
       promptSaveAsLead(number);
     } else if (event === 'call_ended') {
-      if (lead) {
-        // Open the update modal IMMEDIATELY — don't make the user wait
+      // Skip if the modal is already open from visibilitychange.
+      const alreadyOpen = !!document.querySelector('.after-call-modal');
+      if (!alreadyOpen && lead) {
         const callContext = ctx && ctx.lead && ctx.lead.id === lead.id
           ? ctx
           : { lead, startedAt: Date.now() - 30_000, dialedPhone: digits };
         CRM.pendingCall = null;
         setTimeout(() => openAfterCallModalWithRecording(lead, callContext), 400);
-      } else if (digits) {
+      } else if (!lead && digits) {
         promptSaveAsLead(number);
       }
       if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
