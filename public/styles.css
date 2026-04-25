@@ -172,6 +172,8 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 }
 .topbar h2 { margin: 0; font-size: 1.15rem; font-weight: 600; color: var(--text); }
 .topbar-right { display: flex; gap: .5rem; align-items: center; }
+#btn-getapp .topbar-getapp-text { margin-left: .35rem; }
+@media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 .loading { padding: 2rem; text-align: center; color: var(--muted); }
 .error-box { padding: 1rem; background: var(--err-soft); color: var(--err); border-radius: var(--radius-sm); }

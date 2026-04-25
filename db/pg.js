@@ -4,7 +4,36 @@
 //   findBy(table, field, value), insert(table, row), update(table, id, patch),
 //   removeRow(table, id), nowIso()
 
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// IMPORTANT — return date/time columns as ISO strings, not Date objects.
+//
+// node-pg's default behaviour is to wrap TIMESTAMP/TIMESTAMPTZ/DATE columns in
+// JavaScript Date objects. That broke our reports filters because the rest of
+// the codebase relies on `String(row.created_at).slice(0, 10)` returning a
+// "YYYY-MM-DD" prefix — for a Date object that yields "Sat Apr 26" instead,
+// silently returning empty results from any date filter.
+//
+// Type OIDs:
+//   1082  DATE          -> "YYYY-MM-DD"
+//   1083  TIME
+//   1114  TIMESTAMP     (without TZ)
+//   1184  TIMESTAMPTZ   (with TZ)
+// We override TIMESTAMP/TIMESTAMPTZ to return the raw ISO-ish text and DATE
+// to return the YYYY-MM-DD slice. Strings are still cheaply Date-wrappable
+// downstream (`new Date(str)`), so existing math like
+// `(new Date(check_out) - new Date(check_in)) / 3600000` keeps working.
+function _toIsoString(v) {
+  if (v == null) return v;
+  // Postgres serialises tz timestamps as e.g. "2026-04-26 12:30:00.000+00".
+  // new Date() parses that fine; .toISOString() gives "2026-04-26T12:30:00.000Z"
+  // which slices cleanly to YYYY-MM-DD and string-compares correctly.
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? String(v) : d.toISOString();
+}
+types.setTypeParser(1184, _toIsoString); // timestamptz
+types.setTypeParser(1114, _toIsoString); // timestamp (no tz)
+types.setTypeParser(1082, v => v);       // date — already "YYYY-MM-DD"
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
@@ -150,6 +179,15 @@ const SCHEMA = {
   call_events: {
     columns: ['lead_id', 'user_id', 'phone', 'direction', 'event',
               'duration_s', 'recording_id', 'created_at'],
+    json: []
+  },
+  email_templates: {
+    columns: ['event_type', 'name', 'subject', 'body_html', 'is_active', 'updated_at'],
+    json: []
+  },
+  user_devices: {
+    columns: ['user_id', 'fingerprint', 'user_agent', 'ip',
+              'first_seen_at', 'last_seen_at'],
     json: []
   }
 };

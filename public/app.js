@@ -302,6 +302,7 @@ function renderShell() {
           <button class="btn icon topbar-mobile-menu" id="btn-more" title="Menu">☰</button>
           <h2 id="page-title">Dashboard</h2>
           <div class="topbar-right">
+            <button class="btn ghost" id="btn-getapp" title="Install / Download the app"><span>📱</span><span class="topbar-getapp-text">Get app</span></button>
             <button class="btn ghost" id="btn-notif" title="Notifications">🔔<span class="badge" id="notif-count" hidden>0</span></button>
           </div>
         </header>
@@ -331,6 +332,51 @@ function renderShell() {
   $('#btn-logout').onclick = logout;
   $('#btn-notif').onclick = showNotifs;
   $('#btn-more').onclick = showMobileMore;
+  const _ga = $('#btn-getapp'); if (_ga) _ga.onclick = showGetApp;
+}
+
+/**
+ * Get App modal — shows the user how to install the CRM as a PWA on their
+ * phone (Chrome → Add to Home Screen) and offers a direct download link
+ * for the Android APK if one is hosted in /public/.
+ */
+function showGetApp() {
+  const apkHref = '/LeadCRM.apk';
+  const ua = navigator.userAgent || '';
+  const isAndroid = /android/i.test(ua);
+  const isIOS = /iphone|ipad|ipod/i.test(ua);
+  const url = location.origin + '/';
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📱 Get the CRM on your phone'),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('p', { class: 'muted', style: { marginTop: 0 } },
+          'Install the CRM on your phone so you get push notifications even when the browser is closed.'),
+        h('div', { class: 'cards', style: { gap: '.75rem' } },
+          h('div', { class: 'card' },
+            h('h4', { style: { margin: '0 0 .5rem' } }, '📱 Install as PWA (recommended)'),
+            h('ol', { style: { paddingLeft: '1.2rem', margin: 0 } },
+              h('li', {}, 'Open this site in Chrome on your phone: ', h('code', {}, url)),
+              h('li', {}, isIOS
+                ? 'Tap the Share button (square + arrow) → "Add to Home Screen".'
+                : 'Tap the ⋮ menu in Chrome → "Install app" or "Add to Home screen".'),
+              h('li', {}, 'Open the new icon and allow notifications when prompted.')
+            )
+          ),
+          isAndroid || !isIOS ? h('div', { class: 'card' },
+            h('h4', { style: { margin: '0 0 .5rem' } }, '⬇️ Direct APK (Android)'),
+            h('p', { class: 'muted', style: { marginTop: 0 } },
+              'For Android only. You may have to allow "Install from unknown sources".'),
+            h('a', { class: 'btn primary', href: apkHref, download: '' }, 'Download LeadCRM.apk')
+          ) : null
+        )
+      )
+    )
+  );
+  document.body.appendChild(m);
 }
 
 function showMobileMore() {
@@ -2353,13 +2399,28 @@ VIEWS.followups = async (view) => {
 
 /* ---------------- Reports with charts ---------------- */
 async function ensureChartJs() {
-  if (window.Chart) return;
-  await new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
-    s.onload = resolve; s.onerror = reject;
-    document.head.appendChild(s);
-  });
+  if (!window.Chart) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  // Also load chartjs-plugin-datalabels so we can render the actual numeric
+  // value on top of every bar / segment (the user wants numbers visible, not
+  // just bars). Register globally so every chart picks it up.
+  if (window.Chart && !window.ChartDataLabels) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      if (window.ChartDataLabels && Chart && Chart.register) Chart.register(window.ChartDataLabels);
+    } catch (_) { /* non-fatal: charts still render, just without labels */ }
+  }
 }
 VIEWS.reports = async (view) => {
   await ensureChartJs();
@@ -2492,7 +2553,12 @@ function renderDailyBreakdown(daily, filters) {
       },
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { position: 'top' } },
+        plugins: {
+          legend: { position: 'top' },
+          // Multi-line chart with 4 datasets → labelling every point would
+          // overwhelm. Keep numbers visible via the table below + tooltip.
+          datalabels: false
+        },
         scales: {
           x: { grid: { display: false } },
           y: { grid: { color: '#f3f4f6' }, beginAtZero: true, ticks: { stepSize: 1, precision: 0 } }
@@ -2569,15 +2635,59 @@ function makeChart(canvasId, type, labels, data, colors, extra) {
   if (!ctx) return;
   if (ctx._chart) ctx._chart.destroy();
   const palette = colors && colors.some(Boolean) ? colors : ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'];
+
+  const isHorizontalBar = (extra && extra.indexAxis === 'y');
+  const isPieish = type === 'doughnut' || type === 'pie';
+
+  // Datalabel config — render the numeric value on each bar/segment so the
+  // user can read the actual numbers, not just the relative bar height.
+  // We only attach datalabels if the plugin is loaded (it's loaded in
+  // ensureChartJs but kept best-effort).
+  const datalabels = window.ChartDataLabels ? {
+    color: isPieish ? '#ffffff' : '#1B233A',
+    font: { weight: 'bold', size: 11 },
+    formatter: (value) => {
+      if (value === 0 || value === null || value === undefined) return '';
+      return value;
+    },
+    anchor: isPieish ? 'center' : (isHorizontalBar ? 'end' : 'end'),
+    align:  isPieish ? 'center' : (isHorizontalBar ? 'right' : 'top'),
+    offset: 2,
+    clamp: true
+  } : false;
+
+  const baseOpts = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { position: isPieish ? 'bottom' : 'top' },
+      datalabels
+    },
+    scales: isPieish ? {} : { x: { grid: { display: false } }, y: { grid: { color: '#f3f4f6' }, beginAtZero: true } }
+  };
+
+  // Merge extra options without clobbering our plugins.datalabels block:
+  // Object.assign with a top-level `extra` whose `plugins` would replace ours.
+  const merged = Object.assign({}, baseOpts, extra || {});
+  if (extra && extra.plugins) {
+    merged.plugins = Object.assign({}, baseOpts.plugins, extra.plugins);
+  }
+  if (extra && extra.scales) {
+    merged.scales = Object.assign({}, baseOpts.scales, extra.scales);
+  }
+
   ctx._chart = new Chart(ctx, {
     type, data: {
-      labels, datasets: [{ data, backgroundColor: labels.map((_, i) => palette[i % palette.length]), borderWidth: 0 }]
+      labels, datasets: [{
+        data,
+        backgroundColor: labels.map((_, i) => palette[i % palette.length]),
+        borderWidth: 0,
+        // For line charts (e.g. daily breakdown) Chart.js wants these too:
+        borderColor: palette[0],
+        pointBackgroundColor: palette[0],
+        tension: 0.25
+      }]
     },
-    options: Object.assign({
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { position: type === 'doughnut' ? 'bottom' : 'top' } },
-      scales: type === 'doughnut' ? {} : { x: { grid: { display: false } }, y: { grid: { color: '#f3f4f6' }, beginAtZero: true } }
-    }, extra || {})
+    options: merged
   });
 }
 

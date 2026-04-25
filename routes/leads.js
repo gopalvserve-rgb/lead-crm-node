@@ -243,6 +243,16 @@ async function api_leads_create(token, payload) {
   const p = payload || {};
   if (!p.name) throw new Error('name required');
 
+  // Mobile number is required — leads without a contact phone are essentially
+  // un-followable, so reject them at the API layer (covers both manual lead
+  // form and CSV bulk import). Strip Excel artefacts before checking.
+  // Also accept `mobile`, `whatsapp`, `contact` as aliases so CSV uploads with
+  // any of those columns still work.
+  const _phoneRaw =
+    p.phone ?? p.mobile ?? p.contact ?? p.whatsapp ?? p.mobile_number ?? p.contact_number ?? '';
+  const _phoneDigits = String(_phoneRaw || '').trim().replace(/^'/, '').replace(/\D/g, '');
+  if (!_phoneDigits) throw new Error('Mobile number is required');
+
   // Resolve assigned_to: accepts integer ID, email, or full name.
   // Recognises common CSV column aliases people actually use:
   //   assigned_to / user / owner / assignee / sales_rep / salesperson / agent
