@@ -8,7 +8,7 @@ This guide covers everything from setting up Xcode to shipping `Lead CRM` on Tes
 
 The iOS project has been **fully scaffolded** under `cap-app/ios/`:
 
-- Capacitor 6 wrapper that loads `https://lead-crm-production-3628.up.railway.app` in an embedded WKWebView
+- Capacitor 6 wrapper that loads `https://crm.celesteabode.com` in an embedded WKWebView
 - All privacy-permission strings (camera, contacts, location, mic, Face ID, notifications) wired into `Info.plist` with App-Store-acceptable wording
 - App icon placeholder + portrait-only orientation lock
 - Background fetch + remote-notification entitlements declared
@@ -149,7 +149,7 @@ Before you can ship the first build, you need to:
    - **Bundle ID:** `app.leadcrm.mobile` (must match Xcode)
    - **SKU:** anything unique, e.g. `LEADCRM001`
    - **User Access:** Full Access
-4. After creating, set **Privacy Policy URL** — required. Use https://lead-crm-production-3628.up.railway.app/privacy or wherever you host yours.
+4. After creating, set **Privacy Policy URL** — required. Use https://crm.celesteabode.com/privacy or wherever you host yours.
 5. **Data collection** disclosure (App Privacy section) — required since iOS 14.5. Declare:
    - Contact info (name/phone/email) — used to track leads
    - Location (when in use) — for attendance tracking

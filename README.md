@@ -44,7 +44,7 @@ Default login: `admin@crm.local` / `admin123` — **change it on first login.**
 
 ## 3. Production deploy (Railway — current setup)
 
-The live site is at `https://lead-crm-production-3628.up.railway.app/`. Deploy
+The live site is at `https://crm.celesteabode.com/`. Deploy
 flow:
 
 1. Make code changes locally (or via a Cowork session).
@@ -57,7 +57,7 @@ flow:
 3. Railway picks up the commit on `main` and rebuilds in ~30s.
 4. Verify the new code is live:
    ```bash
-   curl -sL https://lead-crm-production-3628.up.railway.app/app.js | grep -c "<unique-string>"
+   curl -sL https://crm.celesteabode.com/app.js | grep -c "<unique-string>"
    ```
 5. Hard-refresh the browser (Ctrl+F5) — the PWA service worker caches assets.
 
@@ -217,7 +217,7 @@ under a minute by reading what follows.
 
 ### Onboarding paragraph
 
-> You are working on a Lead CRM at `https://lead-crm-production-3628.up.railway.app/`.
+> You are working on a Lead CRM at `https://crm.celesteabode.com/`.
 > The source is in this repo. Stack: Node 18 + Express + PostgreSQL + a vanilla
 > JS SPA in `public/`. There's no React, no build step, no traditional REST —
 > the frontend calls `POST /api { fn, args }` and the backend dispatches by

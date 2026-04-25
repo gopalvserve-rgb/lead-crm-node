@@ -3,7 +3,7 @@
   "appName": "Lead CRM",
   "webDir": "www",
   "server": {
-    "url": "https://lead-crm-production-3628.up.railway.app",
+    "url": "https://crm.celesteabode.com",
     "cleartext": false,
     "androidScheme": "https",
     "iosScheme": "https"

@@ -9,7 +9,7 @@ There are two officially-supported paths. Pick whichever fits you.
 ## Option 1 — PWABuilder (easiest, no tools required)
 
 1. Go to https://www.pwabuilder.com
-2. Paste your live URL: `https://lead-crm-production-3628.up.railway.app`
+2. Paste your live URL: `https://crm.celesteabode.com`
 3. Click **Start**. PWABuilder analyzes the site, checks the manifest, and generates a **Package** for Android.
 4. Choose **Android → Generate Package**. Select "Signed APK" if you want an APK you can install immediately, or "AAB" for Google Play.
 5. Download the zip. It contains:
@@ -38,7 +38,7 @@ Bubblewrap is Google's official tool for wrapping a PWA as an Android **TWA** (T
 npm install -g @bubblewrap/cli
 
 # 2. Initialize from the live manifest
-bubblewrap init --manifest https://lead-crm-production-3628.up.railway.app/manifest.webmanifest
+bubblewrap init --manifest https://crm.celesteabode.com/manifest.webmanifest
 
 # Follow the prompts:
 #   - Application name:         Lead CRM
@@ -73,7 +73,7 @@ bubblewrap build
 Bubblewrap prints your SHA-256 fingerprint after the first build. Paste it into a file at:
 
 ```
-https://lead-crm-production-3628.up.railway.app/.well-known/assetlinks.json
+https://crm.celesteabode.com/.well-known/assetlinks.json
 ```
 
 With content:
@@ -108,7 +108,7 @@ npx cap init "Lead CRM" com.yourcompany.leadcrm --web-dir=www
 # 2. Create a www/index.html that redirects to the live URL
 mkdir www && cat > www/index.html <<'EOF'
 <!DOCTYPE html>
-<html><head><meta http-equiv="refresh" content="0; url=https://lead-crm-production-3628.up.railway.app/"></head></html>
+<html><head><meta http-equiv="refresh" content="0; url=https://crm.celesteabode.com/"></head></html>
 EOF
 
 # 3. Add Android
@@ -124,7 +124,7 @@ This gives you a real native shell where you can later add plugins like `@capaci
 ## Install on your phone right now — no APK needed
 
 The app is already installable:
-1. Open **https://lead-crm-production-3628.up.railway.app/** on Chrome (Android)
+1. Open **https://crm.celesteabode.com/** on Chrome (Android)
 2. Tap the 3-dot menu → **Add to Home screen**
 3. Done — app icon on your home screen, opens full-screen, works like a native app.
 
