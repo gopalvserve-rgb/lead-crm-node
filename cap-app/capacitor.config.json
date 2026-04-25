@@ -1,0 +1,24 @@
+{
+  "appId": "app.leadcrm.mobile",
+  "appName": "Lead CRM",
+  "webDir": "www",
+  "server": {
+    "url": "https://lead-crm-production-3628.up.railway.app",
+    "cleartext": false,
+    "androidScheme": "https",
+    "iosScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "backgroundColor": "#0F172A",
+    "webContentsDebuggingEnabled": false
+  },
+  "ios": {
+    "backgroundColor": "#0F172A",
+    "contentInset": "always",
+    "limitsNavigationsToAppBoundDomains": false,
+    "scrollEnabled": true,
+    "preferredContentMode": "mobile",
+    "scheme": "App"
+  }
+}
