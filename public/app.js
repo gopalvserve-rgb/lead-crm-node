@@ -892,23 +892,24 @@ function openBulkUpload() {
   const fileInput = h('input', { type: 'file', accept: '.csv,text/csv', id: 'csv-file', style: { width: '100%' } });
   const fileInfo = h('div', { class: 'muted', id: 'csv-file-info', style: { fontSize: '.85rem', marginTop: '.4rem' } }, 'No file selected.');
 
-  // Mode picker as 4 cards
-  const modeCard = (id, title, desc) => h('label', {
+  // Mode picker as 4 button cards — no radios, no labels, no flex weirdness.
+  const modeCard = (id, icon, title, desc) => h('button', {
+    type: 'button',
     class: 'assign-mode-card',
     'data-mode': id,
     onclick: () => { assignMode = id; updateMode(); }
   },
-    h('input', { type: 'radio', name: 'assign-mode', value: id, checked: id === 'csv' ? 'checked' : null }),
-    h('div', { class: 'assign-mode-text' },
-      h('div', { class: 'assign-mode-title' }, title),
-      h('div', { class: 'assign-mode-desc' }, desc)
+    h('span', { class: 'amc-icon' }, icon),
+    h('span', { class: 'amc-content' },
+      h('span', { class: 'amc-title' }, title),
+      h('span', { class: 'amc-desc' }, desc)
     )
   );
   const modePicker = h('div', { class: 'assign-mode-grid' },
-    modeCard('single',     '👤 One employee',           'Assign every lead to a single person.'),
-    modeCard('round_robin','🔁 Round-robin (multi)',    'Pick 2+ employees — leads divided equally between them.'),
-    modeCard('percent',    '📊 Percentage split',       'Custom share — e.g. 60% / 30% / 10%.'),
-    modeCard('csv',        '📄 Use CSV value',           'Honour the assigned_to column on each row, or fall back to your assignment rules.')
+    modeCard('single',      '👤', 'One employee',         'Assign every lead to one person.'),
+    modeCard('round_robin', '🔁', 'Round-robin',           'Divide equally between selected employees.'),
+    modeCard('percent',     '📊', 'Percentage split',      'Custom share — e.g. 60% / 30% / 10%.'),
+    modeCard('csv',         '📄', 'Use CSV value',         'Per-row assigned_to or your assignment rules.')
   );
 
   // Mode-specific bodies
