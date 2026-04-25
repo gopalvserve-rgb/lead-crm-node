@@ -1688,3 +1688,14 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   background: var(--err-soft, #fee2e2) !important;
   color: var(--err, #ef4444) !important;
 }
+
+/* CSV upload warning panel */
+.csv-warn-list { display: flex; flex-direction: column; gap: .35rem; margin-bottom: .5rem; }
+.csv-warn {
+  display: flex; gap: .55rem; align-items: flex-start;
+  padding: .6rem .8rem; border-radius: 8px;
+  font-size: .82rem; line-height: 1.4;
+}
+.csv-warn.warn { background: #fef3c7; color: #92400e; border-left: 3px solid #f59e0b; }
+.csv-warn.ok   { background: #d1fae5; color: #065f46; border-left: 3px solid #10b981; }
+.csv-warn-ico { flex-shrink: 0; font-size: 1rem; line-height: 1.4; }

@@ -201,20 +201,33 @@ async function api_leads_create(token, payload) {
   const p = payload || {};
   if (!p.name) throw new Error('name required');
 
-  // Resolve assigned_to: accepts integer ID, email, or full name
-  // (used by the bulk-upload "assigned_to" / "assigned email" CSV column)
+  // Resolve assigned_to: accepts integer ID, email, or full name.
+  // Recognises common CSV column aliases people actually use:
+  //   assigned_to / user / owner / assignee / sales_rep / salesperson / agent
   let resolvedAssignee = '';
-  const rawAssign = p.assigned_to != null ? String(p.assigned_to).trim() : '';
+  const rawAssignSrc =
+    p.assigned_to ?? p.user ?? p.owner ?? p.assignee ??
+    p.sales_rep ?? p.salesperson ?? p.agent ?? p.assigned_user ?? p.rep ?? '';
+  const rawAssign = String(rawAssignSrc || '').trim();
   if (rawAssign) {
     if (/^\d+$/.test(rawAssign)) {
       resolvedAssignee = Number(rawAssign);
     } else {
       const allUsers = await db.getAll('users');
       const lower = rawAssign.toLowerCase();
-      const byEmail = allUsers.find(u => String(u.email || '').toLowerCase() === lower);
-      const byName  = allUsers.find(u => String(u.name  || '').toLowerCase() === lower);
+      const norm  = lower.replace(/\s+/g, ' '); // collapse internal spaces too
+      const byEmail = allUsers.find(u => String(u.email || '').trim().toLowerCase() === lower);
+      const byName  = allUsers.find(u => String(u.name  || '').trim().toLowerCase() === norm);
+      // Fallback: case-insensitive substring match (handles "Manoj" vs "Manoj Kumar ")
+      const byPartial = !byEmail && !byName
+        ? allUsers.find(u => {
+            const n = String(u.name || '').trim().toLowerCase();
+            return n && (n === norm || n.includes(norm) || norm.includes(n));
+          })
+        : null;
       if (byEmail) resolvedAssignee = Number(byEmail.id);
       else if (byName) resolvedAssignee = Number(byName.id);
+      else if (byPartial) resolvedAssignee = Number(byPartial.id);
       // If we couldn't resolve, leave blank so assignment rules can take over
     }
   }
@@ -244,6 +257,12 @@ async function api_leads_create(token, payload) {
   const dup = await _applyDuplicatePolicy(base, me.id);
   base = dup.payload;
   base.is_duplicate = dup.duplicate ? 1 : 0;
+  // Also flag is_duplicate=1 if the row's tag/notes explicitly say "Duplicate"
+  // — common in spreadsheets exported from older CRMs where users tag dupes
+  // manually. Word-boundary match so "Not Duplicate" doesn't trigger.
+  if (!base.is_duplicate && /\b(duplicate|dup)\b/i.test(String(base.tags || ''))) {
+    base.is_duplicate = 1;
+  }
   base.duplicate_of = dup.duplicate ? dup.matched_id : '';
   const id = await db.insert('leads', base);
   if (dup.duplicate) {

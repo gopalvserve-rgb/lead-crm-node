@@ -1208,16 +1208,67 @@ function openBulkUpload() {
     fileInfo.textContent = '⏳ Parsing ' + f.name + '…';
     try {
       parsedRows = await parseSpreadsheet(f);
-      // Surface a quick preview so the user can sanity-check before importing
       const cols = parsedRows.length ? Object.keys(parsedRows[0]) : [];
       const sample = parsedRows.slice(0, 3);
       fileInfo.textContent = `✅ ${f.name} — ${parsedRows.length} rows · ${cols.length} columns`;
+
+      // -------- Sanity warnings --------
+      const warnings = [];
+      // 1. Phone fields that came in as scientific notation -> Excel data loss
+      const phoneFields = cols.filter(c => /^(phone|mobile|whatsapp|alt_phone|alternate)$/i.test(c));
+      let sciPhoneCount = 0;
+      const allPhonesSeen = [];
+      parsedRows.forEach(r => {
+        phoneFields.forEach(f => {
+          const v = String(r[f] || '');
+          allPhonesSeen.push(v);
+          // Detect a phone that ends with a long run of zeros (Excel signature
+          // of a sci-notation conversion that lost trailing digits)
+          if (/^\d{10,}0{4,}$/.test(v) || /[eE]/.test(v)) sciPhoneCount++;
+        });
+      });
+      if (sciPhoneCount > 0) {
+        warnings.push({
+          icon: '⚠️',
+          msg: `${sciPhoneCount} phone number${sciPhoneCount === 1 ? ' is' : 's are'} in scientific notation — Excel has truncated trailing digits and these numbers are now corrupted. To fix: open your spreadsheet, right-click the Phone column → Format cells → Text, re-enter the numbers, then re-export.`
+        });
+      }
+      // 2. Detect employee column under common alias names
+      const userCols = cols.filter(c => /^(user|owner|assignee|sales_rep|salesperson|agent|assigned_user|rep|assigned_to)$/i.test(c));
+      if (userCols.length) {
+        warnings.push({
+          icon: '👤',
+          msg: `Detected employee column "${userCols[0]}" — leads will be auto-mapped to employees by name/email match.`,
+          ok: true
+        });
+      }
+      // 3. Notice if 'tags' column has status-like values (Duplicate, Lost, etc)
+      if (cols.includes('tags')) {
+        const dupCount = parsedRows.filter(r => /\b(duplicate|dup)\b/i.test(String(r.tags || ''))).length;
+        if (dupCount > 0) {
+          warnings.push({
+            icon: 'ℹ️',
+            msg: `${dupCount} row${dupCount === 1 ? '' : 's'} tagged as "Duplicate" will be flagged is_duplicate=1 (visible under Leads → ⚠️ Duplicates only filter).`,
+            ok: true
+          });
+        }
+      }
+      if (warnings.length) {
+        const wrap = h('div', { class: 'csv-warn-list' }, ...warnings.map(w =>
+          h('div', { class: 'csv-warn ' + (w.ok ? 'ok' : 'warn') },
+            h('span', { class: 'csv-warn-ico' }, w.icon),
+            h('span', {}, w.msg)
+          )
+        ));
+        filePreview.appendChild(wrap);
+      }
+
       if (sample.length) {
         const tbl = h('table', { class: 'mini-table csv-preview-table' });
         const thead = h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {}, c))));
         const tbody = h('tbody', {}, ...sample.map(r => h('tr', {}, ...cols.map(c => h('td', {}, String(r[c] || ''))))));
         tbl.append(thead, tbody);
-        filePreview.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem', marginBottom: '.35rem' } }, 'Preview — first 3 rows:'));
+        filePreview.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem', margin: '.5rem 0 .35rem' } }, 'Preview — first 3 rows:'));
         filePreview.appendChild(tbl);
         filePreview.hidden = false;
       }
