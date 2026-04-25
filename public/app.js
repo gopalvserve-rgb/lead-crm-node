@@ -2453,7 +2453,7 @@ VIEWS.reports = async (view) => {
   view.appendChild(h('div', { class: 'chart-grid' },
     h('div', { class: 'card' }, h('h3', {}, 'By status'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-status' }))),
     h('div', { class: 'card' }, h('h3', {}, 'By source'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-source' }))),
-    h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { id: 'chart-funnel-wrap', class: 'funnel-wrap' })),
+    h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { id: 'chart-funnel-wrap', class: 'rfun-wrap' })),
     h('div', { class: 'card card-wide' },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' } },
         h('h3', { style: { margin: 0 } }, 'By date'),
@@ -2659,12 +2659,17 @@ function renderFunnel(containerId, stages) {
     const c = Number(s.count) || 0;
     const widthPct = max > 0 ? Math.max(8, Math.round((c / max) * 100)) : 8;
     const convPct  = top > 0 ? Math.round((c / top) * 100) : 0;
-    const row = h('div', { class: 'funnel-row' },
-      h('div', { class: 'funnel-bar', style: { width: widthPct + '%', background: s.color || '#6366f1' } },
-        h('span', { class: 'funnel-label' }, s.name),
-        h('span', { class: 'funnel-count' }, String(c))
+    // Layout: [centering track] [conv % meta]. The bar lives inside the track
+    // and gets a percentage width so each subsequent stage is narrower —
+    // visually a real funnel.
+    const row = h('div', { class: 'rfun-row' },
+      h('div', { class: 'rfun-track' },
+        h('div', { class: 'rfun-bar', style: { width: widthPct + '%', background: s.color || '#6366f1' } },
+          h('span', { class: 'rfun-label' }, s.name),
+          h('span', { class: 'rfun-count' }, String(c))
+        )
       ),
-      h('div', { class: 'funnel-meta muted' }, i === 0 ? '' : (convPct + '% of top'))
+      h('div', { class: 'rfun-meta muted' }, i === 0 ? '100%' : (convPct + '%'))
     );
     wrap.appendChild(row);
   });

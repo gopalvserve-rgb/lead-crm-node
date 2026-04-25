@@ -176,22 +176,25 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 @media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 
-/* Lead funnel — CSS-based decreasing-width visual */
-.funnel-wrap { display: flex; flex-direction: column; gap: .5rem; padding: .25rem 0; }
-.funnel-row { display: flex; align-items: center; gap: .75rem; }
-.funnel-bar {
+/* Reports → Lead funnel — CSS-based decreasing-width visual.
+   Uses an `rfun-` (reports-funnel) prefix to avoid colliding with the
+   `.funnel-*` classes used by the Pipeline view. */
+.rfun-wrap { display: flex; flex-direction: column; gap: .5rem; padding: .25rem 0; }
+.rfun-row { display: flex; align-items: center; gap: .75rem; }
+.rfun-track { flex: 1; display: flex; justify-content: center; }
+.rfun-bar {
   display: flex; align-items: center; justify-content: space-between;
-  margin: 0 auto; padding: .55rem 1rem;
+  padding: .55rem 1rem;
   border-radius: 999px; min-width: 90px; min-height: 36px;
   color: #fff; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,.08);
   transition: width .25s ease;
 }
-.funnel-label { font-size: .92rem; flex: 1; text-align: left; }
-.funnel-count { font-size: 1rem; font-weight: 700; margin-left: .75rem; }
-.funnel-meta { min-width: 90px; font-size: .82rem; text-align: right; }
+.rfun-label { font-size: .92rem; flex: 1; text-align: left; }
+.rfun-count { font-size: 1rem; font-weight: 700; margin-left: .75rem; }
+.rfun-meta { width: 90px; flex-shrink: 0; font-size: .82rem; text-align: right; }
 @media (max-width: 600px) {
-  .funnel-meta { display: none; }
-  .funnel-bar { padding: .45rem .75rem; }
+  .rfun-meta { display: none; }
+  .rfun-bar { padding: .45rem .75rem; }
 }
 .loading { padding: 2rem; text-align: center; color: var(--muted); }
 .error-box { padding: 1rem; background: var(--err-soft); color: var(--err); border-radius: var(--radius-sm); }
