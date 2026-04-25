@@ -1,6 +1,23 @@
 const db = require('../db/pg');
 const { authUser, getVisibleUserIds } = require('../utils/auth');
 
+// Timezone the user thinks of "today" in. Server runs UTC on Railway but
+// our users are in India, so a lead created at 04:00 IST on Apr 26 is stored
+// as 22:30 UTC on Apr 25 and was previously bucketed as Apr 25 — which made
+// the date+user filter return wrong totals (e.g. "Vaibhav, yesterday" missed
+// late-night leads). Convert to the configured timezone before slicing.
+const REPORT_TZ = process.env.TIMEZONE || 'Asia/Kolkata';
+const _tzFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: REPORT_TZ, year: 'numeric', month: '2-digit', day: '2-digit'
+});
+function _tzDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).slice(0, 10);
+  // en-CA locale formats as "YYYY-MM-DD" — perfect for string compare.
+  return _tzFmt.format(d);
+}
+
 async function _visibleLeads(me) {
   const visible = await getVisibleUserIds(me);
   return (await db.getAll('leads')).filter(l => {
@@ -74,8 +91,8 @@ async function api_reports_summary(token, filters) {
  */
 async function _applyReportFilters(rows, filters, users) {
   filters = filters || {};
-  if (filters.from) rows = rows.filter(l => String(l.created_at).slice(0, 10) >= filters.from);
-  if (filters.to)   rows = rows.filter(l => String(l.created_at).slice(0, 10) <= filters.to);
+  if (filters.from) rows = rows.filter(l => _tzDate(l.created_at) >= filters.from);
+  if (filters.to)   rows = rows.filter(l => _tzDate(l.created_at) <= filters.to);
   if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
   if (filters.role) {
     const userIds = (users || []).filter(u => u.role === filters.role).map(u => Number(u.id));
@@ -139,15 +156,16 @@ async function api_reports_daily(token, filters) {
   let toDate   = filters && filters.to;
   if (!fromDate || !toDate) {
     if (rows.length === 0) return [];
-    const sorted = rows.map(l => String(l.created_at).slice(0, 10)).sort();
+    const sorted = rows.map(l => _tzDate(l.created_at)).sort();
     if (!fromDate) fromDate = sorted[0];
     if (!toDate)   toDate   = sorted[sorted.length - 1];
   }
 
-  // Bucket leads by day
+  // Bucket leads by local day (in REPORT_TZ) so a lead created at 02:00 IST
+  // is counted on its IST date, not the UTC date.
   const buckets = {};
   rows.forEach(l => {
-    const d = String(l.created_at).slice(0, 10);
+    const d = _tzDate(l.created_at);
     if (!buckets[d]) buckets[d] = { total: 0, new_leads: 0, won: 0, lost: 0, open: 0 };
     buckets[d].total++;
     if (isName(l, 'New'))  buckets[d].new_leads++;

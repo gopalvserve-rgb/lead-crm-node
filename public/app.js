@@ -511,7 +511,9 @@ VIEWS.dashboard = async (view) => {
 
   setTimeout(() => {
     const statusData = (summary.by_status || []).filter(x => x.c > 0);
-    makeChart('dash-pie', 'pie', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
+    // User asked for the dashboard "Leads by status" to be a bar chart with
+    // visible numbers (not a pie). Bar chart with status colors and datalabels.
+    makeChart('dash-pie', 'bar', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
     const srcData = summary.by_source || [];
     makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
   }, 50);
@@ -2451,7 +2453,7 @@ VIEWS.reports = async (view) => {
   view.appendChild(h('div', { class: 'chart-grid' },
     h('div', { class: 'card' }, h('h3', {}, 'By status'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-status' }))),
     h('div', { class: 'card' }, h('h3', {}, 'By source'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-source' }))),
-    h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-funnel' }))),
+    h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { id: 'chart-funnel-wrap', class: 'funnel-wrap' })),
     h('div', { class: 'card card-wide' },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' } },
         h('h3', { style: { margin: 0 } }, 'By date'),
@@ -2488,16 +2490,18 @@ async function loadReports() {
     ));
   });
 
-  makeChart('chart-status', 'doughnut',
+  // "By status" is now a bar chart with visible numbers — easier to read and
+  // compare than a doughnut, especially with many statuses.
+  makeChart('chart-status', 'bar',
     (summary.by_status || []).map(x => x.status),
     (summary.by_status || []).map(x => x.c),
     (summary.by_status || []).map(x => x.color));
   makeChart('chart-source', 'bar',
     (summary.by_source || []).map(x => x.source),
     (summary.by_source || []).map(x => x.c));
-  makeChart('chart-funnel', 'bar',
-    funnel.map(f => f.name), funnel.map(f => f.count),
-    funnel.map(f => f.color), { indexAxis: 'y' });
+  // Funnel: replaced the horizontal-bar chart with a true funnel visual
+  // (decreasing-width rows showing both count and conversion-from-top %).
+  renderFunnel('chart-funnel-wrap', funnel);
 
   // ---------- "By date" — daily breakdown chart + table ----------
   renderDailyBreakdown(daily, filters);
@@ -2628,6 +2632,42 @@ function formatDayLabel(iso) {
   const d = new Date(iso + 'T00:00:00Z');
   if (isNaN(d)) return iso;
   return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
+}
+
+/**
+ * Render a CSS-based lead funnel into the given container.
+ *
+ * Each stage is a colored, rounded "bar" whose width is proportional to the
+ * count, centered on the page (so it visually narrows like a real funnel).
+ * Shows: stage label · absolute count · % of the top stage (conversion rate).
+ *
+ * Replaces the old horizontal Chart.js bar — which was indistinguishable from
+ * a regular bar chart — with a more traditional funnel design that makes
+ * stage-to-stage drop-off obvious at a glance.
+ */
+function renderFunnel(containerId, stages) {
+  const wrap = document.getElementById(containerId);
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  if (!stages || !stages.length) {
+    wrap.innerHTML = '<p class="muted">No funnel data for this period.</p>';
+    return;
+  }
+  const max = Math.max(...stages.map(s => Number(s.count) || 0), 1);
+  const top = Number(stages[0]?.count) || 0;
+  stages.forEach((s, i) => {
+    const c = Number(s.count) || 0;
+    const widthPct = max > 0 ? Math.max(8, Math.round((c / max) * 100)) : 8;
+    const convPct  = top > 0 ? Math.round((c / top) * 100) : 0;
+    const row = h('div', { class: 'funnel-row' },
+      h('div', { class: 'funnel-bar', style: { width: widthPct + '%', background: s.color || '#6366f1' } },
+        h('span', { class: 'funnel-label' }, s.name),
+        h('span', { class: 'funnel-count' }, String(c))
+      ),
+      h('div', { class: 'funnel-meta muted' }, i === 0 ? '' : (convPct + '% of top'))
+    );
+    wrap.appendChild(row);
+  });
 }
 
 function makeChart(canvasId, type, labels, data, colors, extra) {
