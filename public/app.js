@@ -153,6 +153,34 @@ function fmtDate(s, opts) {
     return d.toLocaleString();
   } catch (_) { return String(s); }
 }
+
+/**
+ * Convert any datetime stored in the DB (ISO UTC, or naive Postgres timestamp)
+ * to a "YYYY-MM-DDTHH:mm" string in the user's LOCAL timezone, suitable for
+ * a datetime-local input. Without this, a UTC value like 2026-04-25T15:10:00Z
+ * shows in the form as 15:10 instead of the local 20:40.
+ */
+function isoToLocalDtInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 16);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Inverse of isoToLocalDtInput. Converts a "YYYY-MM-DDTHH:mm" datetime-local
+ * value (interpreted as the user's local time) into a UTC ISO string the
+ * server can store and round-trip safely. JavaScript's Date constructor parses
+ * datetime-local strings as local time — toISOString() then emits proper UTC.
+ */
+function localDtInputToIso(s) {
+  const v = String(s || '').trim();
+  if (!v) return null;
+  const d = new Date(v);
+  if (isNaN(d)) return null;
+  return d.toISOString();
+}
 function toast(msg, type = 'ok') {
   const t = h('div', { class: `toast toast-${type}` }, msg);
   document.body.appendChild(t);
@@ -841,7 +869,7 @@ async function openAfterCallModal(lead) {
           const fu = $('#ac-followup').value;
           const patch = {};
           if (statusId && statusId !== Number(lead.status_id)) patch.status_id = statusId;
-          if (fu) patch.next_followup_at = fu;
+          if (fu) patch.next_followup_at = localDtInputToIso(fu);
           try {
             if (Object.keys(patch).length) await api('api_leads_update', lead.id, patch);
             if (remark) await api('api_leads_addRemark', lead.id, { remark });
@@ -1521,7 +1549,7 @@ async function openLeadModal(id) {
     selectField('status_id', 'Status', lead.status_id, statuses.map(s => ({ value: s.id, label: s.name }))),
     selectField('assigned_to', 'Assigned To', lead.assigned_to, users.map(u => ({ value: u.id, label: u.name }))),
     field('tags', 'Tags (comma separated)', lead.tags),
-    field('next_followup_at', 'Next follow-up', lead.next_followup_at ? String(lead.next_followup_at).slice(0, 16) : '', { type: 'datetime-local' }),
+    field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local' }),
     field('city', 'City', lead.city),
     field('notes', 'Notes', lead.notes, { type: 'textarea', full: true })
   );
@@ -1555,7 +1583,7 @@ async function openLeadModal(id) {
       product_id: Number(fd.get('product_id')) || null,
       status_id: Number(fd.get('status_id')) || null,
       assigned_to: Number(fd.get('assigned_to')) || null,
-      tags: fd.get('tags'), next_followup_at: fd.get('next_followup_at') || null,
+      tags: fd.get('tags'), next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
       city: fd.get('city'), notes: fd.get('notes'),
       extra
     };
@@ -3776,7 +3804,7 @@ async function openTaskModal() {
       h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
       h('button', { class: 'btn primary', onclick: async () => {
         const f = $('#t-form');
-        try { await api('api_tasks_save', { title: f.title.value, description: f.description.value, assigned_to: Number(f.assigned_to.value), due_at: f.due_at.value }); toast('Created'); modal.remove(); navigateTo('tasks'); }
+        try { await api('api_tasks_save', { title: f.title.value, description: f.description.value, assigned_to: Number(f.assigned_to.value), due_at: localDtInputToIso(f.due_at.value) }); toast('Created'); modal.remove(); navigateTo('tasks'); }
         catch (e) { toast(e.message, 'err'); }
       } }, 'Create')
     )
