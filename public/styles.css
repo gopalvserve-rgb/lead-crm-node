@@ -1493,3 +1493,187 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .csv-preview { max-height: 180px; }
   .csv-preview-table { font-size: .72rem; }
 }
+
+/* ============================================================
+   Fix #1: Mobile-menu sheet — admin name + email need to be readable
+   (was greyed out)
+   ============================================================ */
+@media (max-width: 780px) {
+  .bottom-nav-more-modal .me {
+    background: var(--bg-alt, #f8fafc);
+    border-radius: 12px;
+    padding: .75rem .85rem !important;
+    margin-bottom: .85rem;
+  }
+  .bottom-nav-more-modal .me .name {
+    color: var(--text, #0f172a) !important;
+    font-weight: 700;
+    font-size: 1rem;
+  }
+  .bottom-nav-more-modal .me .role {
+    color: var(--text-soft, #475569) !important;
+    font-size: .82rem;
+    text-transform: capitalize;
+  }
+  .bottom-nav-more-modal .me .role.muted {
+    color: var(--text-soft, #475569) !important;
+  }
+  .bottom-nav-more-modal .me .avatar {
+    width: 42px; height: 42px;
+    font-size: 1rem;
+    flex-shrink: 0;
+  }
+}
+
+/* ============================================================
+   Fix #2: Toolbar dropdowns (Any status / source / assignee / followups)
+   were ugly bare boxes — give them proper theming
+   ============================================================ */
+.toolbar select,
+.toolbar input {
+  background: #fff !important;
+  border: 1.5px solid var(--border, #e5e7eb) !important;
+  border-radius: 10px !important;
+  padding: .55rem .75rem !important;
+  font-size: .9rem !important;
+  color: var(--text, #0f172a) !important;
+  cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+  /* Custom chevron — replaces the boring native arrow */
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' stroke='%236366f1' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>") !important;
+  background-repeat: no-repeat !important;
+  background-position: right .75rem center !important;
+  padding-right: 2rem !important;
+}
+.toolbar input { background-image: none !important; padding-right: .75rem !important; }
+.toolbar select:focus,
+.toolbar input:focus {
+  outline: none;
+  border-color: var(--brand, #6366f1) !important;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, .12) !important;
+}
+.toolbar select:hover {
+  border-color: var(--brand, #6366f1) !important;
+}
+
+@media (max-width: 780px) {
+  .toolbar {
+    background: #fff;
+    border-radius: 14px;
+    padding: .75rem !important;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+    margin-bottom: .65rem;
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    gap: .5rem;
+  }
+  .toolbar input.flex {
+    grid-column: 1 / -1;
+  }
+  .toolbar select {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+  /* Action buttons in the toolbar — make them a proper row */
+  .toolbar > .btn {
+    grid-column: span 1;
+    padding: .5rem !important;
+    min-height: 40px;
+  }
+  .toolbar > .btn.primary {
+    grid-column: 1 / -1;
+    margin-top: .25rem;
+  }
+}
+
+/* ============================================================
+   Fix #3: Follow-ups upcoming table — was cramped, missing padding
+   On mobile we re-render rows as cards (not a table)
+   ============================================================ */
+@media (max-width: 780px) {
+  /* Make follow-ups cards properly padded */
+  #view > .card {
+    padding: 1rem 1.1rem !important;
+    margin-bottom: .85rem;
+    border-radius: 14px;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, .05);
+    background: #fff;
+  }
+  #view > .card h3 {
+    margin: 0 0 .65rem;
+    font-size: 1rem;
+    display: flex; align-items: center; gap: .4rem;
+  }
+  #view > .card h3 .chip-count {
+    margin-left: auto;
+    background: var(--bg-alt, #f1f5f9);
+  }
+
+  /* Convert the follow-ups <table> into card-style rows */
+  #view > .card .table-wrap { overflow-x: visible; border-radius: 0; }
+  #view > .card table { display: block; }
+  #view > .card table thead { display: none; }
+  #view > .card table tbody { display: block; }
+  #view > .card table tr {
+    display: grid !important;
+    grid-template-columns: 1fr auto;
+    gap: .25rem .65rem;
+    padding: .75rem .85rem !important;
+    background: var(--bg-alt, #f8fafc);
+    border-radius: 10px;
+    margin-bottom: .5rem;
+    border-bottom: none !important;
+  }
+  #view > .card table tr:last-child { margin-bottom: 0; }
+  #view > .card table td {
+    display: block !important;
+    padding: 0 !important;
+    border: none !important;
+    font-size: .9rem;
+  }
+  /* td order: Lead, Phone, Due, Note, action */
+  #view > .card table td:nth-child(1) {
+    font-weight: 600;
+    color: var(--text, #0f172a);
+    grid-column: 1;
+  }
+  #view > .card table td:nth-child(2) {
+    color: var(--text-soft, #475569);
+    font-size: .82rem;
+    grid-column: 1;
+    grid-row: 2;
+  }
+  #view > .card table td:nth-child(3) {
+    color: var(--brand, #6366f1);
+    font-size: .8rem;
+    grid-column: 1;
+    grid-row: 3;
+  }
+  #view > .card table td:nth-child(3).overdue {
+    color: var(--err, #ef4444);
+    font-weight: 600;
+  }
+  #view > .card table td:nth-child(4) {
+    color: var(--muted, #94a3b8);
+    font-size: .82rem;
+    grid-column: 1;
+    grid-row: 4;
+  }
+  #view > .card table td:nth-child(4):empty { display: none !important; }
+  #view > .card table td:nth-child(5) {
+    grid-column: 2;
+    grid-row: 1 / 5;
+    align-self: center;
+  }
+  #view > .card table td:nth-child(5) .btn.sm {
+    background: var(--ok, #10b981) !important;
+    color: #fff !important;
+    border: none !important;
+    padding: .45rem .75rem !important;
+    font-size: .8rem !important;
+    border-radius: 8px;
+  }
+}
