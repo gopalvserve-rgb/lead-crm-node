@@ -2281,6 +2281,14 @@ VIEWS.reports = async (view) => {
     h('div', { class: 'card' }, h('h3', {}, 'By status'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-status' }))),
     h('div', { class: 'card' }, h('h3', {}, 'By source'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-source' }))),
     h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-funnel' }))),
+    h('div', { class: 'card card-wide' },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' } },
+        h('h3', { style: { margin: 0 } }, 'By date'),
+        h('button', { class: 'btn sm ghost', id: 'rep-daily-csv', title: 'Download daily breakdown as CSV' }, '⬇️ CSV')
+      ),
+      h('div', { class: 'chart-wrap', style: { height: '220px' } }, h('canvas', { id: 'chart-daily' })),
+      h('div', { id: 'rep-daily-table', style: { marginTop: '1rem' } })
+    ),
     h('div', { class: 'card card-wide' }, h('h3', {}, 'By user'), h('div', { id: 'rep-by-user' }))
   ));
   await loadReports();
@@ -2294,8 +2302,13 @@ async function loadReports() {
   const product_id = $('#rep-product')?.value || undefined;
   const source = $('#rep-source')?.value || undefined;
   const tag = $('#rep-tag')?.value || undefined;
-  const summary = await api('api_reports_summary', { from, to, scope_user_id: user, role, product_id, source, tag });
-  const funnel  = await api('api_reports_funnel',  { from, to });
+  // Pass the SAME filter object to every endpoint so charts and tables agree.
+  const filters = { from, to, scope_user_id: user, role, product_id, source, tag };
+  const [summary, funnel, daily] = await Promise.all([
+    api('api_reports_summary', filters),
+    api('api_reports_funnel',  filters),
+    api('api_reports_daily',   filters)
+  ]);
 
   $('#rep-cards').innerHTML = '';
   [['Total', summary.totals.total, 'accent'], ['New', summary.totals.new_leads, ''], ['Won', summary.totals.won, 'ok'], ['Lost', summary.totals.lost, 'err']].forEach(([label, val, klass]) => {
@@ -2315,6 +2328,9 @@ async function loadReports() {
     funnel.map(f => f.name), funnel.map(f => f.count),
     funnel.map(f => f.color), { indexAxis: 'y' });
 
+  // ---------- "By date" — daily breakdown chart + table ----------
+  renderDailyBreakdown(daily, filters);
+
   const byUserEl = $('#rep-by-user');
   byUserEl.innerHTML = '';
   if (!summary.by_user.length) { byUserEl.innerHTML = '<p class="muted">No user activity in this period.</p>'; return; }
@@ -2326,6 +2342,116 @@ async function loadReports() {
       h('td', { class: 'cell-ok' }, u.won), h('td', { class: 'cell-err' }, u.lost)
     )))
   )));
+}
+
+/**
+ * Renders the daily breakdown: a multi-line chart (Total / New / Won / Lost
+ * per day) AND a sortable table below so users can read the exact numbers.
+ *
+ * Most users want to see "how many leads did we get on each day" alongside
+ * the rolled-up totals — without this they have to eyeball the chart and
+ * miss small differences between days.
+ */
+function renderDailyBreakdown(daily, filters) {
+  const tableEl = $('#rep-daily-table');
+  if (!tableEl) return;
+
+  // Empty state
+  if (!daily || daily.length === 0) {
+    tableEl.innerHTML = '<p class="muted">No leads in the selected range.</p>';
+    const ctx = document.getElementById('chart-daily');
+    if (ctx && ctx._chart) { ctx._chart.destroy(); ctx._chart = null; }
+    return;
+  }
+
+  // Multi-line chart: Total + New + Won + Lost per day
+  const labels = daily.map(d => formatDayLabel(d.date));
+  const ctx = document.getElementById('chart-daily');
+  if (ctx) {
+    if (ctx._chart) ctx._chart.destroy();
+    ctx._chart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Total', data: daily.map(d => d.total),     borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,.1)', tension: .25, fill: true },
+          { label: 'New',   data: daily.map(d => d.new_leads), borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.05)', tension: .25 },
+          { label: 'Won',   data: daily.map(d => d.won),       borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,.05)', tension: .25 },
+          { label: 'Lost',  data: daily.map(d => d.lost),      borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,.05)',  tension: .25 }
+        ]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { grid: { color: '#f3f4f6' }, beginAtZero: true, ticks: { stepSize: 1, precision: 0 } }
+        },
+        interaction: { mode: 'index', intersect: false }
+      }
+    });
+  }
+
+  // Detailed table — one row per day, with totals row at the bottom
+  const totals = daily.reduce((a, d) => ({
+    total: a.total + d.total,
+    new_leads: a.new_leads + d.new_leads,
+    open: a.open + d.open,
+    won: a.won + d.won,
+    lost: a.lost + d.lost
+  }), { total: 0, new_leads: 0, open: 0, won: 0, lost: 0 });
+
+  tableEl.innerHTML = '';
+  tableEl.appendChild(h('div', { class: 'table-wrap', style: { maxHeight: '420px', overflowY: 'auto' } },
+    h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Date'), h('th', { style: { textAlign: 'right' } }, 'Total'),
+        h('th', { style: { textAlign: 'right' } }, 'New'), h('th', { style: { textAlign: 'right' } }, 'Open'),
+        h('th', { style: { textAlign: 'right' } }, 'Won'), h('th', { style: { textAlign: 'right' } }, 'Lost')
+      )),
+      h('tbody', {}, ...daily.map(d => h('tr', {},
+        h('td', {}, formatDayLabel(d.date)),
+        h('td', { style: { textAlign: 'right' } }, d.total),
+        h('td', { style: { textAlign: 'right' } }, d.new_leads),
+        h('td', { style: { textAlign: 'right' } }, d.open),
+        h('td', { class: 'cell-ok',  style: { textAlign: 'right' } }, d.won),
+        h('td', { class: 'cell-err', style: { textAlign: 'right' } }, d.lost)
+      ))),
+      h('tfoot', {}, h('tr', { style: { fontWeight: 700, background: '#f9fafb' } },
+        h('td', {}, 'Total'),
+        h('td', { style: { textAlign: 'right' } }, totals.total),
+        h('td', { style: { textAlign: 'right' } }, totals.new_leads),
+        h('td', { style: { textAlign: 'right' } }, totals.open),
+        h('td', { style: { textAlign: 'right' } }, totals.won),
+        h('td', { style: { textAlign: 'right' } }, totals.lost)
+      ))
+    )
+  ));
+
+  // CSV download — quick win for users who want to paste into Excel/Sheets
+  const csvBtn = $('#rep-daily-csv');
+  if (csvBtn) {
+    csvBtn.onclick = () => {
+      const lines = ['Date,Total,New,Open,Won,Lost'];
+      daily.forEach(d => lines.push([d.date, d.total, d.new_leads, d.open, d.won, d.lost].join(',')));
+      lines.push(['Total', totals.total, totals.new_leads, totals.open, totals.won, totals.lost].join(','));
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'daily-report-' + (filters.from || daily[0].date) + '_to_' + (filters.to || daily[daily.length - 1].date) + '.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+  }
+}
+
+function formatDayLabel(iso) {
+  // Compact format matching the existing date pattern in remarks/dates.
+  // "2026-04-25" → "25 Apr"
+  const d = new Date(iso + 'T00:00:00Z');
+  if (isNaN(d)) return iso;
+  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' });
 }
 
 function makeChart(canvasId, type, labels, data, colors, extra) {

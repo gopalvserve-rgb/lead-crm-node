@@ -12,27 +12,9 @@ async function _visibleLeads(me) {
 
 async function api_reports_summary(token, filters) {
   const me = await authUser(token);
-  filters = filters || {};
   let rows = await _visibleLeads(me);
   const users = await db.getAll('users');
-  if (filters.from) rows = rows.filter(l => String(l.created_at).slice(0, 10) >= filters.from);
-  if (filters.to)   rows = rows.filter(l => String(l.created_at).slice(0, 10) <= filters.to);
-  if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
-  if (filters.role) {
-    const userIds = users.filter(u => u.role === filters.role).map(u => Number(u.id));
-    rows = rows.filter(l => userIds.includes(Number(l.assigned_to)));
-  }
-  if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
-  if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
-  if (filters.tag)        rows = rows.filter(l => String(l.tags || '').toLowerCase().split(',').map(s => s.trim()).includes(String(filters.tag).toLowerCase()));
-  if (filters.custom_key && filters.custom_value) {
-    rows = rows.filter(l => {
-      try {
-        const extra = typeof l.extra_json === 'string' ? JSON.parse(l.extra_json) : (l.extra_json || {});
-        return String(extra[filters.custom_key] || '').toLowerCase() === String(filters.custom_value).toLowerCase();
-      } catch (_) { return false; }
-    });
-  }
+  rows = await _applyReportFilters(rows, filters, users);
 
   const statuses = await db.getAll('statuses');
   const byStatus = statuses.map(s => ({
@@ -85,15 +67,109 @@ async function api_reports_summary(token, filters) {
   };
 }
 
-async function api_reports_funnel(token, filters) {
-  const me = await authUser(token);
+/**
+ * Apply the same set of filters everywhere — date range, user/role, product,
+ * source, tag, custom field. Centralised so the funnel, daily breakdown, and
+ * summary always agree on what's "in scope".
+ */
+async function _applyReportFilters(rows, filters, users) {
   filters = filters || {};
-  let rows = await _visibleLeads(me);
   if (filters.from) rows = rows.filter(l => String(l.created_at).slice(0, 10) >= filters.from);
   if (filters.to)   rows = rows.filter(l => String(l.created_at).slice(0, 10) <= filters.to);
+  if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
+  if (filters.role) {
+    const userIds = (users || []).filter(u => u.role === filters.role).map(u => Number(u.id));
+    rows = rows.filter(l => userIds.includes(Number(l.assigned_to)));
+  }
+  if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
+  if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
+  if (filters.tag) {
+    const t = String(filters.tag).toLowerCase();
+    rows = rows.filter(l => String(l.tags || '').toLowerCase().split(',').map(s => s.trim()).includes(t));
+  }
+  if (filters.custom_key && filters.custom_value) {
+    rows = rows.filter(l => {
+      try {
+        const extra = typeof l.extra_json === 'string' ? JSON.parse(l.extra_json) : (l.extra_json || {});
+        return String(extra[filters.custom_key] || '').toLowerCase() === String(filters.custom_value).toLowerCase();
+      } catch (_) { return false; }
+    });
+  }
+  return rows;
+}
+
+async function api_reports_funnel(token, filters) {
+  const me = await authUser(token);
+  let rows = await _visibleLeads(me);
+  const users = await db.getAll('users');
+  rows = await _applyReportFilters(rows, filters, users);
   const statuses = (await db.getAll('statuses')).sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
   const counts = {}; rows.forEach(l => { const k = Number(l.status_id) || 0; counts[k] = (counts[k] || 0) + 1; });
   return statuses.map(s => ({ id: s.id, name: s.name, color: s.color, count: counts[Number(s.id)] || 0, sort_order: s.sort_order }));
 }
 
-module.exports = { api_reports_summary, api_reports_funnel };
+/**
+ * Per-day breakdown for the selected filters. Returns one row per day in the
+ * range (including zero-count days so the chart shows a continuous line).
+ *
+ * Each row: { date: 'YYYY-MM-DD', total, new_leads, won, lost, open }
+ *
+ * If from/to aren't provided, defaults to the last 30 days based on the data
+ * itself. If there's no data, returns an empty array.
+ */
+async function api_reports_daily(token, filters) {
+  const me = await authUser(token);
+  let rows = await _visibleLeads(me);
+  const users = await db.getAll('users');
+  rows = await _applyReportFilters(rows, filters, users);
+  const statuses = await db.getAll('statuses');
+  const statusById = {};
+  statuses.forEach(s => { statusById[Number(s.id)] = s; });
+  const isFinal = (l) => {
+    const s = statusById[Number(l.status_id)];
+    return s && Number(s.is_final) === 1;
+  };
+  const isName = (l, name) => {
+    const s = statusById[Number(l.status_id)];
+    return s && s.name === name;
+  };
+
+  // Build the date range. Prefer filters.from/to; otherwise span the data.
+  let fromDate = filters && filters.from;
+  let toDate   = filters && filters.to;
+  if (!fromDate || !toDate) {
+    if (rows.length === 0) return [];
+    const sorted = rows.map(l => String(l.created_at).slice(0, 10)).sort();
+    if (!fromDate) fromDate = sorted[0];
+    if (!toDate)   toDate   = sorted[sorted.length - 1];
+  }
+
+  // Bucket leads by day
+  const buckets = {};
+  rows.forEach(l => {
+    const d = String(l.created_at).slice(0, 10);
+    if (!buckets[d]) buckets[d] = { total: 0, new_leads: 0, won: 0, lost: 0, open: 0 };
+    buckets[d].total++;
+    if (isName(l, 'New'))  buckets[d].new_leads++;
+    if (isName(l, 'Won'))  buckets[d].won++;
+    if (isName(l, 'Lost')) buckets[d].lost++;
+    if (!isFinal(l))       buckets[d].open++;
+  });
+
+  // Walk every day in the range so zero-count days appear as a flat zero
+  const out = [];
+  const start = new Date(fromDate + 'T00:00:00Z');
+  const end   = new Date(toDate   + 'T00:00:00Z');
+  if (isNaN(start) || isNaN(end) || start > end) return [];
+  // Cap at 366 days to keep the response small even on bad input.
+  const maxDays = 366;
+  let count = 0;
+  for (let d = new Date(start); d <= end && count < maxDays; d.setUTCDate(d.getUTCDate() + 1), count++) {
+    const key = d.toISOString().slice(0, 10);
+    const b = buckets[key] || { total: 0, new_leads: 0, won: 0, lost: 0, open: 0 };
+    out.push(Object.assign({ date: key }, b));
+  }
+  return out;
+}
+
+module.exports = { api_reports_summary, api_reports_funnel, api_reports_daily };
