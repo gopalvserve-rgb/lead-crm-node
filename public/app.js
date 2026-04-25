@@ -3531,6 +3531,7 @@ VIEWS.users = async (view) => {
   const users = await api('api_users_list');
   const me = CRM.user || {};
   const canReset = ['admin', 'manager'].includes(me.role);
+  const canDelete = me.role === 'admin';
   view.innerHTML = '';
   view.append(
     h('div', { class: 'toolbar' },
@@ -3547,7 +3548,27 @@ VIEWS.users = async (view) => {
             class: 'btn sm ghost', style: { marginLeft: '.3rem' },
             title: 'Reset password',
             onclick: () => openUserModal(u)   // opens the modal where the reset block lives
-          }, '🔑') : null
+          }, '🔑') : null,
+          // Delete: admin-only, hidden for self (server also enforces both rules).
+          canDelete && Number(u.id) !== Number(me.id) ? h('button', {
+            class: 'btn sm danger', style: { marginLeft: '.3rem' },
+            title: 'Delete user',
+            onclick: async () => {
+              const ok = await confirmDialog(
+                `Delete user "${u.name}" (${u.email})?\n\n` +
+                `Their leads will be re-assigned to you. Their remarks and ` +
+                `notifications will keep the lead history but lose the author. ` +
+                `This cannot be undone.`
+              );
+              if (!ok) return;
+              try {
+                const r = await api('api_users_delete', u.id);
+                toast(`Deleted ${u.name}. ${r.reassigned_to ? 'Their leads moved to you.' : ''}`);
+                await warmCache();
+                navigateTo('users');
+              } catch (e) { toast(e.message, 'err'); }
+            }
+          }, '🗑️') : null
         )
       )))
     ))

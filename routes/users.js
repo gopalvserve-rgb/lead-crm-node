@@ -151,7 +151,60 @@ async function api_users_resetPassword(token, userId, newPassword) {
   return { password: plain };
 }
 
+/**
+ * Hard-delete a user with safety checks. Reassigns their leads to the caller
+ * (or to the org's first admin) so the data isn't orphaned.
+ *
+ * Guards:
+ *   - Admin only — managers can't delete other admins/managers, and we don't
+ *     want manager-level access to permanently remove team members.
+ *   - Cannot delete yourself.
+ *   - Cannot delete the last active admin (would lock you out of the system).
+ */
+async function api_users_delete(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Only admins can delete users');
+  const target = await db.findById('users', id);
+  if (!target) throw new Error('User not found');
+  if (Number(target.id) === Number(me.id)) throw new Error('You cannot delete your own account');
+  if (target.role === 'admin') {
+    const admins = (await db.getAll('users')).filter(u => u.role === 'admin' && Number(u.is_active) === 1);
+    if (admins.length <= 1) {
+      throw new Error('Cannot delete the only remaining admin — promote another user first');
+    }
+  }
+
+  // Reassign every record this user owns so we don't leave dangling foreign keys.
+  // Lead reassignment goes to the deleting admin so visibility is preserved.
+  // For other tables we just clear the reference (set NULL where allowed).
+  const reassign = async (table, column, newValue) => {
+    try {
+      await db.query(
+        `UPDATE ${table} SET ${column} = $1 WHERE ${column} = $2`,
+        [newValue, target.id]
+      );
+    } catch (e) {
+      // If the column doesn't exist on this deployment it's fine — skip silently.
+      if (!/column .* does not exist/i.test(String(e.message || ''))) {
+        console.warn(`[delete user] reassign ${table}.${column} failed:`, e.message);
+      }
+    }
+  };
+  await reassign('leads', 'assigned_to', me.id);
+  await reassign('leads', 'created_by', me.id);
+  await reassign('remarks', 'user_id', null);
+  await reassign('lead_recordings', 'user_id', null);
+  await reassign('notifications', 'user_id', null);
+  await reassign('tasks', 'assigned_to', me.id);
+  await reassign('tasks', 'created_by', me.id);
+
+  // Now safe to hard-delete the user row.
+  await db.removeRow('users', target.id);
+  return { ok: true, id: Number(target.id), reassigned_to: me.id };
+}
+
 module.exports = {
   api_users_list, api_users_create, api_users_update,
-  api_users_updateSelf, api_users_save, api_users_resetPassword
+  api_users_updateSelf, api_users_save, api_users_resetPassword,
+  api_users_delete
 };
