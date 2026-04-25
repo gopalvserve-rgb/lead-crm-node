@@ -1346,3 +1346,115 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   .modal-backdrop { padding: 0 !important; }
   .modal { max-width: 100vw; box-sizing: border-box; }
 }
+
+/* ============================================================
+   Login screen — proper field spacing
+   ============================================================ */
+#login-form { display: flex; flex-direction: column; gap: 0; }
+#login-form label {
+  display: block;
+  margin: .85rem 0 .35rem;
+  font-size: .85rem; font-weight: 500;
+  color: #475569;
+}
+#login-form label:first-child { margin-top: 0; }
+#login-form input[type=email],
+#login-form input[type=password] {
+  width: 100%;
+  margin-bottom: 0;
+}
+#login-form button[type=submit] {
+  margin-top: 1.5rem;
+  padding: .9rem 1rem !important;
+  font-size: 1rem !important;
+  font-weight: 600;
+  height: auto;
+}
+#login-form .error {
+  margin: .75rem 0 0;
+  color: var(--err, #ef4444);
+  font-size: .85rem;
+  text-align: center;
+  min-height: 1.2em;
+}
+.login-card { padding: 2rem 1.75rem !important; }
+.login-brand { margin-bottom: 1.5rem !important; }
+
+@media (max-width: 780px) {
+  .login-card { padding: 1.75rem 1.4rem !important; }
+  #login-form button[type=submit] { margin-top: 1.4rem; padding: 1rem !important; }
+  #login-form label { margin-top: 1rem; }
+}
+
+/* ============================================================
+   Dashboard — single-column on phones so all reports are visible
+   ============================================================ */
+@media (max-width: 780px) {
+  /* KPI cards: 2 per row */
+  .cards { grid-template-columns: 1fr 1fr !important; gap: .65rem !important; }
+  .card.stat { padding: .85rem !important; }
+  .card.stat .stat-icon { font-size: 1.3rem; opacity: .7; }
+  .card.stat .stat-value { font-size: 1.5rem !important; font-weight: 700; }
+  .card.stat .stat-label { font-size: .72rem !important; }
+
+  /* Dashboard charts/lists: stack one-per-row so each one is fully visible */
+  .dash-grid {
+    display: grid !important;
+    grid-template-columns: 1fr !important;
+    gap: .75rem !important;
+    margin-top: .85rem;
+  }
+  .dash-grid > .card,
+  .dash-grid > .card.card-wide {
+    width: 100% !important;
+    grid-column: auto !important;
+    margin: 0 !important;
+  }
+
+  /* Chart canvases — fixed-height container so charts don't collapse */
+  .chart-wrap {
+    width: 100% !important;
+    min-height: 220px;
+    max-height: 280px;
+    position: relative;
+  }
+  .chart-wrap canvas {
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Upcoming follow-ups list cards — readable on phones */
+  .fu-dash-list { padding: 0; margin: 0; list-style: none; }
+  .fu-dash-list li {
+    padding: .65rem .75rem;
+    background: var(--bg-alt, #f8fafc);
+    border-radius: 10px;
+    margin-bottom: .4rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: .25rem .75rem;
+    align-items: center;
+  }
+  .fu-dash-list .fu-name { font-weight: 600; cursor: pointer; }
+  .fu-dash-list .fu-phone { font-size: .8rem; grid-column: 1; }
+  .fu-dash-list .fu-due {
+    grid-column: 2; grid-row: 1 / 3;
+    font-size: .78rem; align-self: center; text-align: right;
+  }
+  .fu-dash-list .fu-due.overdue { color: var(--err, #ef4444); font-weight: 600; }
+}
+
+/* ============================================================
+   Reports view — make charts stack on phones too
+   ============================================================ */
+@media (max-width: 780px) {
+  .reports-grid {
+    grid-template-columns: 1fr !important;
+    gap: .75rem;
+  }
+  .reports-grid > .card,
+  .reports-grid > .card.card-wide {
+    grid-column: auto !important;
+  }
+}
