@@ -364,6 +364,20 @@ async function api_leads_create(token, payload) {
         }
       }
     } catch (e) { console.warn('[mailer] lead_created notify failed:', e.message); }
+
+    // ---- Web Push (SMS-style) — fires on user's phone even if app is closed ----
+    try {
+      const push = require('./push');
+      if (resolvedAssignee && Number(resolvedAssignee) !== Number(me.id)) {
+        await push.sendPushToUser(resolvedAssignee, {
+          title: '🎯 New lead assigned',
+          body:  `${base.name || 'Unknown'} ${base.phone ? '· ' + base.phone : ''}${base.source ? '\nSource: ' + base.source : ''}`,
+          url:   '/#/leads',
+          tag:   'lead-' + id,
+          sticky: true
+        });
+      }
+    } catch (e) { console.warn('[push] lead_assigned failed:', e.message); }
   });
 
   return { id, duplicate: dup.duplicate, matched_id: dup.matched_id };

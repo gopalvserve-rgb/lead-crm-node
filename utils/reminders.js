@@ -115,6 +115,19 @@ async function _runOnce() {
         + `<p>Due: ${new Date(f.due_at).toLocaleString()}</p>`
       );
     }
+
+    // Web Push — fires the user's phone with an SMS-style banner even if
+    // the app is closed. Best-effort: silently skip if push isn't set up.
+    try {
+      const push = require('../routes/push');
+      await push.sendPushToUser(user.id, {
+        title: '⏰ Follow-up due',
+        body:  `${lead?.name || 'Unknown'}${lead?.phone ? ' · ' + lead.phone : ''}${body ? '\n' + body : ''}`,
+        url:   `/#/followups`,
+        tag:   'fu-' + f.id,
+        sticky: true
+      });
+    } catch (e) { console.warn('[push] reminder send failed:', e.message); }
     fired++;
   }
 

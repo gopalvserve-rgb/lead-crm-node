@@ -80,6 +80,11 @@ async function apiRaw(fn, ...args) {
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
       refreshNotifs();
+      // Register Web Push so the user's phone gets SMS-style banners even
+      // when the CRM tab / installed PWA is closed. Runs after a short delay
+      // so it doesn't block initial render. Silently skips on browsers that
+      // don't support push or where the user declines permission.
+      setTimeout(() => registerWebPush().catch(() => {}), 2000);
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
@@ -88,6 +93,17 @@ async function apiRaw(fn, ...args) {
     } catch (_) { logout(); }
   } else {
     renderLogin();
+  }
+
+  // When the service worker fires a notificationclick, it posts a 'navigate'
+  // message back to the page — route to the URL the push payload pointed at.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', ev => {
+      const m = ev && ev.data;
+      if (m && m.type === 'navigate' && m.url) {
+        try { location.assign(m.url); } catch (_) { location.href = m.url; }
+      }
+    });
   }
 
   window.addEventListener('hashchange', () => {
@@ -4833,6 +4849,77 @@ function promptSaveAsLead(number) {
     )
   ));
   document.body.appendChild(modal);
+}
+
+/* ---------------- Web Push subscription ---------------- */
+/**
+ * Register the browser's Push Manager with our VAPID public key, then send
+ * the subscription to the backend so it can push to this device. Idempotent —
+ * calling again with an existing subscription just re-syncs it.
+ *
+ * Once subscribed, the service worker handles `push` events and shows a
+ * native banner + sound + vibration EVEN IF THE TAB / INSTALLED APP IS CLOSED.
+ * That's the SMS-like behaviour the user wants.
+ */
+async function registerWebPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+  if (Notification.permission === 'denied') return;
+
+  // Ask for permission if we haven't yet. Don't be aggressive — only on
+  // explicit "default" state. Granted = re-use; Denied = give up silently.
+  if (Notification.permission === 'default') {
+    const result = await Notification.requestPermission();
+    if (result !== 'granted') return;
+  }
+
+  const reg = await navigator.serviceWorker.ready;
+
+  // Pull the server's VAPID public key — it's persistent so we cache it.
+  let publicKey = sessionStorage.getItem('vapid_pub') || '';
+  if (!publicKey) {
+    try {
+      const r = await api('api_push_publicKey');
+      publicKey = r.publicKey || '';
+      if (publicKey) sessionStorage.setItem('vapid_pub', publicKey);
+    } catch (e) { console.warn('[push] no public key from server:', e.message); return; }
+  }
+  if (!publicKey) return;
+
+  // Subscribe (or re-use existing). Browsers de-dupe by endpoint, so calling
+  // subscribe with the same applicationServerKey is safe and returns the
+  // same object.
+  let sub;
+  try {
+    sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: _urlBase64ToUint8(publicKey)
+      });
+    }
+  } catch (e) {
+    console.warn('[push] subscribe failed:', e.message);
+    return;
+  }
+
+  // Send the subscription to the backend. Even if it's the same one as
+  // before, this refreshes the user_id link in case the user has logged
+  // in as someone else on this device.
+  try {
+    await api('api_push_subscribe', sub.toJSON ? sub.toJSON() : sub, navigator.userAgent);
+    console.log('[push] subscription registered');
+  } catch (e) { console.warn('[push] register on server failed:', e.message); }
+}
+
+// Convert the URL-safe base64 VAPID public key into the Uint8Array the
+// PushManager API expects.
+function _urlBase64ToUint8(s) {
+  const padding = '='.repeat((4 - s.length % 4) % 4);
+  const base64 = (s + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; ++i) arr[i] = raw.charCodeAt(i);
+  return arr;
 }
 
 /* ---------------- Notifications + follow-up popup ---------------- */
