@@ -447,12 +447,20 @@ VIEWS.leads = async (view) => {
     selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source),
     selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to),
     selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup),
+    selectOpts('f-duplicate', [
+      { id: '', name: 'All leads' },
+      { id: 'only', name: '⚠️ Duplicates only' },
+      { id: 'unique', name: 'No duplicates' }
+    ], CRM.prefs.filters.duplicate),
     h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
     h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
     h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
     h('button', { class: 'btn ghost', onclick: openBulkUpload, title: 'Upload CSV' }, '⬆️'),
     h('button', { class: 'btn ghost', onclick: exportCSV, title: 'Export CSV' }, '⬇️'),
+    (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+      ? h('button', { class: 'btn ghost danger', onclick: deleteAllDuplicates, title: 'Delete every lead marked DUP' }, '🗑️ Dedupe')
+      : null,
     h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
   );
   view.appendChild(toolbar);
@@ -500,6 +508,7 @@ async function loadLeads(opts) {
     source:      $('#f-source')?.value || undefined,
     assigned_to: $('#f-assigned')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
+    duplicate:   $('#f-duplicate')?.value || undefined,
     page,
     page_size:   pageSize
   };
@@ -513,6 +522,7 @@ async function loadLeads(opts) {
     const res = await api('api_leads_list', filters);
     CRM.cache.lastLeads = res.leads;
     CRM.cache.lastStatusCounts = res.status_count;
+    CRM.cache.lastTotal = res.total || (res.leads || []).length;
     renderLeadsTable(res.leads);
     renderStatusChips(res.status_count);
     renderLeadsPagination({
@@ -972,6 +982,36 @@ async function bulkDelete() {
   if (!await confirmDialog(`Delete ${ids.length} leads? This cannot be undone.`)) return;
   try { await api('api_leads_bulkDelete', ids); toast('Deleted'); clearSelection(); loadLeads(); }
   catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * Delete every lead currently flagged is_duplicate=1, server-side.
+ * Admin/manager only. Confirmation prompt with the count first.
+ */
+async function deleteAllDuplicates() {
+  // Surface the duplicates view first so the admin can see what's about
+  // to be removed, with the accurate total.
+  const sel = document.getElementById('f-duplicate');
+  if (sel) sel.value = 'only';
+  await loadLeads({ page: 1 });
+  const fullCount = Number(CRM.cache.lastTotal) || (CRM.cache.lastLeads || []).length;
+  if (!fullCount) {
+    toast('No duplicates found. ✨');
+    if (sel) sel.value = '';
+    await loadLeads({ page: 1 });
+    return;
+  }
+  const msg = `Delete ALL ${fullCount} duplicate lead${fullCount === 1 ? '' : 's'}?\n\n` +
+              `This will permanently remove them from the database. ` +
+              `Their remarks and follow-ups will also be deleted.\n\n` +
+              `This cannot be undone.`;
+  if (!await confirmDialog(msg)) return;
+  try {
+    const r = await api('api_leads_deleteAllDuplicates');
+    toast(`✅ Removed ${r.count} duplicate lead${r.count === 1 ? '' : 's'}`);
+    if (sel) sel.value = '';
+    await loadLeads({ page: 1 });
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 /* --- CSV export / upload --- */

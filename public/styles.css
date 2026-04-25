@@ -1677,3 +1677,14 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
     border-radius: 8px;
   }
 }
+
+/* Danger-ghost variant — used by the "Dedupe" button */
+.btn.ghost.danger {
+  color: var(--err, #ef4444) !important;
+  border-color: transparent !important;
+  background: transparent !important;
+}
+.btn.ghost.danger:hover {
+  background: var(--err-soft, #fee2e2) !important;
+  color: var(--err, #ef4444) !important;
+}

@@ -126,6 +126,12 @@ async function api_leads_list(token, filters) {
     rows = rows.filter(l => l.next_followup_at && String(l.next_followup_at) < now);
   }
 
+  // Duplicate filter:
+  //   'only'   → show only duplicates
+  //   'unique' → show only non-duplicates
+  if (filters.duplicate === 'only')        rows = rows.filter(l => Number(l.is_duplicate) === 1);
+  else if (filters.duplicate === 'unique') rows = rows.filter(l => Number(l.is_duplicate) !== 1);
+
   rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const total = rows.length;
   const statusCount = {};
@@ -401,6 +407,22 @@ async function api_leads_bulkUpdate(token, leadIds, patch) {
   return { ok: true, count };
 }
 
+/**
+ * Delete all leads marked is_duplicate=1.
+ * Returns the count of leads deleted. The corresponding remarks/followups
+ * are removed via ON DELETE CASCADE.
+ */
+async function api_leads_deleteAllDuplicates(token) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
+  const dups = (await db.getAll('leads')).filter(l => Number(l.is_duplicate) === 1);
+  let count = 0;
+  for (const lead of dups) {
+    if (await db.removeRow('leads', lead.id)) count++;
+  }
+  return { ok: true, count };
+}
+
 async function api_leads_bulkDelete(token, leadIds) {
   const me = await authUser(token);
   if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
@@ -559,5 +581,6 @@ module.exports = {
   api_leads_list, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
   api_leads_addRemark, api_leads_pipeline, api_myFollowups, api_followup_done,
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
+  api_leads_deleteAllDuplicates,
   api_whatsapp_send
 };
