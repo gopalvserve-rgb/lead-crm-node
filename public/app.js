@@ -1316,7 +1316,7 @@ function openBulkUpload() {
   const modal = h('div', { class: 'modal-backdrop' },
     h('div', { class: 'modal modal-lg' },
       h('div', { class: 'modal-head' }, h('h3', {}, '⬆️ Bulk upload leads'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
-      h('p', { class: 'muted' }, 'Step 1: pick a CSV or Excel (.xlsx) file. Columns: name, phone, email, whatsapp, source, product, notes, city, tags, next_followup_at, assigned_to, plus any custom field keys.'),
+      h('p', { class: 'muted' }, 'Step 1: pick a CSV or Excel (.xlsx) file. Columns: name, phone, email, whatsapp, source, product, status, notes, city, tags, next_followup_at, assigned_to, plus any custom field keys. The status and product columns accept names — unknown values are auto-created.'),
       h('p', { class: 'muted', style: { fontSize: '.82rem' } },
         h('b', {}, 'Tip: '), 'You can pre-assign leads to specific employees by adding an ',
         h('code', {}, 'assigned_to'),

@@ -95,6 +95,48 @@ async function _newStatusId() {
   return s ? s.id : '';
 }
 
+/**
+ * Resolve a status NAME (e.g. "Follow Up", "Converted") to a status_id.
+ * Case-insensitive, trims whitespace. Auto-creates the status if it doesn't
+ * exist yet — that way bulk CSV imports just work even when the spreadsheet
+ * has status values the admin hasn't pre-defined.
+ *
+ * Pass an empty/falsy raw to fall back to the default "New" status.
+ */
+async function _resolveStatusIdByName(raw) {
+  const name = String(raw || '').trim();
+  if (!name) return await _newStatusId();
+  // Already an integer ID? Trust it.
+  if (/^\d+$/.test(name)) return Number(name);
+  const all = await db.getAll('statuses');
+  const lower = name.toLowerCase();
+  const match = all.find(s => String(s.name || '').trim().toLowerCase() === lower);
+  if (match) return Number(match.id);
+  // Auto-create with neutral grey colour, sorted to the bottom so it doesn't
+  // disrupt the existing pipeline order. Admin can recolour / reorder later.
+  const newId = await db.insert('statuses', {
+    name, color: '#94a3b8', sort_order: 900, is_final: 0
+  });
+  return Number(newId);
+}
+
+/**
+ * Resolve a product NAME to a product_id. Same pattern as statuses.
+ */
+async function _resolveProductIdByName(raw) {
+  const name = String(raw || '').trim();
+  if (!name) return '';
+  if (/^\d+$/.test(name)) return Number(name);
+  const all = await db.getAll('products');
+  const lower = name.toLowerCase();
+  const match = all.find(p => String(p.name || '').trim().toLowerCase() === lower);
+  if (match) return Number(match.id);
+  const newId = await db.insert('products', {
+    name, description: '', price: 0, is_active: 1
+  });
+  return Number(newId);
+}
+
 async function api_leads_list(token, filters) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
@@ -236,6 +278,16 @@ async function api_leads_create(token, payload) {
   const cleanPhone = String(p.phone || '').trim().replace(/^'/, '');
   const cleanWA    = String(p.whatsapp || cleanPhone || '').trim().replace(/^'/, '');
 
+  // Resolve status_id: prefer numeric `status_id`, otherwise look up `status`
+  // by NAME (the natural shape of CSV imports). Auto-creates missing statuses.
+  // Same idea for product_id / product.
+  const resolvedStatusId = p.status_id
+    ? Number(p.status_id)
+    : await _resolveStatusIdByName(p.status);
+  const resolvedProductId = p.product_id
+    ? Number(p.product_id)
+    : (p.product ? await _resolveProductIdByName(p.product) : '');
+
   let base = {
     name: String(p.name).trim(),
     email: String(p.email || '').trim(),
@@ -243,8 +295,8 @@ async function api_leads_create(token, payload) {
     whatsapp: cleanWA,
     source: p.source || 'manual',
     source_ref: p.source_ref || '',
-    product_id: p.product_id || '',
-    status_id: p.status_id || (await _newStatusId()),
+    product_id: resolvedProductId,
+    status_id: resolvedStatusId || (await _newStatusId()),
     assigned_to: resolvedAssignee || me.id,
     city: p.city || '',
     tags: p.tags || '',
@@ -277,6 +329,43 @@ async function api_leads_create(token, payload) {
     await _syncFollowup(id, base.assigned_to || me.id, base.next_followup_at, '');
   }
   try { require('../utils/automations').fire('lead_created', { lead: Object.assign({ id }, base), user: me }); } catch (_) {}
+
+  // ---- Email notifications (fire-and-forget) ----
+  setImmediate(async () => {
+    try {
+      const mailer = require('../utils/mailer');
+      const cfg = (await db.getAll('config').catch(() => [])).reduce((a, r) => (a[r.key] = r.value, a), {});
+      const baseUrl = cfg.BASE_URL || process.env.BASE_URL || '';
+      const lead_url = baseUrl ? baseUrl + '/#/leads' : '#/leads';
+
+      const ctx = {
+        name: base.name, phone: base.phone, email: base.email,
+        source: base.source, city: base.city, tags: base.tags,
+        notes: base.notes,
+        lead_url
+      };
+
+      // 1. New lead → admins + manager(s)
+      const adminUsers = (await db.getAll('users')).filter(u =>
+        u.email && (u.role === 'admin' || u.role === 'manager') && Number(u.is_active) === 1
+      );
+      for (const u of adminUsers) {
+        await mailer.sendEvent('new_lead', Object.assign({ to: u.email }, ctx));
+      }
+      // 2. Lead assigned → the assignee (if not the same person who created it)
+      if (resolvedAssignee && Number(resolvedAssignee) !== Number(me.id)) {
+        const assignee = await db.findById('users', resolvedAssignee).catch(() => null);
+        if (assignee && assignee.email) {
+          await mailer.sendEvent('lead_assigned', Object.assign({ to: assignee.email }, ctx, {
+            assigned_name: assignee.name,
+            assigned_first_name: (assignee.name || '').split(' ')[0],
+            assigned_email: assignee.email
+          }));
+        }
+      }
+    } catch (e) { console.warn('[mailer] lead_created notify failed:', e.message); }
+  });
+
   return { id, duplicate: dup.duplicate, matched_id: dup.matched_id };
 }
 
