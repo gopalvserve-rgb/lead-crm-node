@@ -88,6 +88,15 @@ async function apiRaw(fn, ...args) {
       // Native push (Capacitor APK only) — talks to Firebase Cloud Messaging.
       // No-ops in regular browsers / installed PWAs (those use Web Push above).
       setTimeout(() => registerCapacitorPush().catch(() => {}), 2500);
+      // If a notification tap launched the app cold and we stashed the
+      // target URL before the router was ready, apply it now that we're in.
+      try {
+        const pending = sessionStorage.getItem('pendingPushUrl');
+        if (pending) {
+          sessionStorage.removeItem('pendingPushUrl');
+          setTimeout(() => applyPushUrl(pending), 1000);
+        }
+      } catch (_) {}
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
@@ -7204,6 +7213,30 @@ async function registerWebPush() {
 }
 
 /**
+ * Apply a URL from a push notification — handles hash-routed SPA paths
+ * (/#/foo, #/foo) and absolute URLs. Forces a navigation event so the
+ * router definitely fires VIEWS.<name> even if the same hash was set.
+ */
+function applyPushUrl(url) {
+  if (!url) return;
+  try {
+    let target = url;
+    if (target.startsWith('/#/')) target = '#' + target.slice(2);  // /#/dial?... → #/dial?...
+    else if (target.startsWith('#/')) { /* keep as-is */ }
+    else if (target.startsWith('/')) target = '#' + target;
+    else { location.href = target; return; }
+    // Force a hashchange even if same target — set to blank then real
+    // value so listeners fire.
+    if (location.hash === target) {
+      location.hash = '#/_';
+      setTimeout(() => { location.hash = target; }, 30);
+    } else {
+      location.hash = target;
+    }
+  } catch (_) {}
+}
+
+/**
  * Register the Capacitor app for Firebase Cloud Messaging push.
  *
  * Only runs inside the native APK — browsers and PWAs go through Web Push
@@ -7260,16 +7293,24 @@ async function registerCapacitorPush() {
     });
 
     // Tap → navigate inside the WebView to the URL we put in `data.url`.
+    // Cold-start case: when tapping a notification launches the app fresh,
+    // this listener fires BEFORE the SPA's router has fully booted (login
+    // check, warmCache, etc.). So we save the target URL and re-apply once
+    // the app is ready, plus fire the navigation immediately as well in
+    // case the router IS up.
     Push.addListener('pushNotificationActionPerformed', (action) => {
       try {
-        const url = action && action.notification && action.notification.data && action.notification.data.url;
-        if (url) {
-          // Hash-routed SPA — `location.hash = '#/foo'` is the right move.
-          if (url.startsWith('/#/')) location.hash = url.slice(1);
-          else if (url.startsWith('#/')) location.hash = url;
-          else if (url.startsWith('/')) location.hash = '#' + url;
-          else location.href = url;
-        }
+        const data = (action && action.notification && action.notification.data) || {};
+        const url = data.url || '';
+        if (!url) return;
+        // Save for retry — survives across the boot sequence.
+        try { sessionStorage.setItem('pendingPushUrl', url); } catch (_) {}
+        // Try once now (in case router is already up)
+        applyPushUrl(url);
+        // And again after a delay — covers the cold-start case where the
+        // router was still booting on the first attempt.
+        setTimeout(() => applyPushUrl(url), 800);
+        setTimeout(() => applyPushUrl(url), 2000);
       } catch (_) {}
     });
 
