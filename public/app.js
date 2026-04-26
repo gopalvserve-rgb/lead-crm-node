@@ -2931,45 +2931,66 @@ VIEWS.dial = async (view) => {
     return;
   }
   const tel = 'tel:' + phone.replace(/\s+/g, '');
+  const status = h('div', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.5rem' } });
 
-  // Multi-strategy auto-dial. Capacitor WebView blocks tel: by default,
-  // so we have to delegate to Android's Intent system via the @capacitor/app
-  // plugin. Falls back to window.open('_system') and plain href on browsers
-  // / older WebViews.
   async function autoDial() {
     const cap = window.Capacitor;
+    const tries = [];
     // Strategy 1 — Capacitor App.openUrl (Android: launches ACTION_DIAL)
     try {
       if (cap && cap.Plugins && cap.Plugins.App && typeof cap.Plugins.App.openUrl === 'function') {
         const r = await cap.Plugins.App.openUrl({ url: tel });
-        if (r && r.completed !== false) return 'capacitor';
-      }
-    } catch (_) {}
-    // Strategy 2 — window.open with _system target. Capacitor maps this to
-    // an Intent on Android. On normal browsers, this opens a system handler.
+        tries.push('App.openUrl→' + JSON.stringify(r));
+        if (r && r.completed !== false) { status.textContent = '✓ Launched via App.openUrl'; return 'capacitor'; }
+      } else { tries.push('no App.openUrl'); }
+    } catch (e) { tries.push('App.openUrl threw: ' + e.message); }
+    // Strategy 2 — window.open with _system
     try {
       const w = window.open(tel, '_system');
-      if (w) return 'window';
-    } catch (_) {}
-    // Strategy 3 — plain location.href. Works on regular browsers.
-    try { location.href = tel; return 'href'; } catch (_) {}
+      tries.push('window.open(_system)→' + (w ? 'win' : 'null'));
+      if (w) { status.textContent = '✓ Launched via window.open'; return 'window'; }
+    } catch (e) { tries.push('window.open threw: ' + e.message); }
+    // Strategy 3 — invisible iframe (works in some WebViews where href doesn't)
+    try {
+      const f = document.createElement('iframe');
+      f.style.display = 'none';
+      f.src = tel;
+      document.body.appendChild(f);
+      tries.push('iframe→appended');
+      setTimeout(() => f.remove(), 1000);
+      status.textContent = '✓ Launched via iframe';
+      return 'iframe';
+    } catch (e) { tries.push('iframe threw: ' + e.message); }
+    // Strategy 4 — programmatic anchor click (very reliable in WebViews)
+    try {
+      const a = document.createElement('a');
+      a.href = tel; a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      tries.push('anchor.click()→fired');
+      setTimeout(() => a.remove(), 100);
+      status.textContent = '✓ Launched via anchor.click()';
+      return 'anchor';
+    } catch (e) { tries.push('anchor.click threw: ' + e.message); }
+    // Strategy 5 — plain href
+    try { location.href = tel; tries.push('location.href set'); status.textContent = '✓ Launched via location.href'; return 'href'; } catch (e) { tries.push('location.href threw: ' + e.message); }
+    status.innerHTML = '<span style="color:#ef4444">All strategies failed: ' + tries.join(' · ') + '</span>';
     return 'failed';
   }
 
   setTimeout(() => { autoDial().catch(() => {}); }, 150);
 
-  view.appendChild(h('div', { class: 'card', style: { maxWidth: '380px', margin: '2rem auto', textAlign: 'center', padding: '1.5rem' } },
-    h('div', { style: { fontSize: '3rem' } }, '📞'),
-    h('h2', { style: { margin: '.5rem 0' } }, 'Calling…'),
-    h('p', { class: 'muted', style: { fontSize: '1rem', marginTop: 0 } }, phone),
-    // Big tap-to-call button — using a plain <a href="tel:..."> is the most
-    // reliable way; Android handles a real anchor tap as a hard Intent
-    // launch even from inside a WebView.
-    h('a', { class: 'btn primary', style: { display: 'block', marginTop: '1rem', fontSize: '1.1rem', padding: '.85rem 1.25rem' }, href: tel,
-      onclick: ev => { ev.preventDefault(); autoDial(); }
-    }, '📞 Tap to call'),
-    h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '1rem' } }, 'If your dialer didn\'t open automatically, tap the button above.'),
-    h('a', { class: 'btn ghost', style: { marginTop: '.5rem' }, href: '#/leads' }, '← Back to leads')
+  view.appendChild(h('div', { style: { maxWidth: '420px', margin: '1rem auto', textAlign: 'center', padding: '1rem' } },
+    h('div', { style: { fontSize: '4rem', marginTop: '1rem' } }, '📞'),
+    h('h1', { style: { margin: '.5rem 0', fontSize: '1.5rem' } }, 'Calling…'),
+    h('p', { style: { fontSize: '1.4rem', fontWeight: '700', fontFamily: 'monospace', margin: '.5rem 0 1.5rem' } }, phone),
+    // Hard anchor tap — most reliable path inside Capacitor WebView. Tapping
+    // an <a href="tel:..."> is treated as a real Intent launch by Android.
+    h('a', { class: 'btn primary', style: { display: 'block', fontSize: '1.4rem', padding: '1.25rem', background: '#10b981', color: '#fff', border: 'none', borderRadius: '12px', textDecoration: 'none', fontWeight: '600' }, href: tel },
+      '📞 CALL NOW'
+    ),
+    status,
+    h('a', { class: 'btn ghost', style: { marginTop: '1.25rem', display: 'inline-block' }, href: '#/leads' }, '← Back to leads')
   ));
 };
 
