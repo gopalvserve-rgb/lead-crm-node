@@ -181,6 +181,72 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 @media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 
+/* WhatsBot Connect screen — matches Corbital-style mockup */
+.wb-conn-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 .25rem; margin: .5rem 0 1rem;
+}
+.wb-conn-head h2 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+.wb-emb-toggle { display: flex; align-items: center; gap: .65rem; cursor: pointer; user-select: none; font-size: .9rem; }
+.wb-emb-toggle .switch {
+  position: relative; display: inline-block; width: 42px; height: 22px;
+  background: #cbd5e1; border-radius: 999px; transition: background .15s;
+}
+.wb-emb-toggle .switch.on { background: #3b82f6; }
+.wb-emb-toggle .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.wb-emb-toggle .switch .slider {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; background: #fff; border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  transition: left .15s;
+}
+.wb-emb-toggle .switch.on .slider { left: 22px; }
+
+.wb-conn-status { padding: .75rem 1rem; }
+.wb-fb-card { padding: 0; }
+.wb-card-title {
+  padding: .75rem 1rem; border-bottom: 1px solid var(--border);
+  color: #3b82f6; font-weight: 500;
+}
+.wb-fb-form { padding: 1rem 1.25rem; }
+.wb-row { margin-bottom: 1rem; }
+.wb-row label {
+  display: block; font-size: .85rem; font-weight: 500; color: #1e293b;
+  margin-bottom: .35rem;
+}
+.wb-row input {
+  width: 100%; padding: .55rem .75rem; border: 1px solid var(--border);
+  border-radius: 6px; background: #f8fafc; font-size: .9rem;
+}
+.wb-row input:focus { background: #fff; border-color: #3b82f6; outline: none; }
+.help-q {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: transparent; border: 1px solid #94a3b8;
+  font-size: .7rem; color: #64748b; margin-right: .15rem;
+}
+.wb-help-link {
+  margin-left: .35rem; color: #ef4444; font-size: .75rem; font-weight: 600;
+  text-decoration: none; letter-spacing: .03em;
+}
+.wb-help-link:hover { text-decoration: underline; }
+.btn.ok { background: #10b981; color: #fff; border: none; }
+.btn.ok:hover { background: #059669; }
+
+.wb-connect-fb {
+  display: flex; flex-direction: column; align-items: center;
+  margin-top: 1.25rem;
+}
+.btn-fb-meta {
+  display: inline-flex; align-items: center; gap: .5rem;
+  background: #2563eb; color: #fff; padding: .65rem 1.5rem;
+  border: none; border-radius: 6px; font-size: 1rem; font-weight: 600;
+  cursor: pointer; box-shadow: 0 2px 6px rgba(37,99,235,.25);
+}
+.btn-fb-meta:hover { background: #1d4ed8; }
+.btn-fb-meta.disabled, .btn-fb-meta:disabled { background: #94a3b8; cursor: not-allowed; box-shadow: none; }
+.btn-fb-meta .fb-icon { background: #fff; color: #2563eb; padding: 0 .35rem; border-radius: 4px; font-weight: 800; }
+
 /* WhatsBot chat — 2-column layout */
 .wb-chat { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; height: calc(100vh - 200px); }
 .wb-chat-list { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: .75rem; overflow-y: auto; }
