@@ -288,11 +288,26 @@ async function api_wb_disconnect(token) {
  *   - the last inbound webhook entry timestamp (none → Meta isn't reaching us)
  *   - count of webhook events in last 24 h (sanity check)
  */
-async function api_wb_webhook_status(token) {
+async function api_wb_webhook_status(token, clientOrigin) {
   await authUser(token);
   const cfg = await _cfg();
-  const baseUrl = (process.env.BASE_URL || '').replace(/\/+$/, '') || '';
-  const verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+  // Prefer BASE_URL env var; fall back to whatever origin the browser is on
+  // so the webhook URL is always resolvable even on un-configured deploys.
+  const envBase = (process.env.BASE_URL || '').replace(/\/+$/, '');
+  const clientBase = String(clientOrigin || '').replace(/\/+$/, '');
+  const baseUrl = envBase || clientBase || '';
+
+  // Auto-generate a verify token on first request if one isn't set —
+  // saves the admin a step and makes the setup checklist usable
+  // immediately. Token is a random 32-char hex string, stored in config.
+  let verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+  if (!verifyToken) {
+    try {
+      const buf = require('crypto').randomBytes(16);
+      verifyToken = buf.toString('hex');
+      await db.setConfig('WHATSAPP_VERIFY_TOKEN', verifyToken);
+    } catch (_) {}
+  }
 
   let subscribed = null;
   let subscribeError = null;
@@ -335,8 +350,8 @@ async function api_wb_webhook_status(token) {
 
   return {
     webhook_url: (baseUrl || '') + '/hook/whatsapp_webhook',
+    verify_token: verifyToken || '',
     verify_token_set: !!verifyToken,
-    verify_token_preview: verifyToken ? (verifyToken.slice(0, 4) + '…' + verifyToken.slice(-2)) : '',
     subscribed,
     subscribe_error: subscribeError,
     last_inbound, last_status, recent_count_24h: recent_count

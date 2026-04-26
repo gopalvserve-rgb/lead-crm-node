@@ -2978,7 +2978,7 @@ async function wbConnect() {
     const whBody = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
     whCard.appendChild(whBody);
     wrap.appendChild(whCard);
-    api('api_wb_webhook_status').then(w => {
+    api('api_wb_webhook_status', location.origin).then(w => {
       whBody.innerHTML = '';
       const isHealthy = (w.recent_count_24h > 0) && Array.isArray(w.subscribed) && w.subscribed.length > 0;
       whCard.style.borderLeftColor = isHealthy ? '#10b981' : '#f59e0b';
@@ -3008,14 +3008,10 @@ async function wbConnect() {
           ),
           h('li', { style: { marginBottom: '.4rem' } },
             'Verify Token — paste this exactly: ',
-            h('input', { value: s.verify_token || '', readonly: 'readonly',
+            h('input', { value: w.verify_token || s.verify_token || '', readonly: 'readonly',
               style: { fontFamily: 'monospace', width: '100%', marginTop: '.25rem', padding: '.4rem', fontSize: '.78rem' },
-              placeholder: s.verify_token ? '' : '⚠ NOT SET — add a value below in Manual settings, save, then re-open this',
               onclick: ev => { ev.target.select(); document.execCommand && document.execCommand('copy'); toast('Copied'); }
-            }),
-            !s.verify_token ? h('div', { class: 'muted', style: { color: '#ef4444', fontSize: '.78rem', marginTop: '.2rem' } },
-              '⚠ Verify Token is empty. Open Manual credentials below, set it (any random string), save, then refresh this page.'
-            ) : null
+            })
           ),
           h('li', { style: { marginBottom: '.4rem' } },
             'Click ', h('b', {}, 'Verify and save'), ' in Meta — they\'ll ping our endpoint and confirm.'
