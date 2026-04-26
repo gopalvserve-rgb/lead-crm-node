@@ -3125,10 +3125,25 @@ function startEmbeddedSignup(appId, configId) {
   window.addEventListener('message', sessionInfoListener);
 
   toast('Opening Facebook…');
+  // Track if we ever got a postMessage from facebook.com — if not after 12s,
+  // the popup is likely being instantly closed by Facebook because the
+  // redirect URI isn't whitelisted in the app's OAuth settings.
+  let _gotMessage = false;
+  const _origListener = sessionInfoListener;
+  const wrapped = (event) => { if (event.origin === 'https://www.facebook.com') _gotMessage = true; _origListener(event); };
+  window.removeEventListener('message', _origListener);
+  window.addEventListener('message', wrapped);
   FB.login(async (response) => {
-    window.removeEventListener('message', sessionInfoListener);
+    window.removeEventListener('message', wrapped);
     if (!response.authResponse) {
-      toast('Login cancelled or popup blocked. Allow popups and try again.', 'warn');
+      // Most common cause: the FB app whitelist rejects the redirect URI,
+      // so the popup shows "URL blocked" and auto-closes. Detect this
+      // pattern (no postMessage ever received) and show a helpful message.
+      if (!_gotMessage) {
+        toast('Facebook rejected the popup. Open Meta App Dashboard → Settings → Basic and add "' + location.host + '" to App Domains, then in Use cases → Authentication → Settings, add "' + location.origin + '/" and "' + location.origin + '/#/whatsbot/connect" to Valid OAuth Redirect URIs. Save and try again.', 'err');
+      } else {
+        toast('Login cancelled by user.', 'warn');
+      }
       return;
     }
     const code = response.authResponse.code;
