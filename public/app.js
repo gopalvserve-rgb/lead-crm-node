@@ -4644,15 +4644,24 @@ function renderFunnel(containerId, stages) {
     wrap.innerHTML = '<p class="muted">No funnel data for this period.</p>';
     return;
   }
-  const max = Math.max(...stages.map(s => Number(s.count) || 0), 1);
-  const top = Number(stages[0]?.count) || 0;
-  stages.forEach((s, i) => {
-    const c = Number(s.count) || 0;
-    const widthPct = max > 0 ? Math.max(8, Math.round((c / max) * 100)) : 8;
+  // Waterfall ordering — sort by count DESC so the biggest stage is on top
+  // and each subsequent row is narrower. Hide stages with zero leads —
+  // they're noise in a funnel view (no row to show).
+  const sorted = [...stages]
+    .map(s => ({ ...s, _c: Number(s.count) || 0 }))
+    .filter(s => s._c > 0)
+    .sort((a, b) => b._c - a._c);
+  if (!sorted.length) {
+    wrap.innerHTML = '<p class="muted">No leads in any stage for this period.</p>';
+    return;
+  }
+  const top = sorted[0]._c;
+  sorted.forEach((s, i) => {
+    const c = s._c;
+    // Width is proportional to the top (biggest) stage so the visual
+    // narrows as you go down. Min 8% so 1-lead stages still show a tag.
+    const widthPct = top > 0 ? Math.max(8, Math.round((c / top) * 100)) : 8;
     const convPct  = top > 0 ? Math.round((c / top) * 100) : 0;
-    // Layout: [centering track] [conv % meta]. The bar lives inside the track
-    // and gets a percentage width so each subsequent stage is narrower —
-    // visually a real funnel.
     const row = h('div', { class: 'rfun-row' },
       h('div', { class: 'rfun-track' },
         h('div', { class: 'rfun-bar', style: { width: widthPct + '%', background: s.color || '#6366f1' } },
@@ -4660,7 +4669,7 @@ function renderFunnel(containerId, stages) {
           h('span', { class: 'rfun-count' }, String(c))
         )
       ),
-      h('div', { class: 'rfun-meta muted' }, i === 0 ? '100%' : (convPct + '%'))
+      h('div', { class: 'rfun-meta muted' }, i === 0 ? '100%' : (convPct + '% of top'))
     );
     wrap.appendChild(row);
   });
