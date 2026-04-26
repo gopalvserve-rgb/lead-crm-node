@@ -176,6 +176,15 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 @media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 
+/* Sidebar count badges (Overdue / Due today / Upcoming / New today) */
+.nav-count {
+  display: inline-block; min-width: 22px; height: 20px; padding: 0 .4rem;
+  background: #ef4444; color: #fff; font-size: .72rem; font-weight: 700;
+  border-radius: 10px; text-align: center; line-height: 20px;
+  margin-left: auto;
+}
+.nav-count[hidden] { display: none; }
+
 /* Clickable KPI cards on dashboard */
 .card.stat.clickable { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
 .card.stat.clickable:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }

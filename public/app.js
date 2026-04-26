@@ -265,6 +265,10 @@ function renderLogin() {
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',    icon: '📊' },
   { id: 'leads',      label: 'Leads',        icon: '🎯' },
+  { id: 'newleads',   label: 'New leads',    icon: '✨', countKey: 'new_today' },
+  { id: 'overdue',    label: 'Overdue',      icon: '⚠️', countKey: 'overdue' },
+  { id: 'duetoday',   label: 'Due today',    icon: '📅', countKey: 'due_today' },
+  { id: 'upcoming',   label: 'Upcoming',     icon: '⏰', countKey: 'upcoming' },
   { id: 'dialer',     label: 'Dialer',       icon: '📞' },
   { id: 'pipeline',   label: 'Pipeline',     icon: '📈' },
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
@@ -319,7 +323,14 @@ function renderShell() {
   const mobilePrimary = ['dashboard', 'leads', 'dialer', 'followups'];
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
-    const a = h('a', { href: '#/' + item.id, 'data-view': item.id }, h('span', { class: 'nav-icon' }, item.icon), h('span', {}, item.label));
+    // Count badge — populated later by refreshNavCounts() when notifications load.
+    const countBadge = item.countKey
+      ? h('span', { class: 'nav-count', 'data-count-key': item.countKey, hidden: 'hidden' }, '0')
+      : null;
+    const a = h('a', { href: '#/' + item.id, 'data-view': item.id },
+      h('span', { class: 'nav-icon' }, item.icon),
+      h('span', {}, item.label),
+      countBadge);
     nav.appendChild(a);
     if (mobilePrimary.includes(item.id)) {
       const ma = h('a', { href: '#/' + item.id, 'data-view': item.id },
@@ -574,18 +585,28 @@ VIEWS.leads = async (view) => {
     ));
   }
 
+  // Auto-apply filter on dropdown change + debounced search input. Without
+  // this, mobile users had to find the small 🔎 button after every change,
+  // which made filters feel "broken" in the Android APK.
+  const applyFilters = () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); };
+  let _searchTimer = null;
+  const debouncedSearch = () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(applyFilters, 350);
+  };
   const toolbar = h('div', { class: 'toolbar' },
     h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '',
-      onkeydown: ev => { if (ev.key === 'Enter') { CRM._leadsPage = 1; loadLeads({ page: 1 }); } } }),
-    selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id),
-    selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source),
-    selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to),
-    selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup),
-    selectOpts('f-duplicate', [
+      oninput: debouncedSearch,
+      onkeydown: ev => { if (ev.key === 'Enter') applyFilters(); } }),
+    Object.assign(selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id), { onchange: applyFilters }),
+    Object.assign(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source), { onchange: applyFilters }),
+    Object.assign(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to), { onchange: applyFilters }),
+    Object.assign(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup), { onchange: applyFilters }),
+    Object.assign(selectOpts('f-duplicate', [
       { id: '', name: 'All leads' },
       { id: 'only', name: '⚠️ Duplicates only' },
       { id: 'unique', name: 'No duplicates' }
-    ], CRM.prefs.filters.duplicate),
+    ], CRM.prefs.filters.duplicate), { onchange: applyFilters }),
     h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
     h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
@@ -2547,6 +2568,97 @@ VIEWS.kanban = async (view) => {
 };
 
 /* ---------------- Follow-ups ---------------- */
+// Sidebar shortcut views — each one is a single-section variant of
+// the Followups view, so users with overdue/due-today work can land
+// directly on the right list from the sidebar.
+VIEWS.overdue  = async (view) => renderFollowupSection(view, 'overdue');
+VIEWS.duetoday = async (view) => renderFollowupSection(view, 'due_today');
+VIEWS.upcoming = async (view) => renderFollowupSection(view, 'upcoming');
+VIEWS.newleads = async (view) => renderNewTodayLeads(view);
+
+async function renderFollowupSection(view, key) {
+  const data = await api('api_notifications_mine');
+  view.innerHTML = '';
+  const titleMap = { overdue: '⚠️ Overdue follow-ups', due_today: '📅 Due today', upcoming: '⏰ Upcoming' };
+  const klassMap = { overdue: 'err', due_today: 'warn', upcoming: '' };
+  const rows = data[key] || [];
+  const wrap = h('div', { class: 'card' },
+    h('h3', {}, titleMap[key], ' ', h('span', { class: 'chip-count ' + klassMap[key] }, rows.length))
+  );
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'Nothing here. 🎉'));
+    view.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Lead'), h('th', {}, 'Phone'), h('th', {}, 'Due'),
+      h('th', {}, 'Latest remark'), h('th', { style: { textAlign: 'right' } }, 'Actions')
+    )),
+    h('tbody', {}, ...rows.map(r => {
+      const phone = String(r.lead_phone || '').trim();
+      const telHref = phone ? 'tel:' + phone.replace(/[^\d+]/g, '') : null;
+      const waHref  = phone ? 'https://wa.me/' + phone.replace(/[^\d]/g, '') : null;
+      return h('tr', {},
+        h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')),
+        h('td', {}, phone || ''),
+        h('td', { class: key === 'overdue' ? 'overdue' : '' }, fmtDate(r.due_at, 'relative')),
+        h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
+          r.latest_remark ? String(r.latest_remark).slice(0, 80) + (String(r.latest_remark).length > 80 ? '…' : '') : h('span', { class: 'muted' }, '—')),
+        h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+          telHref ? h('a', { class: 'btn sm primary', href: telHref }, '📞') : null,
+          waHref  ? h('a', { class: 'btn sm ghost', href: waHref, target: '_blank', rel: 'noopener', style: { marginLeft: '.25rem' } }, '💬') : null,
+          r.id ? h('button', { class: 'btn sm primary', style: { marginLeft: '.25rem' },
+            onclick: () => openNextFollowupModal(r, () => navigateTo(key === 'overdue' ? 'overdue' : key === 'due_today' ? 'duetoday' : 'upcoming'))
+          }, '⏰ Next') : null
+        )
+      );
+    }))
+  )));
+  view.appendChild(wrap);
+}
+
+/**
+ * "New today" sidebar shortcut — shows leads created today (in IST), reusing
+ * the leads list with a server-applied date filter so it always matches the
+ * dashboard "NEW TODAY" tile count.
+ */
+async function renderNewTodayLeads(view) {
+  view.innerHTML = '';
+  // IST today, formatted YYYY-MM-DD
+  const tzFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = tzFmt.format(new Date());
+  // Fetch leads filtered by created_at = today on the server.
+  let rows = [];
+  try {
+    const r = await api('api_leads_list', { from: today, to: today, page_size: 500 });
+    rows = (r && r.rows) || r || [];
+  } catch (e) { /* fall through */ }
+  const wrap = h('div', { class: 'card' },
+    h('h3', {}, '✨ New leads today ', h('span', { class: 'chip-count accent' }, rows.length))
+  );
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No new leads yet today.'));
+    view.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Phone'), h('th', {}, 'Source'),
+      h('th', {}, 'Status'), h('th', {}, 'Assigned to'), h('th', {}, 'Created')
+    )),
+    h('tbody', {}, ...rows.map(l => h('tr', {},
+      h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—')),
+      h('td', {}, l.phone || ''),
+      h('td', {}, l.source || ''),
+      h('td', {}, l.status_name || ''),
+      h('td', {}, l.assigned_name || ''),
+      h('td', { class: 'muted' }, fmtDate(l.created_at, 'relative'))
+    )))
+  )));
+  view.appendChild(wrap);
+}
+
 VIEWS.followups = async (view) => {
   const data = await api('api_notifications_mine');
   view.innerHTML = '';
@@ -5542,6 +5654,13 @@ async function refreshNotifs() {
     const n = (d.counts.overdue || 0) + (d.counts.due_today || 0) + (d.counts.unread || 0);
     const badge = $('#notif-count');
     if (badge) { badge.textContent = n; badge.hidden = n === 0; }
+    // Update sidebar count badges next to New leads / Overdue / Due today / Upcoming
+    document.querySelectorAll('.nav-count').forEach(el => {
+      const key = el.getAttribute('data-count-key');
+      const c = (d.counts && d.counts[key]) || 0;
+      el.textContent = c;
+      el.hidden = c === 0;
+    });
     if ((d.counts.due_today || 0) + (d.counts.overdue || 0) > 0) popupFollowupDue(d);
   } catch (_) {}
 }
