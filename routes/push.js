@@ -311,6 +311,12 @@ async function _sendFcm(userId, payload) {
       // `notification` block makes Android show the banner automatically when
       // the app is in the background or closed. `data` block carries the URL
       // so a tap can navigate inside the WebView.
+      // NOTE: removed clickAction: 'FCM_PLUGIN_ACTIVITY' — that required
+      // a matching <intent-filter> in AndroidManifest which we don't have.
+      // Without it, taps on the notification did nothing (the activity
+      // resolver returned null). Default Capacitor behaviour (no clickAction)
+      // opens the launcher activity and fires pushNotificationActionPerformed
+      // — which is exactly what we want.
       await admin.messaging().send({
         token: row.token,
         notification: { title, body },
@@ -321,8 +327,7 @@ async function _sendFcm(userId, payload) {
             channelId: 'lead-crm-default',
             sound: 'default',
             defaultVibrateTimings: true,
-            tag: String(payload.tag || ''),
-            clickAction: 'FCM_PLUGIN_ACTIVITY'
+            tag: String(payload.tag || '')
           }
         }
       });

@@ -28,6 +28,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+
+            <!-- Receive notification taps when FCM payload sets
+                 clickAction: 'FCM_PLUGIN_ACTIVITY'. Without this filter,
+                 tapping such a notification does nothing because
+                 PackageManager can't resolve the activity. -->
+            <intent-filter>
+                <action android:name="FCM_PLUGIN_ACTIVITY" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <receiver
