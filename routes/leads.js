@@ -347,6 +347,15 @@ async function api_leads_create(token, payload) {
       ? ('⚠ Auto-flagged Junk: phone "' + (cleanPhone || _phoneDigits) + '" has only ' + _phoneDigits.length + ' digits.\n' + (p.notes || ''))
       : (p.notes || ''),
     extra_json: p.extra ? JSON.stringify(p.extra) : '',
+    // Attribution columns — passed through from the API (and the website
+    // webhook). Useful for filtering and reporting on Google Ads.
+    gclid:          p.gclid || '',
+    gad_campaignid: p.gad_campaignid || '',
+    utm_source:     p.utm_source || '',
+    utm_medium:     p.utm_medium || '',
+    utm_campaign:   p.utm_campaign || '',
+    utm_term:       p.utm_term || '',
+    utm_content:    p.utm_content || '',
     next_followup_at: p.next_followup_at || '',
     last_status_change_at: db.nowIso(),
     created_by: me.id
@@ -450,7 +459,10 @@ async function api_leads_update(token, id, patch) {
   ['name', 'email', 'phone', 'whatsapp', 'product_id', 'status_id', 'assigned_to',
    'city', 'state', 'pincode', 'country', 'company', 'address',
    'notes', 'next_followup_at', 'tags', 'source', 'source_ref',
-   'value', 'currency', 'qualified']
+   'value', 'currency', 'qualified',
+   // Attribution / Google Ads columns
+   'gclid', 'gad_campaignid', 'utm_source', 'utm_medium',
+   'utm_campaign', 'utm_term', 'utm_content']
     .forEach(k => { if (k in patch) allowed[k] = patch[k]; });
   allowed.updated_at = db.nowIso();
   // Track who marked the lead as qualified, and when. Only update these

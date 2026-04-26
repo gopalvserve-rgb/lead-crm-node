@@ -72,7 +72,9 @@ const SCHEMA = {
     json: []
   },
   leads: {
-    columns: ['name', 'phone', 'alt_phone', 'whatsapp', 'email', 'source',
+    columns: ['gclid', 'gad_campaignid', 'utm_source', 'utm_medium',
+              'utm_campaign', 'utm_term', 'utm_content',
+              'name', 'phone', 'alt_phone', 'whatsapp', 'email', 'source',
               'source_ref', 'product', 'product_id', 'status_id', 'assigned_to',
               'created_by', 'created_at', 'updated_at',
               'last_status_change_at', 'next_followup_at',

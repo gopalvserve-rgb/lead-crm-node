@@ -463,6 +463,19 @@ CREATE INDEX IF NOT EXISTS idx_wa_msg_phone ON whatsapp_messages(from_number, to
 ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS error_text TEXT;
 ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS template_name TEXT;
 
+-- ---- v13: Google Ads / UTM attribution as first-class columns ------
+-- The webhook handler already stores these in meta_json, but as columns
+-- they're filterable / reportable / displayable in the leads list.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS gclid          TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS gad_campaignid TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_source     TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_medium     TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_campaign   TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_term       TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_content    TEXT;
+CREATE INDEX IF NOT EXISTS idx_leads_gclid    ON leads(gclid);
+CREATE INDEX IF NOT EXISTS idx_leads_utm      ON leads(utm_source, utm_campaign);
+
 -- Cached approved templates from Meta (refreshed periodically)
 CREATE TABLE IF NOT EXISTS wa_templates (
   id              SERIAL PRIMARY KEY,

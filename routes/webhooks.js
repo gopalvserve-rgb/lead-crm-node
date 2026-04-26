@@ -230,6 +230,15 @@ async function websiteHook(req, res) {
       value:     (b.value != null && b.value !== '' && !isNaN(Number(b.value))) ? Number(b.value) : null,
       currency:  b.currency || '',
       next_followup_at: b.next_followup_at || null,
+      // First-class attribution columns (also kept in meta_json above for
+      // backwards-compat with any reports already querying the JSON blob).
+      gclid:          gclid || '',
+      gad_campaignid: b.gad_campaignid || campaignId || '',
+      utm_source:     utmSource || '',
+      utm_medium:     network || '',
+      utm_campaign:   campaignId || b.utm_campaign || '',
+      utm_term:       keyword || '',
+      utm_content:    b.utm_content || '',
       meta_json: Object.keys(adsMeta).length ? Object.assign({}, b.meta || {}, adsMeta) : (b.meta || null),
       created_at: db.nowIso(),
       updated_at: db.nowIso()

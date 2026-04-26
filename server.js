@@ -472,7 +472,9 @@ function apiDocsHtml(host) {
       <tr><td class="field"><code>currency</code></td><td>string</td><td>e.g. <code>INR</code>, <code>USD</code></td></tr>
       <tr><td class="field"><code>next_followup_at</code></td><td>ISO datetime</td><td>e.g. <code>2026-05-01T10:00:00Z</code></td></tr>
       <tr><td class="field"><code>source_ref</code></td><td>string</td><td>External reference — campaign ID, ad ID. Alias: <code>utm_campaign</code></td></tr>
-      <tr><td class="field"><code>utm_source</code> / <code>utm_medium</code> / <code>utm_campaign</code> / <code>utm_term</code> / <code>utm_content</code></td><td>string</td><td>UTM parameters — auto-stored in lead's <code>meta_json</code> for reporting</td></tr>
+      <tr><td class="field"><code>gclid</code> <span style="color:#3b82f6;font-weight:600">★</span></td><td>string</td><td><b>Google Click ID.</b> Stored on its own <code>gclid</code> column for filtering / Google Ads conversion upload. Pass it as you receive it from your landing page query string.</td></tr>
+      <tr><td class="field"><code>gad_campaignid</code></td><td>string</td><td>Google Ads campaign ID (the <code>gad_campaignid</code> URL param). Stored on its own column.</td></tr>
+      <tr><td class="field"><code>utm_source</code> / <code>utm_medium</code> / <code>utm_campaign</code> / <code>utm_term</code> / <code>utm_content</code></td><td>string</td><td><b>UTM parameters.</b> Each one is now stored on its own column on the lead row, plus mirrored in <code>meta_json</code> for backwards compatibility. Filterable from the leads list and reports.</td></tr>
       <tr><td class="field"><code>landing_page</code></td><td>string</td><td>URL the lead submitted from</td></tr>
       <tr><td class="field"><code>meta</code></td><td>object</td><td>Any additional structured data (kept on the lead)</td></tr>
     </tbody>
@@ -508,7 +510,12 @@ curl -X POST <span class="s">'${endpoint}'</span> \\
     "value": 50000,
     "currency": "INR",
     "utm_source": "google",
-    "utm_campaign": "summer-sale"
+    "utm_medium": "cpc",
+    "utm_campaign": "Gg-Search_TM-Registration",
+    "utm_term": "Trademark Registration",
+    "utm_content": "Gg-Search-TM-Registration_Ad3",
+    "gclid": "CjwKCAiAkvDMBhBMEiwAnUA9Bab628Em7EX9ZLHLHFuhyP76UbYta2VJ2MkuDvgJeZX_TFWNHc6XzhoC7xIQAvD_BwE",
+    "gad_campaignid": "12385691702"
   }'</span></pre>
   </div>
 
