@@ -362,8 +362,37 @@ async function sendPushToUser(userId, payload) {
   };
 }
 
+/**
+ * Dial-via-mobile — desktop CRM clicks "Call from phone" on a lead, server
+ * pushes an FCM message to the user's Android device, the APK receives it
+ * and opens its native dialer with the number pre-filled. The user just taps
+ * the call button on their phone — no need to type the number.
+ *
+ * Mechanism:
+ *  - Push payload includes data.type='call_request' + phone + lead_name + a
+ *    URL like '/#/dial?phone=+91...'
+ *  - When the user taps the notification, the APK opens that URL inside
+ *    the WebView, which immediately fires `tel:` and opens the dialer.
+ */
+async function api_call_via_mobile(token, leadId, phone, leadName) {
+  const me = await authUser(token);
+  const target = String(phone || '').trim();
+  if (!target) throw new Error('phone required');
+  const name = String(leadName || ('Lead #' + (leadId || ''))).slice(0, 60);
+  const url = '/#/dial?phone=' + encodeURIComponent(target) + (leadId ? '&lead=' + Number(leadId) : '');
+  const r = await sendPushToUser(me.id, {
+    title: '📞 Tap to call ' + name,
+    body:  target,
+    url,
+    tag:   'dial-' + Date.now(),
+    sticky: false
+  });
+  return { ok: true, push: r };
+}
+
 module.exports = {
   api_push_publicKey, api_push_subscribe, api_push_unsubscribe, api_push_test,
   api_fcm_register, api_fcm_unregister,
+  api_call_via_mobile,
   sendPushToUser
 };

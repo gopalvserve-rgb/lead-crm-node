@@ -1066,7 +1066,15 @@ function renderCell(col, l, statuses) {
       const digits = String(l.phone || '').replace(/\D/g, '');
       return h('td', { class: 'cell-phone' },
         l.phone || '',
-        digits ? h('button', { class: 'btn icon', title: 'Call', onclick: ev => { ev.stopPropagation(); callLead(l); } }, '📞') : null,
+        digits ? h('button', { class: 'btn icon', title: 'Call from this device', onclick: ev => { ev.stopPropagation(); callLead(l); } }, '📞') : null,
+        // Push the call to YOUR phone — when you have the APK installed and
+        // logged in, FCM wakes the phone and opens its native dialer with
+        // the number pre-filled. Useful when you're on desktop CRM but want
+        // to actually dial from your handset (recordings + carrier minutes).
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send to my mobile phone — opens dialer there',
+          onclick: ev => { ev.stopPropagation(); callViaMobile(l); }
+        }, '📱') : null,
         l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: ev => { ev.stopPropagation(); navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
         // Green WhatsApp icon — opens the Initiate Chat modal which lets
         // the user pick an approved template, fill variables, preview and
@@ -2897,6 +2905,38 @@ async function ensureChartJs() {
 /* ============================================================
    WhatsBot module — Connect / Templates / Bots / Campaigns / Chat / Logs
    ============================================================ */
+/**
+ * Dial route — opened on the user's phone when they tap a "Call from mobile"
+ * push. Hash query params: ?phone=+91...&lead=N
+ *
+ * Auto-fires tel: which the OS dialer opens. Shows a fallback button in
+ * case auto-launch is suppressed (some browsers block `tel:` redirects from
+ * non-user-initiated navigation).
+ */
+VIEWS.dial = async (view) => {
+  view.innerHTML = '';
+  const hash = location.hash || '';
+  const queryStr = hash.split('?')[1] || '';
+  const params = new URLSearchParams(queryStr);
+  const phone = (params.get('phone') || '').trim();
+  if (!phone) {
+    view.appendChild(h('div', { class: 'error-box' }, 'No phone number in the URL.'));
+    return;
+  }
+  const tel = 'tel:' + phone.replace(/\s+/g, '');
+  // Try to launch immediately
+  setTimeout(() => { try { location.href = tel; } catch (_) {} }, 100);
+
+  view.appendChild(h('div', { class: 'card', style: { maxWidth: '380px', margin: '2rem auto', textAlign: 'center', padding: '1.5rem' } },
+    h('div', { style: { fontSize: '3rem' } }, '📞'),
+    h('h2', { style: { margin: '.5rem 0' } }, 'Calling…'),
+    h('p', { class: 'muted', style: { fontSize: '1rem', marginTop: 0 } }, phone),
+    h('a', { class: 'btn primary', style: { display: 'block', marginTop: '1rem', fontSize: '1.1rem', padding: '.75rem 1.25rem' }, href: tel }, '📞 Tap to call'),
+    h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '1rem' } }, 'If your dialer didn\'t open automatically, tap the button above.'),
+    h('a', { class: 'btn ghost', style: { marginTop: '.5rem' }, href: '#/leads' }, '← Back to leads')
+  ));
+};
+
 VIEWS.whatsbot = async (view) => {
   view.innerHTML = '';
   const tabs = [
@@ -3279,6 +3319,34 @@ async function wbConnect() {
  * 000000. If it does, the user must paste the 6-digit PIN they configured
  * when first claiming the number on whatsapp.com / Business Manager.
  */
+/**
+ * Push a "call this number" notification to the user's logged-in mobile
+ * device(s). When they tap the notification, the APK opens our /#/dial
+ * route which auto-fires `tel:` and launches the native dialer with the
+ * number pre-filled. They just press the green call button on their phone.
+ *
+ * Requires the FCM Android APK to be installed and logged in as the same
+ * user — desktop and mobile share the same user account.
+ */
+async function callViaMobile(lead) {
+  const phone = String(lead?.phone || '').trim();
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  // Auto-prepend India country code if it's a 10-digit mobile, so the
+  // dialer opens with a directly-callable number.
+  let normalized = phone.replace(/\D/g, '');
+  if (normalized.length === 10 && /^[6-9]/.test(normalized)) normalized = '91' + normalized;
+  const dial = '+' + normalized;
+  try {
+    const r = await api('api_call_via_mobile', lead?.id || null, dial, lead?.name || '');
+    const fcmCount = (r.push && r.push.fcm && r.push.fcm.sent) || 0;
+    if (fcmCount === 0) {
+      toast('No mobile device registered for push. Install the Android app + log in, then try again.', 'warn');
+    } else {
+      toast('📱 Sent to your phone — tap the notification to open the dialer.');
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
 function openRegisterPhoneModal(phoneIdOverride) {
   const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
   const body = h('div', { class: 'modal' });
