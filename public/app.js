@@ -434,7 +434,15 @@ function showMobileMore() {
 }
 
 function navigateTo(id) {
-  const item = NAV.find(n => n.id === id) || NAV[0];
+  // Routes that exist as VIEWS but aren't in the sidebar NAV (e.g. /dial,
+  // /newleads, /overdue) should still render — don't fall back to NAV[0]
+  // when a valid VIEW exists. Falling back was redirecting the call-from-
+  // mobile dial route to dashboard on cold-start.
+  let item = NAV.find(n => n.id === id);
+  if (!item && VIEWS[id]) {
+    item = { id, label: id.charAt(0).toUpperCase() + id.slice(1) };
+  }
+  if (!item) item = NAV[0];
   $$('.sidebar nav a, #bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.view === item.id));
   $('#page-title').textContent = item.label;
   const view = $('#view');
