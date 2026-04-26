@@ -6025,31 +6025,97 @@ async function openUserModal(u) {
   // user_id to target until after the row is created.
   const passwordResetBlock = u.id ? buildPasswordResetBlock(u) : null;
 
+  // Section heading helper for the user form
+  const section = (title) => h('div', { class: 'f-row full', style: { marginTop: '1rem', borderTop: '1px solid var(--border-light)', paddingTop: '.75rem' } },
+    h('h4', { style: { margin: 0, color: 'var(--brand)' } }, title)
+  );
+
   const modal = h('div', { class: 'modal-backdrop' },
     h('div', { class: 'modal modal-lg' },
       h('div', { class: 'modal-head' }, h('h3', {}, u.id ? 'Edit user — ' + u.name : 'New user'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
       h('form', { id: 'u-form', class: 'form-grid' },
+        // Account credentials
         field('name', 'Name *', u.name, { required: true }),
-        field('email', 'Email *', u.email, { required: true, type: 'email' }),
-        field('phone', 'Phone', u.phone),
+        field('email', 'Login email *', u.email, { required: true, type: 'email' }),
+        field('phone', 'Mobile / Contact number', u.phone),
         selectField('role', 'Role', u.role, ['admin', 'manager', 'team_leader', 'sales']),
         selectField('parent_id', 'Reports To', u.parent_id || '', [{ value: '', label: '— None —' }, ...parents.filter(p => p.id !== u.id).map(p => ({ value: p.id, label: p.name }))]),
+        !u.id ? field('password', 'Password *', '', { type: 'password', required: true }) : null,
+
+        // Employment
+        section('💼 Employment'),
         field('department', 'Department', u.department),
         field('designation', 'Designation', u.designation),
-        !u.id ? field('password', 'Password *', '', { type: 'password', required: true }) : null
+        field('joining_date', 'Joining date', u.joining_date ? String(u.joining_date).slice(0, 10) : '', { type: 'date' }),
+        field('monthly_salary', 'Monthly salary (₹)', u.monthly_salary || '', { type: 'number' }),
+        field('last_company', 'Last company', u.last_company),
+
+        // Personal
+        section('👤 Personal'),
+        field('father_name', 'Father\'s name', u.father_name),
+        field('personal_email', 'Personal email', u.personal_email, { type: 'email' }),
+        h('div', { class: 'f-row full' },
+          h('label', {}, 'Address'),
+          h('textarea', { name: 'address', rows: 2 }, u.address || '')
+        ),
+        field('aadhaar_number', 'Aadhaar number', u.aadhaar_number),
+        field('pan_number', 'PAN number', u.pan_number),
+
+        // Emergency contact
+        section('🚨 Emergency contact'),
+        field('emergency_contact_name', 'Name', u.emergency_contact_name),
+        field('emergency_contact_phone', 'Phone', u.emergency_contact_phone),
+
+        // References
+        section('📞 Reference 1'),
+        field('reference_1_name', 'Name', u.reference_1_name),
+        field('reference_1_phone', 'Phone', u.reference_1_phone),
+        field('reference_1_relation', 'Relation / Position', u.reference_1_relation),
+
+        section('📞 Reference 2'),
+        field('reference_2_name', 'Name', u.reference_2_name),
+        field('reference_2_phone', 'Phone', u.reference_2_phone),
+        field('reference_2_relation', 'Relation / Position', u.reference_2_relation),
+
+        // Bank — separate UI under Bank tab once user is saved
+        u.id ? section('🏦 Bank details') : null,
+        u.id ? h('div', { class: 'f-row full' },
+          h('p', { class: 'muted', style: { margin: 0, fontSize: '.85rem' } },
+            'Bank details for this user are managed separately under the ',
+            h('a', { href: '#/bank', onclick: () => modal.remove() }, 'Bank tab'),
+            '. Admins can view all employees\' bank details there.')
+        ) : null
       ),
       passwordResetBlock,
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
           const f = $('#u-form');
+          const fd = new FormData(f);
           const payload = {
             id: u.id,
-            name: f.name.value, email: f.email.value, phone: f.phone.value,
-            role: f.role.value, parent_id: f.parent_id.value || null,
-            department: f.department.value, designation: f.designation.value
+            name: fd.get('name'), email: fd.get('email'), phone: fd.get('phone'),
+            role: fd.get('role'), parent_id: fd.get('parent_id') || null,
+            department: fd.get('department'), designation: fd.get('designation'),
+            joining_date: fd.get('joining_date') || '',
+            monthly_salary: Number(fd.get('monthly_salary')) || 0,
+            // HR / onboarding
+            father_name:             fd.get('father_name')             || '',
+            personal_email:          fd.get('personal_email')          || '',
+            address:                 fd.get('address')                 || '',
+            aadhaar_number:          fd.get('aadhaar_number')          || '',
+            pan_number:              fd.get('pan_number')              || '',
+            last_company:            fd.get('last_company')            || '',
+            emergency_contact_name:  fd.get('emergency_contact_name')  || '',
+            emergency_contact_phone: fd.get('emergency_contact_phone') || '',
+            reference_1_name:        fd.get('reference_1_name')        || '',
+            reference_1_phone:       fd.get('reference_1_phone')       || '',
+            reference_1_relation:    fd.get('reference_1_relation')    || '',
+            reference_2_name:        fd.get('reference_2_name')        || '',
+            reference_2_phone:       fd.get('reference_2_phone')       || '',
+            reference_2_relation:    fd.get('reference_2_relation')    || ''
           };
-          if (!u.id) payload.password = f.password.value;
+          if (!u.id) payload.password = fd.get('password');
           try { await api('api_users_save', payload); toast('Saved'); modal.remove(); await warmCache(); navigateTo('users'); }
           catch (e) { toast(e.message, 'err'); }
         } }, 'Save')
@@ -6664,8 +6730,30 @@ async function renderSalaryBulk() {
 }
 
 VIEWS.bank = async (view) => {
-  const info = (await api('api_bank_mine')) || {};
   view.innerHTML = '';
+  const isAdmin = CRM.user.role === 'admin';
+
+  // Sub-tabs — non-admins see only "My bank". Admins also see "All employees".
+  const tabs = [{ id: 'mine', label: 'My bank details' }];
+  if (isAdmin) tabs.push({ id: 'all', label: '👥 All employees' });
+  const nav = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'mine' ? ' active' : ''),
+      onclick: ev => showBankTab(ev, t.id) }, t.label))
+  );
+  view.append(nav, h('div', { id: 'bank-body' }));
+  showBankTab(null, 'mine');
+};
+
+async function showBankTab(ev, id) {
+  if (ev) { $$('.subtab').forEach(b => b.classList.remove('active')); ev.target.classList.add('active'); }
+  const body = $('#bank-body');
+  body.innerHTML = '<div class="loading">…</div>';
+  if (id === 'mine') body.replaceChildren(await renderMyBank());
+  if (id === 'all')  body.replaceChildren(await renderAllBank());
+}
+
+async function renderMyBank() {
+  const info = (await api('api_bank_mine')) || {};
   const form = h('form', { class: 'form-grid', onsubmit: async ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
@@ -6681,8 +6769,42 @@ VIEWS.bank = async (view) => {
     field('notes', 'Notes', info.notes, { type: 'textarea', full: true }),
     h('div', { class: 'f-row full' }, h('button', { type: 'submit', class: 'btn primary' }, '💾 Save'))
   );
-  view.appendChild(form);
-};
+  return form;
+}
+
+async function renderAllBank() {
+  const list = await api('api_bank_list').catch(e => { toast(e.message, 'err'); return []; });
+  const wrap = h('div', {});
+  wrap.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+    'Account numbers are masked (****last4) for safety. Click an employee to see their full record on their profile.'));
+  if (!list.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No bank details captured yet.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Employee'),
+      h('th', {}, 'Bank'),
+      h('th', {}, 'A/c holder'),
+      h('th', {}, 'Account #'),
+      h('th', {}, 'IFSC'),
+      h('th', {}, 'Branch'),
+      h('th', {}, 'UPI'),
+      h('th', {}, 'Updated')
+    )),
+    h('tbody', {}, ...list.map(r => h('tr', {},
+      h('td', {}, h('b', {}, r.user_name || '—')),
+      h('td', {}, r.bank_name || '—'),
+      h('td', {}, r.account_holder || '—'),
+      h('td', { style: { fontFamily: 'monospace' } }, r.account_number || '—'),
+      h('td', {}, r.ifsc || '—'),
+      h('td', {}, r.branch || '—'),
+      h('td', {}, r.upi_id || '—'),
+      h('td', { class: 'muted' }, r.updated_at ? fmtDate(r.updated_at, 'relative') : '—')
+    )))
+  )));
+  return wrap;
+}
 
 /* ---------------- FB connect ---------------- */
 // Scopes mirror the proven PHP-CRM reference. business_management is critical

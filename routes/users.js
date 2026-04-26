@@ -35,9 +35,25 @@ async function api_users_create(token, payload) {
     role: p.role,
     parent_id: p.parent_id || me.id,
     department: p.department || '',
+    designation: p.designation || '',
     monthly_salary: p.monthly_salary || 0,
     joining_date: p.joining_date || '',
     photo_url: p.photo_url || '',
+    // HR / onboarding fields — all optional, captured at creation time
+    father_name:             p.father_name             || '',
+    personal_email:          p.personal_email          || '',
+    address:                 p.address                 || '',
+    aadhaar_number:          p.aadhaar_number          || '',
+    pan_number:              p.pan_number              || '',
+    last_company:            p.last_company            || '',
+    emergency_contact_name:  p.emergency_contact_name  || '',
+    emergency_contact_phone: p.emergency_contact_phone || '',
+    reference_1_name:        p.reference_1_name        || '',
+    reference_1_phone:       p.reference_1_phone       || '',
+    reference_1_relation:    p.reference_1_relation    || '',
+    reference_2_name:        p.reference_2_name        || '',
+    reference_2_phone:       p.reference_2_phone       || '',
+    reference_2_relation:    p.reference_2_relation    || '',
     is_active: 1
   });
   return { id };
@@ -51,7 +67,13 @@ async function api_users_update(token, id, patch) {
   const p = patch || {};
   const allowed = {};
   // Standard fields any user can update on themselves (and admins/managers on others)
-  ['name', 'phone', 'department', 'designation', 'monthly_salary', 'joining_date', 'photo_url', 'is_active'].forEach(k => {
+  ['name', 'phone', 'department', 'designation', 'monthly_salary', 'joining_date', 'photo_url', 'is_active',
+   // HR / onboarding fields
+   'father_name', 'personal_email', 'address', 'aadhaar_number', 'pan_number', 'last_company',
+   'emergency_contact_name', 'emergency_contact_phone',
+   'reference_1_name', 'reference_1_phone', 'reference_1_relation',
+   'reference_2_name', 'reference_2_phone', 'reference_2_relation'
+  ].forEach(k => {
     if (k in p) allowed[k] = p[k];
   });
   // Email — needs uniqueness check against other users (case-insensitive)

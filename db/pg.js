@@ -68,6 +68,11 @@ const SCHEMA = {
     columns: ['name', 'email', 'phone', 'role', 'password_hash', 'parent_id',
               'department', 'designation', 'photo_url',
               'monthly_salary', 'joining_date',
+              'father_name', 'personal_email', 'address',
+              'aadhaar_number', 'pan_number', 'last_company',
+              'emergency_contact_name', 'emergency_contact_phone',
+              'reference_1_name', 'reference_1_phone', 'reference_1_relation',
+              'reference_2_name', 'reference_2_phone', 'reference_2_relation',
               'is_active', 'created_at'],
     json: []
   },

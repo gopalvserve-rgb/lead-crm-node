@@ -476,6 +476,23 @@ ALTER TABLE leads ADD COLUMN IF NOT EXISTS utm_content    TEXT;
 CREATE INDEX IF NOT EXISTS idx_leads_gclid    ON leads(gclid);
 CREATE INDEX IF NOT EXISTS idx_leads_utm      ON leads(utm_source, utm_campaign);
 
+-- ---- v14: HR fields on users -------------------------------
+-- Onboarding info admins / HR want to capture per employee.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS father_name           TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS personal_email        TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS address               TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS aadhaar_number        TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS pan_number            TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_company          TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS emergency_contact_name  TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS emergency_contact_phone TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_1_name      TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_1_phone     TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_1_relation  TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_2_name      TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_2_phone     TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS reference_2_relation  TEXT;
+
 -- Cached approved templates from Meta (refreshed periodically)
 CREATE TABLE IF NOT EXISTS wa_templates (
   id              SERIAL PRIMARY KEY,
