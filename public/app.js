@@ -7221,6 +7221,74 @@ async function registerWebPush() {
 }
 
 /**
+ * Direct dial modal — pops over whatever view is showing (or even before
+ * the router has loaded any view) and tries every available strategy to
+ * launch the native Android dialer with the number pre-filled. Used by
+ * the call-from-mobile push so users don't have to wait for routing.
+ *
+ * Strategies tried in order, with a status line per attempt so failures
+ * are visible to the user:
+ *   1. Capacitor App.openUrl (Android: ACTION_DIAL intent)
+ *   2. window.open(tel, '_system')
+ *   3. hidden iframe with src=tel:
+ *   4. programmatic anchor click
+ *   5. plain location.href = tel
+ * Plus a giant green CALL NOW button (a real <a href="tel:">) that
+ * Android always treats as a hard Intent launch.
+ */
+function openDialModal(phone) {
+  // Don't double-open
+  if (document.getElementById('dial-modal-active')) return;
+  const tel = 'tel:' + String(phone || '').replace(/\s+/g, '');
+  const m = h('div', {
+    id: 'dial-modal-active',
+    class: 'modal-backdrop',
+    style: { background: 'rgba(0,0,0,.85)' }
+  });
+  const status = h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.5rem', minHeight: '1em' } });
+  async function runDial() {
+    const cap = window.Capacitor;
+    try {
+      if (cap && cap.Plugins && cap.Plugins.App && typeof cap.Plugins.App.openUrl === 'function') {
+        const r = await cap.Plugins.App.openUrl({ url: tel });
+        status.textContent = 'App.openUrl → ' + JSON.stringify(r);
+        if (r && r.completed !== false) return;
+      }
+    } catch (e) { status.textContent = 'App.openUrl threw: ' + e.message; }
+    try { const w = window.open(tel, '_system'); if (w) { status.textContent = 'window.open ok'; return; } } catch (_) {}
+    try {
+      const f = document.createElement('iframe'); f.style.display = 'none'; f.src = tel;
+      document.body.appendChild(f); setTimeout(() => f.remove(), 1000);
+      status.textContent = 'iframe fired';
+    } catch (_) {}
+    try {
+      const a = document.createElement('a'); a.href = tel; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 100);
+      status.textContent += ' · anchor.click fired';
+    } catch (_) {}
+    try { location.href = tel; status.textContent += ' · href set'; } catch (_) {}
+  }
+  m.appendChild(h('div', { class: 'modal', style: { maxWidth: '420px', textAlign: 'center', padding: '1.5rem' } },
+    h('div', { style: { fontSize: '4rem' } }, '📞'),
+    h('h1', { style: { margin: '.5rem 0 .25rem', fontSize: '1.4rem' } }, 'Call this number'),
+    h('p', { style: { fontSize: '1.5rem', fontWeight: '700', fontFamily: 'monospace', margin: '.5rem 0 1.5rem' } }, phone),
+    h('a', {
+      class: 'btn primary',
+      style: { display: 'block', fontSize: '1.4rem', padding: '1.25rem', background: '#10b981', color: '#fff', border: 'none', borderRadius: '12px', textDecoration: 'none', fontWeight: '600' },
+      href: tel
+    }, '📞 CALL NOW'),
+    h('button', {
+      class: 'btn ghost', style: { marginTop: '1rem' },
+      onclick: () => m.remove()
+    }, 'Cancel'),
+    status
+  ));
+  document.body.appendChild(m);
+  // Try auto-dial after the modal is in the DOM
+  setTimeout(() => runDial().catch(() => {}), 200);
+}
+
+/**
  * Apply a URL from a push notification — handles hash-routed SPA paths
  * (/#/foo, #/foo) and absolute URLs. Forces a navigation event so the
  * router definitely fires VIEWS.<name> even if the same hash was set.
@@ -7300,23 +7368,34 @@ async function registerCapacitorPush() {
       } catch (_) {}
     });
 
-    // Tap → navigate inside the WebView to the URL we put in `data.url`.
-    // Cold-start case: when tapping a notification launches the app fresh,
-    // this listener fires BEFORE the SPA's router has fully booted (login
-    // check, warmCache, etc.). So we save the target URL and re-apply once
-    // the app is ready, plus fire the navigation immediately as well in
-    // case the router IS up.
+    // Tap → navigate inside the WebView to the URL we put in `data.url`,
+    // OR if it's a dial request, open a direct call modal immediately
+    // (bypasses the router entirely so it works even before the SPA boots).
     Push.addListener('pushNotificationActionPerformed', (action) => {
       try {
         const data = (action && action.notification && action.notification.data) || {};
         const url = data.url || '';
+        // Diagnostic toast — shows the raw action data on the phone so we
+        // can see exactly what arrived if anything goes wrong further down.
+        try {
+          if (typeof toast === 'function') toast('Tap received: ' + JSON.stringify(data).slice(0, 120));
+        } catch (_) {}
         if (!url) return;
-        // Save for retry — survives across the boot sequence.
+
+        // Special case — dial request. Show a direct modal regardless of
+        // route state. Faster + more reliable than going via the router.
+        if (url.indexOf('dial?') !== -1 || url.indexOf('phone=') !== -1) {
+          const m = url.match(/phone=([^&]+)/);
+          const phone = m ? decodeURIComponent(m[1]) : '';
+          if (phone) {
+            openDialModal(phone);
+            return;
+          }
+        }
+
+        // Fallback — generic URL navigation
         try { sessionStorage.setItem('pendingPushUrl', url); } catch (_) {}
-        // Try once now (in case router is already up)
         applyPushUrl(url);
-        // And again after a delay — covers the cold-start case where the
-        // router was still booting on the first attempt.
         setTimeout(() => applyPushUrl(url), 800);
         setTimeout(() => applyPushUrl(url), 2000);
       } catch (_) {}
