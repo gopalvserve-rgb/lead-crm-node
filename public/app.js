@@ -2970,6 +2970,91 @@ async function wbConnect() {
         '⚠ If sending fails with "account not registered" — click 🔐 Register phone above. WhatsApp Cloud API needs each number registered once with a PIN (use 000000 if you don\'t have 2FA on the number).')
     ));
 
+    // ---- Webhook health card — surfaces the most common reason for
+    //      "messages send but no delivered/read/inbound" (webhook not
+    //      configured in Meta dashboard or not subscribed to fields).
+    const whCard = h('div', { class: 'card', style: { borderLeft: '4px solid #f59e0b' } });
+    whCard.appendChild(h('h4', { style: { marginTop: 0 } }, '📡 Webhook health'));
+    const whBody = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+    whCard.appendChild(whBody);
+    wrap.appendChild(whCard);
+    api('api_wb_webhook_status').then(w => {
+      whBody.innerHTML = '';
+      const isHealthy = (w.recent_count_24h > 0) && Array.isArray(w.subscribed) && w.subscribed.length > 0;
+      whCard.style.borderLeftColor = isHealthy ? '#10b981' : '#f59e0b';
+      // Top status line
+      whBody.appendChild(h('div', { style: { fontSize: '.95rem', marginBottom: '.75rem' } },
+        isHealthy
+          ? h('span', {}, '✅ Webhook is receiving events from Meta. Last inbound: ', h('b', {}, fmtDate(w.last_inbound?.recorded_on, 'relative')), ' · ', w.recent_count_24h, ' events in last 24 h.')
+          : h('span', {}, '⚠️ Webhook is not delivering events from Meta. ',
+              w.recent_count_24h ? '' : 'Zero events in the last 24 h. ',
+              'You won\'t see delivered / read / inbound messages until this is fixed.')
+      ));
+      // Setup checklist
+      whBody.appendChild(h('div', { style: { background: '#f8fafc', padding: '.75rem 1rem', borderRadius: '6px', fontSize: '.85rem' } },
+        h('div', { style: { fontWeight: 600, marginBottom: '.5rem' } }, '🔧 Webhook setup checklist'),
+        h('ol', { style: { paddingLeft: '1.2rem', margin: 0 } },
+          h('li', { style: { marginBottom: '.4rem' } },
+            'In ', h('a', { href: 'https://developers.facebook.com/apps/' + (s.fb_app_id || ''), target: '_blank' }, 'Meta App Dashboard'),
+            ' → Left sidebar → ', h('b', {}, 'WhatsApp → Configuration'), '. ',
+            'Click ', h('b', {}, 'Edit'), ' next to Webhook.'
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Callback URL — copy and paste: ',
+            h('input', { value: w.webhook_url || (location.origin + '/hook/whatsapp_webhook'), readonly: 'readonly',
+              style: { fontFamily: 'monospace', width: '100%', marginTop: '.25rem', padding: '.4rem', fontSize: '.78rem' },
+              onclick: ev => { ev.target.select(); document.execCommand && document.execCommand('copy'); toast('Copied'); }
+            })
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Verify Token — paste this exactly: ',
+            h('input', { value: s.verify_token || '', readonly: 'readonly',
+              style: { fontFamily: 'monospace', width: '100%', marginTop: '.25rem', padding: '.4rem', fontSize: '.78rem' },
+              placeholder: s.verify_token ? '' : '⚠ NOT SET — add a value below in Manual settings, save, then re-open this',
+              onclick: ev => { ev.target.select(); document.execCommand && document.execCommand('copy'); toast('Copied'); }
+            }),
+            !s.verify_token ? h('div', { class: 'muted', style: { color: '#ef4444', fontSize: '.78rem', marginTop: '.2rem' } },
+              '⚠ Verify Token is empty. Open Manual credentials below, set it (any random string), save, then refresh this page.'
+            ) : null
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Click ', h('b', {}, 'Verify and save'), ' in Meta — they\'ll ping our endpoint and confirm.'
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Then in the same Webhook section, ', h('b', {}, 'Subscribe to fields'), ' — tick at least:',
+            h('ul', { style: { margin: '.25rem 0' } },
+              h('li', {}, h('code', {}, 'messages'), ' — required for inbound messages and status updates'),
+              h('li', {}, h('code', {}, 'message_template_status_update'), ' — optional, for template approval changes')
+            )
+          ),
+          h('li', {}, 'Click the ', h('b', {}, '🔄 Subscribe app'), ' button below to attach our app to the WABA (one-click).')
+        )
+      ));
+      // Action row
+      whBody.appendChild(h('div', { style: { marginTop: '.75rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' } },
+        h('button', { class: 'btn primary', onclick: async () => {
+          try { const r = await api('api_wb_webhook_subscribe'); toast('App subscribed to WABA'); showWbTab('connect'); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, '🔄 Subscribe app to WABA'),
+        h('button', { class: 'btn', onclick: () => showWbTab('activity') }, '📑 View Activity Log'),
+        h('button', { class: 'btn ghost', onclick: () => showWbTab('connect') }, '🔄 Refresh status')
+      ));
+      // Subscribed apps detail
+      if (w.subscribe_error) {
+        whBody.appendChild(h('div', { class: 'error-box', style: { marginTop: '.5rem' } },
+          'Could not check subscription: ', w.subscribe_error));
+      } else if (Array.isArray(w.subscribed)) {
+        whBody.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.5rem' } },
+          w.subscribed.length === 0
+            ? '⚠ No app is subscribed to this WABA. Click "Subscribe app to WABA" above.'
+            : '✓ ' + w.subscribed.length + ' app(s) subscribed: ' + w.subscribed.map(a => a.app_name || a.app_id).join(', ')
+        ));
+      }
+    }).catch(e => {
+      whBody.innerHTML = '';
+      whBody.appendChild(h('div', { class: 'error-box' }, 'Could not load webhook status: ' + e.message));
+    });
+
     // ---- All WABA phone numbers — pulled live from /phone_numbers ----
     const phonesCard = h('div', { class: 'card' });
     phonesCard.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },

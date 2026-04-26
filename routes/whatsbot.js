@@ -279,6 +279,85 @@ async function api_wb_disconnect(token) {
  * (used for sending). Useful when the WABA has multiple numbers — the
  * UI shows them as a table with a Register button per row.
  */
+/**
+ * Webhook health check — gives the admin everything they need to diagnose
+ * "I sent a message but never got delivered / read / inbound".
+ * Returns:
+ *   - webhook_url + verify_token (so they can paste into Meta dashboard)
+ *   - whether the WABA is subscribed to our app
+ *   - the last inbound webhook entry timestamp (none → Meta isn't reaching us)
+ *   - count of webhook events in last 24 h (sanity check)
+ */
+async function api_wb_webhook_status(token) {
+  await authUser(token);
+  const cfg = await _cfg();
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/+$/, '') || '';
+  const verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+
+  let subscribed = null;
+  let subscribeError = null;
+  if (cfg.token && cfg.wabaId) {
+    try {
+      const r = await _graphGet(`${cfg.wabaId}/subscribed_apps`, cfg);
+      if (r.body && r.body.error) subscribeError = r.body.error.message;
+      else subscribed = (r.body.data || []).map(a => ({
+        whatsapp_business_api_data: a.whatsapp_business_api_data || a,
+        // Meta returns subscribed apps; if our app id is in the list, we're good.
+        app_id: a.whatsapp_business_api_data?.id || a.id,
+        app_name: a.whatsapp_business_api_data?.name || a.name,
+        link: a.whatsapp_business_api_data?.link || ''
+      }));
+    } catch (e) { subscribeError = e.message; }
+  }
+
+  let last_inbound = null;
+  let recent_count = 0;
+  let last_status = null;
+  try {
+    const lr = await db.query(
+      `SELECT recorded_on, category, name FROM wa_activity_log
+        WHERE category IN ('webhook_in', 'webhook_status', 'webhook_message')
+        ORDER BY recorded_on DESC LIMIT 1`
+    );
+    last_inbound = lr.rows[0] || null;
+    const cr = await db.query(
+      `SELECT COUNT(*)::int AS c FROM wa_activity_log
+        WHERE category IN ('webhook_in', 'webhook_status', 'webhook_message')
+          AND recorded_on > NOW() - INTERVAL '24 hours'`
+    );
+    recent_count = cr.rows[0]?.c || 0;
+    const sr = await db.query(
+      `SELECT recorded_on, name FROM wa_activity_log
+        WHERE category = 'webhook_status' ORDER BY recorded_on DESC LIMIT 1`
+    );
+    last_status = sr.rows[0] || null;
+  } catch (_) {}
+
+  return {
+    webhook_url: (baseUrl || '') + '/hook/whatsapp_webhook',
+    verify_token_set: !!verifyToken,
+    verify_token_preview: verifyToken ? (verifyToken.slice(0, 4) + '…' + verifyToken.slice(-2)) : '',
+    subscribed,
+    subscribe_error: subscribeError,
+    last_inbound, last_status, recent_count_24h: recent_count
+  };
+}
+
+/**
+ * Subscribe our app to the WABA — required for Meta to push webhook
+ * events to our /hook/whatsapp_webhook endpoint.
+ */
+async function api_wb_webhook_subscribe(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.wabaId) throw new Error('Connect WhatsApp first.');
+  const r = await _graphPost(`${cfg.wabaId}/subscribed_apps`, {}, cfg);
+  if (r.body?.error) throw new Error(r.body.error.message);
+  await _logActivity({ category: 'chat', name: 'webhook_subscribe', response_code: r.status, request: { wabaId: cfg.wabaId }, response: r.body });
+  return { ok: true, body: r.body };
+}
+
 async function api_wb_phones_list(token) {
   await authUser(token);
   const cfg = await _cfg();
@@ -1153,6 +1232,7 @@ module.exports = {
   api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
   api_wb_emb_signin, api_wb_register_phone,
   api_wb_phones_list, api_wb_phones_set_current, api_wb_phone_check,
+  api_wb_webhook_status, api_wb_webhook_subscribe,
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat
