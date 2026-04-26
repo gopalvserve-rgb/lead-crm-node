@@ -6347,7 +6347,10 @@ VIEWS.attendance = async (view) => {
   view.innerHTML = '';
   const canReport = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
   const tabs = [{ id: 'mine', label: 'My attendance' }];
-  if (canReport) tabs.push({ id: 'report', label: 'Team report' });
+  if (canReport) {
+    tabs.push({ id: 'report',   label: 'Team report (matrix)' });
+    tabs.push({ id: 'detailed', label: '📋 Detailed log' });
+  }
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'mine' ? ' active' : ''),
       onclick: ev => showAttTab(ev, t.id) }, t.label))
@@ -6359,8 +6362,95 @@ async function showAttTab(ev, id) {
   if (ev) { $$('.subtab').forEach(b => b.classList.remove('active')); ev.target.classList.add('active'); }
   const body = $('#att-body');
   body.innerHTML = '<div class="loading">…</div>';
-  if (id === 'mine')   body.replaceChildren(await renderMyAttendance());
-  if (id === 'report') body.replaceChildren(await renderAttendanceReport());
+  if (id === 'mine')     body.replaceChildren(await renderMyAttendance());
+  if (id === 'report')   body.replaceChildren(await renderAttendanceReport());
+  if (id === 'detailed') body.replaceChildren(await renderAttendanceDetailed());
+}
+
+/**
+ * Detailed attendance log — flat table with one row per check-in. Shows
+ * every detail captured when the employee punched in/out: exact time,
+ * GPS map link, device info, status. Filterable by date range and user.
+ *
+ * Uses api_attendance_team which already returns the flat rows scoped to
+ * what the caller can see (admin → everyone; manager / team_leader →
+ * their team only).
+ */
+async function renderAttendanceDetailed() {
+  const wrap = h('div', {});
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const fromInp = h('input', { type: 'date', value: monthAgo });
+  const toInp   = h('input', { type: 'date', value: today });
+  const users = CRM.cache.users || [];
+  const userSel = h('select', {},
+    h('option', { value: '' }, 'All users'),
+    ...users.map(u => h('option', { value: u.id }, u.name))
+  );
+  const out = h('div', { id: 'att-detail-out' });
+
+  async function load() {
+    out.innerHTML = '<div class="loading">…</div>';
+    try {
+      const rows = await api('api_attendance_team', fromInp.value || undefined, toInp.value || undefined, userSel.value || undefined);
+      out.innerHTML = '';
+      if (!rows.length) {
+        out.appendChild(h('p', { class: 'muted' }, 'No attendance records in this range.'));
+        return;
+      }
+      // Build the detailed table
+      out.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+        rows.length + ' check-in record(s). Click 🗺️ to see the GPS pin on a map.'));
+      out.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Date'),
+          h('th', {}, 'Employee'),
+          h('th', {}, 'Status'),
+          h('th', {}, 'Check-in'),
+          h('th', {}, 'Check-out'),
+          h('th', {}, 'Hours'),
+          h('th', {}, 'Map'),
+          h('th', {}, 'Device')
+        )),
+        h('tbody', {}, ...rows.map(r => {
+          const inT  = r.check_in  ? new Date(r.check_in).toLocaleTimeString()  : '—';
+          const outT = r.check_out ? new Date(r.check_out).toLocaleTimeString() : '—';
+          const hrs  = (r.check_in && r.check_out) ? ((new Date(r.check_out) - new Date(r.check_in)) / 3600000).toFixed(1) + 'h' : '—';
+          const hasMap = !!(r.check_in_lat && r.check_in_lng);
+          const status = r.status || 'present';
+          return h('tr', {},
+            h('td', {}, String(r.date || '').slice(0, 10)),
+            h('td', {}, h('b', {}, r.user_name || ('User #' + r.user_id))),
+            h('td', {}, h('span', { class: 'tag', style: { background: status === 'present' ? '#10b981' : '#94a3b8', color: '#fff' } }, status)),
+            h('td', {}, inT),
+            h('td', {}, outT),
+            h('td', {}, hrs),
+            h('td', {},
+              hasMap ? h('button', { class: 'btn sm', onclick: () => openAttendanceMap(r), title: 'Open GPS pin' }, '🗺️') : h('span', { class: 'muted' }, '—')
+            ),
+            h('td', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: r.device_info || '' },
+              r.device_info || '—'
+            )
+          );
+        }))
+      )));
+    } catch (e) {
+      out.innerHTML = '';
+      out.appendChild(h('div', { class: 'error-box' }, e.message));
+    }
+  }
+
+  wrap.append(
+    h('div', { class: 'toolbar' },
+      h('label', {}, 'From'), fromInp,
+      h('label', {}, 'To'), toInp,
+      h('label', {}, 'User'), userSel,
+      h('button', { class: 'btn primary', onclick: load }, 'Apply')
+    ),
+    out
+  );
+  await load();
+  return wrap;
 }
 async function renderMyAttendance() {
   const rows = await api('api_attendance_mine');
