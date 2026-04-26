@@ -879,6 +879,12 @@ async function api_leads_duplicateAndReassign(token, leadId, newAssigneeId) {
 
   const newStatusId = await _newStatusId();
   const now = db.nowIso();
+  // Fresh lead — only contact info + attribution carry over. We deliberately
+  // DO NOT copy: notes (free-form history), extra_json (stale custom-field
+  // values), next_followup_at (the new owner schedules their own), tags
+  // (might be stage-specific), qualified flag, or any of the historical
+  // remarks / followups / actions / stage_log rows. The new assignee gets
+  // a clean slate so they can run their own discovery.
   const newId = await db.insert('leads', {
     name:       original.name,
     phone:      original.phone,
@@ -893,28 +899,46 @@ async function api_leads_duplicateAndReassign(token, leadId, newAssigneeId) {
     created_by: me.id,
     created_at: now,
     updated_at: now,
-    is_duplicate: 0,                       // not a system-detected duplicate
-    duplicate_of: original.id,             // but we link back so it's traceable
-    tags:       original.tags,
-    notes:      original.notes,
+    last_status_change_at: now,
+    is_duplicate: 0,
+    duplicate_of: original.id,             // back-link is fine — read-only
+    // Address + attribution carry over (those are about the contact, not
+    // the conversation). Everything else is reset.
     address:    original.address, city: original.city, state: original.state,
     pincode:    original.pincode, country: original.country, company: original.company,
     value: original.value, currency: original.currency,
-    extra_json: original.extra_json
+    gclid:          original.gclid          || '',
+    gad_campaignid: original.gad_campaignid || '',
+    utm_source:     original.utm_source     || '',
+    utm_medium:     original.utm_medium     || '',
+    utm_campaign:   original.utm_campaign   || '',
+    utm_term:       original.utm_term       || '',
+    utm_content:    original.utm_content    || ''
+    // Intentionally omitted: notes, tags, extra_json, next_followup_at,
+    // qualified, qualified_at, qualified_by, last_status_change_at-from-
+    // original. Fresh lead, fresh data.
   });
 
-  // Audit trail on the new lead
-  await db.insert('remarks', {
-    lead_id: newId, user_id: me.id,
-    remark: `Duplicated from lead #${original.id} by ${me.name}; assigned to ${newUser.name}`,
-    status_id: newStatusId || original.status_id
-  });
-  // And on the original so the old assignee knows
+  // Audit on the ORIGINAL only (so the old assignee sees what happened).
+  // We do NOT add an audit remark on the new lead — its remark history
+  // should start clean. The duplicate_of FK + activity timeline are enough
+  // to trace.
   await db.insert('remarks', {
     lead_id: original.id, user_id: me.id,
     remark: `Duplicated and reassigned to ${newUser.name} as lead #${newId}`,
     status_id: original.status_id
   });
+
+  // Initialise the new lead's activity timeline + stage log so it shows
+  // 'Lead received' as the first event (just like a brand-new lead).
+  try {
+    const tat = require('./tat');
+    await tat.logAction(newId, 'created', me.id, { from_duplicate_of: original.id });
+    await db.query(
+      `INSERT INTO lead_stage_log (lead_id, from_status_id, to_status_id, user_id) VALUES ($1, $2, $3, $4)`,
+      [Number(newId), null, newStatusId || original.status_id || null, me.id]
+    );
+  } catch (e) { console.warn('[duplicate] tat init failed:', e.message); }
 
   // Push the new assignee — same SMS-style banner as a fresh lead
   setImmediate(async () => {
