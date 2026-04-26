@@ -229,6 +229,35 @@ async function api_wb_disconnect(token) {
   return { ok: true };
 }
 
+/**
+ * Register the WABA phone number with Cloud API. This is a one-time
+ * step required by Meta after connecting a number — without it, every
+ * send returns "account is not registered" / error code 133010.
+ *
+ * If two-factor authentication is OFF, pass pin: '000000'. If 2FA is
+ * ON for the number, the user must pass the PIN they set when first
+ * registering the number with WhatsApp.
+ *
+ * Doc: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/registration
+ */
+async function api_wb_register_phone(token, pin) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.phoneId) throw new Error('Connect WhatsApp first.');
+  const usePin = String(pin || '000000').replace(/\D/g, '').slice(0, 6) || '000000';
+  const r = await _graphPost(`${cfg.phoneId}/register`, {
+    messaging_product: 'whatsapp',
+    pin: usePin
+  }, cfg);
+  if (r.body?.error) {
+    await _logActivity({ category: 'chat', name: 'register_phone', response_code: r.status, request: { pin: '***' }, response: r.body });
+    throw new Error(r.body.error.message);
+  }
+  await _logActivity({ category: 'chat', name: 'register_phone', response_code: r.status, request: {}, response: r.body });
+  return { ok: true, body: r.body };
+}
+
 // ---------- Templates ---------------------------------------------
 
 /** Pull approved templates from Meta and cache locally. */
@@ -967,7 +996,7 @@ async function _handleInbound(m, value) {
 module.exports = {
   // Settings
   api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
-  api_wb_emb_signin,
+  api_wb_emb_signin, api_wb_register_phone,
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat

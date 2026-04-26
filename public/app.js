@@ -2941,9 +2941,9 @@ async function wbConnect() {
   // ---- Connected status banner (always show if connected) ----
   if (isConnected) {
     wrap.appendChild(h('div', { class: 'card wb-conn-status' },
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: '.75rem' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' } },
         h('div', { style: { fontSize: '1.5rem' } }, '✅'),
-        h('div', { style: { flex: 1 } },
+        h('div', { style: { flex: 1, minWidth: '200px' } },
           h('b', {}, 'WhatsApp connected'),
           h('div', { class: 'muted', style: { fontSize: '.85rem' } },
             'WABA: ', h('code', {}, s.waba_id), ' · Phone ID: ', h('code', {}, s.phone_number_id))
@@ -2955,12 +2955,19 @@ async function wbConnect() {
             else toast(r.error || 'Verify failed', 'err');
           } catch (e) { toast(e.message, 'err'); }
         } }, 'Verify'),
+        // Register the phone number with Cloud API — required once before
+        // any send works. Without this, Meta returns 'account not registered'.
+        h('button', { class: 'btn sm', title: 'Required once after connecting — registers the phone with WhatsApp Cloud API.',
+          onclick: () => openRegisterPhoneModal()
+        }, '🔐 Register phone'),
         h('button', { class: 'btn sm ghost danger', onclick: async () => {
           if (!await confirmDialog('Disconnect WhatsApp? Stored tokens will be cleared.')) return;
           try { await api('api_wb_disconnect'); toast('Disconnected'); showWbTab('connect'); }
           catch (e) { toast(e.message, 'err'); }
         } }, 'Disconnect')
-      )
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.5rem', marginBottom: 0 } },
+        '⚠ If sending fails with "account not registered" — click 🔐 Register phone above. WhatsApp Cloud API needs each number registered once with a PIN (use 000000 if you don\'t have 2FA on the number).')
     ));
   }
 
@@ -3088,6 +3095,49 @@ async function wbConnect() {
   manualCard.appendChild(form);
   wrap.appendChild(manualCard);
   return wrap;
+}
+
+/**
+ * Register the WABA phone number with Meta's Cloud API. This is a
+ * one-time post-connect step required before any /messages call works.
+ * Without it Meta returns "account is not registered" (error 133010).
+ *
+ * If the number doesn't have two-factor PIN set, leave the input as
+ * 000000. If it does, the user must paste the 6-digit PIN they configured
+ * when first claiming the number on whatsapp.com / Business Manager.
+ */
+function openRegisterPhoneModal() {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🔐 Register phone with Cloud API'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  body.appendChild(h('p', { class: 'muted' },
+    'WhatsApp Cloud API requires each phone number to be registered ONCE before it can send messages. ',
+    'If two-step verification is OFF for this number, leave the PIN as ', h('code', {}, '000000'), '. ',
+    'If 2FA is ON, paste the 6-digit PIN you set on the WhatsApp app or Meta Business Manager.'));
+  const pinInput = h('input', {
+    type: 'text', value: '000000', maxLength: 6,
+    style: { fontFamily: 'monospace', fontSize: '1.2rem', textAlign: 'center', letterSpacing: '.5rem' }
+  });
+  body.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, '6-digit PIN'),
+    pinInput
+  ));
+  body.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      try {
+        const pin = String(pinInput.value || '000000').replace(/\D/g, '').slice(0, 6) || '000000';
+        await api('api_wb_register_phone', pin);
+        toast('✅ Phone registered with Cloud API. Try sending again.');
+        m.remove();
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Register')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
 }
 
 /**
