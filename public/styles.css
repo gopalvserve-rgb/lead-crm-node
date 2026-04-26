@@ -324,6 +324,7 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .wb-chat-list { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: .75rem; overflow-y: auto; }
 .wb-chat-row { padding: .55rem .5rem; border-radius: 8px; cursor: pointer; }
 .wb-chat-row:hover { background: var(--bg-alt); }
+.wb-chat-row.active { background: rgba(59,130,246,.1); border-left: 3px solid #3b82f6; padding-left: calc(.5rem - 3px); }
 .wb-unread { display: inline-block; background: #ef4444; color: #fff; font-size: .7rem; padding: 0 .4rem; border-radius: 999px; margin-left: .35rem; }
 .wb-chat-thread { display: flex; flex-direction: column; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .wb-chat-head { padding: .75rem 1rem; border-bottom: 1px solid var(--border); }

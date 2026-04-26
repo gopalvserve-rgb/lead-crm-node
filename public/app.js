@@ -435,6 +435,16 @@ function showMobileMore() {
 }
 
 function navigateTo(id) {
+  // Stop any running view-scoped timers (e.g. the WhatsBot Chat polling) so
+  // they don't keep hammering the API after the user has navigated away to
+  // a different section. Each view that creates timers is responsible for
+  // parking them on `window._<viewname>Timers`.
+  if (id !== 'whatsbot' && window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+    window._wbChatTimers = null;
+  }
+
   // Routes that exist as VIEWS but aren't in the sidebar NAV (e.g. /dial,
   // /newleads, /overdue) should still render — don't fall back to NAV[0]
   // when a valid VIEW exists. Falling back was redirecting the call-from-
@@ -3046,6 +3056,14 @@ VIEWS.whatsbot = async (view) => {
 };
 
 async function showWbTab(id) {
+  // Stop any running chat-polling timers if we're navigating away from chat.
+  // Otherwise they'd keep firing every 4-8s in the background even after the
+  // user has switched to e.g. Templates or Activity.
+  if (id !== 'chat' && window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+    window._wbChatTimers = null;
+  }
   $$('.subtab').forEach(b => b.classList.toggle('active', b.dataset.wbtab === id));
   const body = $('#wb-body');
   body.innerHTML = '<div class="loading">Loading…</div>';
@@ -4124,33 +4142,95 @@ function openCampaignModal(templates) {
 }
 
 // ---------- Chat ----------
+//
+// The Chat tab auto-polls so inbound messages from the WhatsApp webhook show
+// up live, without the user reloading. Two independent loops:
+//
+//   - Thread list: every 8s. Cheap query (last 1000 messages aggregated).
+//   - Active thread: every 4s while a thread is open. Re-renders the message
+//     log only if the message count or the last status field changed, so an
+//     in-progress textarea is never disturbed.
+//
+// Polling is parked on `window._wbChatTimers` so showWbTab() can clear them
+// when the user navigates to a different WhatsBot subtab.
 async function wbChat() {
+  // Kill any previous timers if wbChat is mounted twice (e.g. tab reopened).
+  if (window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+  }
+  window._wbChatTimers = { threadList: null, activeThread: null };
+
   const wrap = h('div', { class: 'wb-chat' });
-  const threads = await api('api_wb_chat_threads').catch(() => []);
   const left = h('div', { class: 'wb-chat-list' });
-  const right = h('div', { class: 'wb-chat-thread' }, h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact'));
-  left.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '💭 Chats (' + threads.length + ')'));
-  if (!threads.length) {
-    left.appendChild(h('p', { class: 'muted' }, 'No conversations yet.'));
-  } else {
+  const right = h('div', { class: 'wb-chat-thread' },
+    h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact'));
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+
+  // Track which thread is currently open + a fingerprint of its last render
+  // so polling can decide whether to redraw.
+  let openPhone = null;
+  let openFingerprint = '';
+  let lastThreadsFingerprint = '';
+
+  function _threadFingerprint(threads) {
+    return threads.map(t => `${t.phone}|${t.last_at}|${t.unread}`).join(';');
+  }
+  function _msgFingerprint(msgs) {
+    return msgs.map(m => `${m.id}|${m.status || ''}|${m.read_at || ''}|${m.delivered_at || ''}`).join(';');
+  }
+
+  async function renderThreadList() {
+    let threads;
+    try { threads = await api('api_wb_chat_threads'); }
+    catch (_) { threads = []; }
+    const fp = _threadFingerprint(threads);
+    if (fp === lastThreadsFingerprint) return; // No change — preserve scroll
+    lastThreadsFingerprint = fp;
+
+    left.innerHTML = '';
+    left.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '💭 Chats (' + threads.length + ')'),
+      h('button', { class: 'btn sm ghost', title: 'Refresh now', onclick: () => { lastThreadsFingerprint = ''; renderThreadList(); if (openPhone) renderActiveThread(true); } }, '↻')
+    ));
+    if (!threads.length) {
+      left.appendChild(h('p', { class: 'muted' }, 'No conversations yet. Inbound WhatsApp messages will appear here automatically.'));
+      return;
+    }
     threads.forEach(t => {
-      left.appendChild(h('div', { class: 'wb-chat-row', onclick: () => openThread(t.phone) },
+      const row = h('div', { class: 'wb-chat-row' + (t.phone === openPhone ? ' active' : ''), onclick: () => openThread(t.phone) },
         h('div', {}, h('b', {}, t.lead_name || t.phone), t.unread ? h('span', { class: 'wb-unread' }, t.unread) : null),
         h('div', { class: 'muted', style: { fontSize: '.78rem' } }, t.phone),
         h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t.last_message_type === 'text' ? t.last_message : ('[' + t.last_message_type + ']')),
         h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(t.last_at, 'relative'))
-      ));
+      );
+      left.appendChild(row);
     });
   }
-  wrap.appendChild(left);
-  wrap.appendChild(right);
 
-  async function openThread(phone) {
-    right.innerHTML = '<div class="loading">Loading…</div>';
-    const msgs = await api('api_wb_chat_messages', phone).catch(() => []);
-    right.innerHTML = '';
-    right.appendChild(h('div', { class: 'wb-chat-head' }, h('b', {}, phone)));
-    const log = h('div', { class: 'wb-chat-log' });
+  /**
+   * Render the message log for the currently open thread.
+   *
+   * `force` re-renders even if the fingerprint is unchanged — used when the
+   * user clicks ↻ Refresh manually.
+   *
+   * Re-renders ONLY the message log container, never the textarea, so the
+   * user's in-progress draft is preserved.
+   */
+  async function renderActiveThread(force) {
+    if (!openPhone) return;
+    let msgs;
+    try { msgs = await api('api_wb_chat_messages', openPhone); }
+    catch (_) { msgs = []; }
+    const fp = _msgFingerprint(msgs);
+    if (!force && fp === openFingerprint) return;
+    openFingerprint = fp;
+
+    const log = right.querySelector('.wb-chat-log');
+    if (!log) return; // The thread pane was torn down — bail.
+    const wasNearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 80;
+    log.innerHTML = '';
     msgs.forEach(msg => {
       const isFailed = msg.status === 'failed' || !!msg.error_text;
       const tickClass = msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sent';
@@ -4160,18 +4240,37 @@ async function wbChat() {
                       : '✓';
       log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
         h('div', { class: 'wb-msg-body' }, msg.body || '[' + (msg.message_type || '') + ']'),
-        // Inline error block — visible only on failed outbound messages.
         isFailed && msg.error_text
           ? h('div', { class: 'wb-msg-error' }, '[ERROR: ' + msg.error_text + ']')
           : null,
         h('div', { class: 'wb-msg-meta muted' },
           fmtDate(msg.created_at, 'relative'),
-          msg.direction === 'out' ? h('span', { class: 'wb-tick ' + (isFailed ? 'failed' : tickClass), title: isFailed ? (msg.error_text || 'failed') : tickClass }, ' · ' + tickGlyph) : null
+          msg.direction === 'out'
+            ? h('span', { class: 'wb-tick ' + (isFailed ? 'failed' : tickClass), title: isFailed ? (msg.error_text || 'failed') : tickClass }, ' · ' + tickGlyph)
+            : null
         )
       ));
     });
+    // Auto-scroll to bottom IF the user was already at/near the bottom.
+    // If they had scrolled up to read history, leave them there.
+    if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+  }
+
+  async function openThread(phone) {
+    openPhone = phone;
+    openFingerprint = ''; // Force a render
+    // Mark thread row active
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head' },
+      h('b', {}, phone),
+      h('button', { class: 'btn sm ghost', style: { float: 'right' }, title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
+    ));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.innerHTML = '<div class="loading">Loading…</div>';
     right.appendChild(log);
-    setTimeout(() => { log.scrollTop = log.scrollHeight; }, 100);
+
     const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
     input.addEventListener('keydown', async ev => {
       if (ev.key === 'Enter' && !ev.shiftKey) {
@@ -4180,13 +4279,38 @@ async function wbChat() {
         input.disabled = true;
         try {
           await api('api_wb_chat_send', { phone, text });
-          input.value = ''; openThread(phone);
+          input.value = '';
+          // Force redraw without disrupting the input — user is still focused.
+          renderActiveThread(true);
+          // And refresh the thread list so this conversation jumps to the top.
+          lastThreadsFingerprint = '';
+          renderThreadList();
         } catch (e) { toast(e.message, 'err'); }
         finally { input.disabled = false; input.focus(); }
       }
     });
     right.appendChild(h('div', { class: 'wb-chat-compose' }, input));
+
+    await renderActiveThread(true);
+    // Refresh the list too — opening a thread marks inbound as read on the
+    // server, so unread badges should clear in the left pane.
+    lastThreadsFingerprint = '';
+    await renderThreadList();
   }
+
+  // Initial render + auto-poll
+  await renderThreadList();
+  window._wbChatTimers.threadList = setInterval(() => {
+    // Pause polling when the tab is hidden — saves battery on mobile and
+    // avoids piling up requests if the user steps away for an hour.
+    if (document.visibilityState === 'hidden') return;
+    renderThreadList().catch(() => {});
+  }, 8000);
+  window._wbChatTimers.activeThread = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    if (openPhone) renderActiveThread(false).catch(() => {});
+  }, 4000);
+
   return wrap;
 }
 
