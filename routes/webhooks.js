@@ -269,10 +269,30 @@ async function otherHook(req, res) {
 // -------------------- Shared lead creator ------------------------
 // Applies simple round-robin if assignment_rules don't match.
 async function _createLeadFromWebhook(lead) {
-  // 1. Find default 'New' status
+  // 0. Phone validation. Reject leads with no phone outright (we can't
+  //    follow up without one). Auto-flag short phones (<10 digits) as
+  //    Junk so they're visible but don't pollute the active pipeline.
+  const _phDigits = String(lead.phone || '').replace(/\D/g, '');
+  if (!_phDigits) {
+    return { ok: false, error: 'phone required' };
+  }
+  const isJunkPhone = _phDigits.length < 10;
+
+  // 1. Find default status — 'Junk' if the phone is too short, else 'New'
   const statuses = await db.getAll('statuses');
-  const newStatus = statuses.find(s => s.name === 'New');
-  if (newStatus) lead.status_id = newStatus.id;
+  if (isJunkPhone) {
+    let junk = statuses.find(s => /^(junk|junk\s+lead|spam)$/i.test(String(s.name || '')));
+    if (!junk) {
+      // Auto-create 'Junk' status if it doesn't exist
+      const id = await db.insert('statuses', { name: 'Junk', color: '#64748b', sort_order: 990, is_final: 1 });
+      junk = { id, name: 'Junk' };
+    }
+    lead.status_id = junk.id;
+    lead.notes = '⚠ Auto-flagged Junk: phone "' + (lead.phone || '') + '" has only ' + _phDigits.length + ' digits.\n' + (lead.notes || '');
+  } else {
+    const newStatus = statuses.find(s => s.name === 'New');
+    if (newStatus) lead.status_id = newStatus.id;
+  }
 
   // 2. Apply assignment rules (first matching one by priority wins)
   const rules = (await db.getAll('assignment_rules'))

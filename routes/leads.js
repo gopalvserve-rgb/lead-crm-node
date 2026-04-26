@@ -96,6 +96,22 @@ async function _newStatusId() {
 }
 
 /**
+ * Resolve the 'Junk' status id. Matches 'Junk', 'Junk Lead', 'Spam'
+ * case-insensitively, then auto-creates 'Junk' if no matching status
+ * exists yet — so the rule keeps working even on fresh databases.
+ */
+async function _junkStatusId() {
+  const all = await db.getAll('statuses');
+  const found = all.find(s => /^(junk|junk\s+lead|spam)$/i.test(String(s.name || '')));
+  if (found) return found.id;
+  // Auto-create
+  const id = await db.insert('statuses', {
+    name: 'Junk', color: '#64748b', sort_order: 990, is_final: 1
+  });
+  return id;
+}
+
+/**
  * Resolve a status NAME (e.g. "Follow Up", "Converted") to a status_id.
  * Case-insensitive, trims whitespace. Auto-creates the status if it doesn't
  * exist yet — that way bulk CSV imports just work even when the spreadsheet
@@ -253,6 +269,14 @@ async function api_leads_create(token, payload) {
   const _phoneDigits = String(_phoneRaw || '').trim().replace(/^'/, '').replace(/\D/g, '');
   if (!_phoneDigits) throw new Error('Mobile number is required');
 
+  // Bad-quality phone → auto-move to Junk. We accept the lead (so the data
+  // isn't silently lost) but mark it for review. Threshold: a real mobile
+  // number must be at least 10 digits. Anything shorter is almost certainly
+  // a typo or test data — flagging as Junk surfaces it to the manager
+  // without polluting the active pipeline.
+  let _autoJunk = false;
+  if (_phoneDigits.length < 10) _autoJunk = true;
+
   // Resolve assigned_to: accepts integer ID, email, or full name.
   // Recognises common CSV column aliases people actually use:
   //   assigned_to / user / owner / assignee / sales_rep / salesperson / agent
@@ -298,6 +322,15 @@ async function api_leads_create(token, payload) {
     ? Number(p.product_id)
     : (p.product ? await _resolveProductIdByName(p.product) : '');
 
+  // Auto-junk override: short phone wins over any explicit status the
+  // caller passed. This keeps test data and typos out of the live pipeline.
+  let _statusId;
+  if (_autoJunk) {
+    _statusId = await _junkStatusId();
+  } else {
+    _statusId = resolvedStatusId || (await _newStatusId());
+  }
+
   let base = {
     name: String(p.name).trim(),
     email: String(p.email || '').trim(),
@@ -306,11 +339,13 @@ async function api_leads_create(token, payload) {
     source: p.source || 'manual',
     source_ref: p.source_ref || '',
     product_id: resolvedProductId,
-    status_id: resolvedStatusId || (await _newStatusId()),
+    status_id: _statusId,
     assigned_to: resolvedAssignee || me.id,
     city: p.city || '',
     tags: p.tags || '',
-    notes: p.notes || '',
+    notes: _autoJunk
+      ? ('⚠ Auto-flagged Junk: phone "' + (cleanPhone || _phoneDigits) + '" has only ' + _phoneDigits.length + ' digits.\n' + (p.notes || ''))
+      : (p.notes || ''),
     extra_json: p.extra ? JSON.stringify(p.extra) : '',
     next_followup_at: p.next_followup_at || '',
     last_status_change_at: db.nowIso(),
