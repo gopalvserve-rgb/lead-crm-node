@@ -404,9 +404,20 @@ async function api_leads_update(token, id, patch) {
   ['name', 'email', 'phone', 'whatsapp', 'product_id', 'status_id', 'assigned_to',
    'city', 'state', 'pincode', 'country', 'company', 'address',
    'notes', 'next_followup_at', 'tags', 'source', 'source_ref',
-   'value', 'currency']
+   'value', 'currency', 'qualified']
     .forEach(k => { if (k in patch) allowed[k] = patch[k]; });
   allowed.updated_at = db.nowIso();
+  // Track who marked the lead as qualified, and when. Only update these
+  // when the qualified flag actually changes (don't overwrite on no-op saves).
+  if ('qualified' in patch) {
+    const wasQualified = Number(lead.qualified) === 1;
+    const nowQualified = Number(patch.qualified) === 1;
+    if (wasQualified !== nowQualified) {
+      allowed.qualified = nowQualified ? 1 : 0;
+      allowed.qualified_at = nowQualified ? db.nowIso() : null;
+      allowed.qualified_by = nowQualified ? me.id : null;
+    }
+  }
 
   if (patch.extra && typeof patch.extra === 'object') {
     const curr = _parseExtra(lead);
@@ -717,6 +728,82 @@ async function api_leads_duplicateHistory(token, leadId) {
     });
 }
 
+/**
+ * One-click duplicate a lead and assign the copy to a different sales user.
+ * Creates a fresh lead with the same contact info but a status of "New",
+ * an empty followup history, and a remark linking back to the original.
+ *
+ * Args: (token, leadId, newAssigneeId)
+ */
+async function api_leads_duplicateAndReassign(token, leadId, newAssigneeId) {
+  const me = await authUser(token);
+  if (!['admin', 'manager', 'team_leader'].includes(me.role)) {
+    throw new Error('Only admin / manager / team leader can duplicate-and-reassign');
+  }
+  const original = await db.findById('leads', leadId);
+  if (!original) throw new Error('Original lead not found');
+  if (!newAssigneeId) throw new Error('newAssigneeId required');
+  const newUser = await db.findById('users', newAssigneeId);
+  if (!newUser) throw new Error('Target user not found');
+
+  const newStatusId = await _newStatusId();
+  const now = db.nowIso();
+  const newId = await db.insert('leads', {
+    name:       original.name,
+    phone:      original.phone,
+    alt_phone:  original.alt_phone,
+    whatsapp:   original.whatsapp,
+    email:      original.email,
+    source:     original.source,
+    source_ref: original.source_ref,
+    product_id: original.product_id,
+    status_id:  newStatusId || original.status_id,
+    assigned_to: Number(newAssigneeId),
+    created_by: me.id,
+    created_at: now,
+    updated_at: now,
+    is_duplicate: 0,                       // not a system-detected duplicate
+    duplicate_of: original.id,             // but we link back so it's traceable
+    tags:       original.tags,
+    notes:      original.notes,
+    address:    original.address, city: original.city, state: original.state,
+    pincode:    original.pincode, country: original.country, company: original.company,
+    value: original.value, currency: original.currency,
+    extra_json: original.extra_json
+  });
+
+  // Audit trail on the new lead
+  await db.insert('remarks', {
+    lead_id: newId, user_id: me.id,
+    remark: `Duplicated from lead #${original.id} by ${me.name}; assigned to ${newUser.name}`,
+    status_id: newStatusId || original.status_id
+  });
+  // And on the original so the old assignee knows
+  await db.insert('remarks', {
+    lead_id: original.id, user_id: me.id,
+    remark: `Duplicated and reassigned to ${newUser.name} as lead #${newId}`,
+    status_id: original.status_id
+  });
+
+  // Push the new assignee — same SMS-style banner as a fresh lead
+  setImmediate(async () => {
+    try {
+      if (Number(newAssigneeId) !== Number(me.id)) {
+        const push = require('./push');
+        await push.sendPushToUser(newAssigneeId, {
+          title: '🎯 New lead assigned (copy)',
+          body:  `${original.name || 'Unknown'}${original.phone ? ' · ' + original.phone : ''}`,
+          url:   '/#/leads',
+          tag:   'lead-' + newId,
+          sticky: true
+        });
+      }
+    } catch (e) { console.warn('[push] dup-reassign push failed:', e.message); }
+  });
+
+  return { ok: true, id: newId, original_id: original.id };
+}
+
 async function api_whatsapp_send(token, payload) {
   const me = await authUser(token);
   const p = payload || {};
@@ -758,6 +845,6 @@ module.exports = {
   api_leads_list, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
   api_leads_addRemark, api_leads_pipeline, api_myFollowups, api_followup_done,
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
-  api_leads_deleteAllDuplicates,
+  api_leads_deleteAllDuplicates, api_leads_duplicateAndReassign,
   api_whatsapp_send
 };

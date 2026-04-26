@@ -31,6 +31,7 @@ const routes = {
   leads:       require('./routes/leads'),
   admin:       require('./routes/admin'),
   customFields:require('./routes/customFields'),
+  tags:        require('./routes/tags'),
   sources:     require('./routes/sources'),
   products:    require('./routes/products'),
   statuses:    require('./routes/statuses'),

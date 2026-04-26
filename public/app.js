@@ -435,13 +435,15 @@ VIEWS.dashboard = async (view) => {
   ]);
   view.innerHTML = '';
 
-  // 4 clean KPI cards
+  // 5 KPI cards — added "New today" so users can see today's fresh leads
+  // at a glance from the dashboard without having to filter the leads list.
   view.append(
     h('div', { class: 'cards' },
       card('Total Leads',  summary.totals.total,      'accent', '🎯'),
+      card('New today',    due.counts.new_today || 0, 'accent', '✨', '#/leads?filter=new_today'),
       card('Won',          summary.totals.won,        'ok',     '🏆'),
-      card('Due today',    due.counts.due_today,      'warn',   '📅'),
-      card('Overdue',      due.counts.overdue,        'err',    '⚠️')
+      card('Due today',    due.counts.due_today,      'warn',   '📅', '#/followups?tab=due'),
+      card('Overdue',      due.counts.overdue,        'err',    '⚠️', '#/followups?tab=overdue')
     )
   );
 
@@ -521,14 +523,16 @@ VIEWS.dashboard = async (view) => {
     makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
   }, 50);
 
-  function card(label, val, klass, icon) {
-    return h('div', { class: `card stat ${klass}` },
+  function card(label, val, klass, icon, href) {
+    const inner = h('div', { class: `card stat ${klass}` + (href ? ' clickable' : '') },
       h('div', { class: 'stat-icon' }, icon || ''),
       h('div', { class: 'stat-body' },
         h('div', { class: 'stat-label' }, label),
         h('div', { class: 'stat-value' }, val ?? 0)
       )
     );
+    if (href) inner.onclick = () => { location.hash = href; };
+    return inner;
   }
 };
 
@@ -1625,7 +1629,13 @@ function openColumnChooser() {
 /* --- Lead modal --- */
 async function openLeadModal(id) {
   const { statuses, sources, products, users, customFields } = CRM.cache;
-  let lead = { name: '', phone: '', email: '', whatsapp: '', source: '', status_id: statuses[0]?.id, assigned_to: CRM.user.id, notes: '', tags: '', next_followup_at: '' };
+  // Lazy-load the admin-managed tag library; cached for the session.
+  if (!CRM.cache.tagLibrary) {
+    try { CRM.cache.tagLibrary = await api('api_tags_list'); } catch (_) { CRM.cache.tagLibrary = []; }
+  }
+  const tagLibrary = CRM.cache.tagLibrary || [];
+  const isAdmin = CRM.user.role === 'admin';
+  let lead = { name: '', phone: '', email: '', whatsapp: '', source: '', status_id: statuses[0]?.id, assigned_to: CRM.user.id, notes: '', tags: '', next_followup_at: '', qualified: 0 };
   let remarks = [];
   if (id) {
     const r = await api('api_leads_get', id);
@@ -1638,21 +1648,23 @@ async function openLeadModal(id) {
   body.appendChild(h('div', { class: 'modal-head' },
     h('h3', {}, id ? 'Edit Lead' : 'New Lead'),
     lead.is_duplicate ? h('span', { class: 'dup-pill', onclick: () => openDuplicateHistory(id) }, 'DUPLICATE of #' + (lead.duplicate_of || '?')) : null,
+    Number(lead.qualified) === 1 ? h('span', { class: 'qual-pill ok' }, '✓ Qualified') : null,
     h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
   ));
   const form = h('form', { id: 'lead-form', class: 'form-grid' });
   form.append(
     field('name', 'Name *', lead.name, { required: true }),
-    field('phone', 'Phone', lead.phone),
+    field('phone', 'Phone *', lead.phone, { required: true }),
     field('whatsapp', 'WhatsApp', lead.whatsapp || lead.phone),
     field('email', 'Email', lead.email, { type: 'email' }),
     selectField('source', 'Source', lead.source, sources.map(s => s.name)),
     selectField('product_id', 'Product', lead.product_id, [{ value: '', label: '—' }, ...products.map(p => ({ value: p.id, label: p.name }))]),
-    selectField('status_id', 'Status', lead.status_id, statuses.map(s => ({ value: s.id, label: s.name }))),
+    selectField('status_id', 'Status', lead.status_id, statuses.map(s => ({ value: s.id, label: s.name })), { id: 'lead-status' }),
     selectField('assigned_to', 'Assigned To', lead.assigned_to, users.map(u => ({ value: u.id, label: u.name }))),
-    field('tags', 'Tags (comma separated)', lead.tags),
-    field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local' }),
+    tagsInput(lead.tags, tagLibrary, isAdmin),
+    field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local', id: 'lead-fu' }),
     field('city', 'City', lead.city),
+    qualifiedToggle(lead),
     field('notes', 'Notes', lead.notes, { type: 'textarea', full: true })
   );
 
@@ -1664,14 +1676,53 @@ async function openLeadModal(id) {
   body.appendChild(form);
   if (id) body.appendChild(remarksBlock(remarks, id));
   if (id) body.appendChild(recordingsBlock(id));
-  body.appendChild(h('div', { class: 'actions' },
-    h('button', { type: 'button', class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
-    h('button', { type: 'submit', form: 'lead-form', class: 'btn primary' }, id ? 'Save changes' : 'Create lead')
-  ));
+  // Action row — Cancel / Save / [Duplicate & reassign for managers+]
+  const actionsRow = h('div', { class: 'actions' });
+  actionsRow.appendChild(h('button', { type: 'button', class: 'btn', onclick: () => modal.remove() }, 'Cancel'));
+  if (id && ['admin', 'manager', 'team_leader'].includes(CRM.user.role)) {
+    actionsRow.appendChild(h('button', { type: 'button', class: 'btn', onclick: () => openDuplicateAndReassignModal(id, lead, () => { modal.remove(); loadLeads && loadLeads(); }) }, '📋 Duplicate & reassign'));
+  }
+  actionsRow.appendChild(h('button', { type: 'submit', form: 'lead-form', class: 'btn primary' }, id ? 'Save changes' : 'Create lead'));
+  body.appendChild(actionsRow);
   document.body.appendChild(modal);
+
+  // Status → Follow-up enforcement: when the user picks a status whose
+  // name is "Follow Up", they MUST also pick a date+time. The submit
+  // handler validates this and blocks save with a clear message.
+  function selectedStatusName() {
+    const sel = form.querySelector('[name="status_id"]');
+    if (!sel) return '';
+    const opt = sel.options[sel.selectedIndex];
+    return (opt ? opt.textContent : '').trim().toLowerCase();
+  }
 
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
+
+    // Status = "Follow Up" requires next_followup_at — both date AND time.
+    const statusName = selectedStatusName();
+    const fuVal = form.querySelector('[name="next_followup_at"]')?.value || '';
+    if (/follow\s*up/i.test(statusName) && !fuVal) {
+      toast('Status "Follow Up" requires a next follow-up date and time', 'err');
+      form.querySelector('[name="next_followup_at"]')?.focus();
+      return;
+    }
+
+    // Required custom fields — enforce here in addition to HTML5 `required`.
+    for (const cf of (customFields || [])) {
+      if (!cf.is_required) continue;
+      const key = 'cf_' + cf.key;
+      let val;
+      if (cf.field_type === 'multiselect') val = (new FormData(form)).getAll(key).join(',');
+      else val = form.querySelector(`[name="${key}"]`)?.value || '';
+      if (!String(val).trim()) {
+        toast(`"${cf.label}" is required`, 'err');
+        const el = form.querySelector(`[name="${key}"]`);
+        if (el && el.focus) el.focus();
+        return;
+      }
+    }
+
     const fd = new FormData(form);
     const extra = {};
     (customFields || []).forEach(cf => {
@@ -1679,14 +1730,20 @@ async function openLeadModal(id) {
       if (cf.field_type === 'multiselect') extra[cf.key] = fd.getAll(key).join(',');
       else extra[cf.key] = fd.get(key) || '';
     });
+    // Tags: if non-admin, the tags field is a multi-select — collect with getAll.
+    const tagsValue = isAdmin
+      ? (fd.get('tags') || '')
+      : fd.getAll('tags[]').join(',');
     const payload = {
       name: fd.get('name'), phone: fd.get('phone'), email: fd.get('email'),
       whatsapp: fd.get('whatsapp'), source: fd.get('source'),
       product_id: Number(fd.get('product_id')) || null,
       status_id: Number(fd.get('status_id')) || null,
       assigned_to: Number(fd.get('assigned_to')) || null,
-      tags: fd.get('tags'), next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
+      tags: tagsValue,
+      next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
       city: fd.get('city'), notes: fd.get('notes'),
+      qualified: form.querySelector('[name="qualified"]')?.checked ? 1 : 0,
       extra
     };
     try {
@@ -1699,14 +1756,156 @@ async function openLeadModal(id) {
   });
 }
 
+/**
+ * Build the Tags form row.
+ * - Admin → freeform comma-separated input AND can add new tags from this UI
+ *   (still suggested values dropdown via datalist).
+ * - Non-admin → multi-select of existing tags only. Cannot type new ones.
+ */
+function tagsInput(currentTags, tagLibrary, isAdmin) {
+  const current = String(currentTags || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (isAdmin) {
+    // Free-form input plus a datalist of known tags for autocomplete.
+    const dlId = 'tag-suggest-' + Math.random().toString(36).slice(2, 8);
+    const inp = h('input', { name: 'tags', value: current.join(', '), list: dlId, placeholder: 'comma separated' });
+    const dl  = h('datalist', { id: dlId }, ...tagLibrary.map(t => h('option', { value: t.name })));
+    return h('div', { class: 'f-row' }, h('label', {}, 'Tags'), h('div', {}, inp, dl,
+      h('div', { class: 'muted', style: { fontSize: '.75rem', marginTop: '.25rem' } },
+        'Manage the master tag list under Admin → Tags.'))
+    );
+  }
+  // Non-admin: multi-select. Cannot type new tags.
+  if (tagLibrary.length === 0) {
+    return h('div', { class: 'f-row' }, h('label', {}, 'Tags'),
+      h('div', { class: 'muted' }, 'No tags available. Ask an admin to add them under Admin → Tags.'));
+  }
+  const grid = h('div', { class: 'cf-multi-grid' },
+    ...tagLibrary.map(t => h('label', {},
+      h('input', { type: 'checkbox', name: 'tags[]', value: t.name, checked: current.includes(t.name) ? 'checked' : null }),
+      ' ', h('span', { class: 'tag', style: { background: t.color, color: '#fff' } }, t.name)
+    ))
+  );
+  return h('div', { class: 'f-row full' }, h('label', {}, 'Tags'), grid);
+}
+
+function qualifiedToggle(lead) {
+  const wrap = h('div', { class: 'f-row' },
+    h('label', {}, 'Qualified lead?'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'qualified', checked: Number(lead.qualified) === 1 ? 'checked' : null }),
+      h('span', {}, ' Mark as qualified (passes minimum criteria, separate from status)')
+    )
+  );
+  return wrap;
+}
+
+/**
+ * Pop up a small modal with a user picker and a confirm button. On confirm,
+ * call api_leads_duplicateAndReassign. Used from the lead modal.
+ */
+/**
+ * "Next Follow Up" modal — replaces the old "Mark done" button.
+ *
+ * Forces the user to commit to a NEXT step instead of just dismissing the
+ * reminder. They pick a new date+time and write a quick remark; we then:
+ *  1. Insert a remark on the lead (so it's visible in history)
+ *  2. Update the lead's next_followup_at (which auto-syncs the followup row)
+ *  3. Close this modal & refresh
+ *
+ * If the user enters a remark but leaves date blank, we treat it as a Done +
+ * remark (close current followup, no next one).
+ */
+function openNextFollowupModal(row, onSuccess) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  // Default next due = tomorrow at 10am local
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  tomorrow.setHours(10, 0, 0, 0);
+  const defaultDt = isoToLocalDtInput(tomorrow.toISOString());
+  const dtInput = h('input', { type: 'datetime-local', value: defaultDt });
+  const remarkInput = h('textarea', { rows: 3, placeholder: 'What happened on this call / contact attempt?' });
+  m.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '⏰ Next follow-up'),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { marginTop: 0 } },
+      `For lead: ${row.lead_name || '—'}${row.lead_phone ? ' · ' + row.lead_phone : ''}`),
+    h('div', { class: 'f-row full' }, h('label', {}, 'Remark *'), remarkInput),
+    h('div', { class: 'f-row full' }, h('label', {}, 'Next follow-up date & time'), dtInput),
+    h('div', { class: 'actions', style: { marginTop: '1rem' } },
+      h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const remark = String(remarkInput.value || '').trim();
+        if (!remark) { toast('Remark is required', 'err'); remarkInput.focus(); return; }
+        const nextIso = localDtInputToIso(dtInput.value);
+        try {
+          // Add remark + set next followup. addRemark already creates a new
+          // followup row when next_followup_at is provided; we then close the
+          // current open followup so it disappears from "Overdue / Due today".
+          await api('api_leads_addRemark', row.lead_id, {
+            remark, next_followup_at: nextIso
+          });
+          if (row.id) {
+            try { await api('api_followup_done', row.id); } catch (_) {}
+          }
+          toast('Saved & next follow-up scheduled');
+          m.remove();
+          if (typeof onSuccess === 'function') onSuccess();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save & schedule')
+    )
+  ));
+  document.body.appendChild(m);
+}
+
+function openDuplicateAndReassignModal(leadId, lead, onSuccess) {
+  const { users } = CRM.cache;
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const sel = h('select', {},
+    h('option', { value: '' }, '— pick a sales user —'),
+    ...users.filter(u => Number(u.id) !== Number(lead.assigned_to)).map(u =>
+      h('option', { value: u.id }, `${u.name} (${u.role})`))
+  );
+  m.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '📋 Duplicate & reassign'),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    ),
+    h('p', { class: 'muted' },
+      `A copy of "${lead.name || ('Lead #' + leadId)}" will be created with status "New" and assigned to the user you pick. The original lead stays as-is.`),
+    h('label', {}, 'New assignee'),
+    sel,
+    h('div', { class: 'actions', style: { marginTop: '1rem' } },
+      h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const newId = sel.value;
+        if (!newId) { toast('Pick a user first', 'err'); return; }
+        try {
+          const r = await api('api_leads_duplicateAndReassign', leadId, Number(newId));
+          toast('Duplicated as lead #' + r.id, 'ok');
+          m.remove();
+          if (typeof onSuccess === 'function') onSuccess();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Duplicate & reassign')
+    )
+  ));
+  document.body.appendChild(m);
+}
+
 function field(name, label, value, opts = {}) {
   const tag = opts.type === 'textarea' ? 'textarea' : 'input';
-  const el = h(tag, Object.assign({ name, value: value ?? '' }, opts.type && opts.type !== 'textarea' ? { type: opts.type } : {}, opts.required ? { required: true } : {}));
+  const attrs = Object.assign({ name, value: value ?? '' },
+    opts.type && opts.type !== 'textarea' ? { type: opts.type } : {},
+    opts.required ? { required: true } : {},
+    opts.id ? { id: opts.id } : {});
+  const el = h(tag, attrs);
   if (opts.type === 'textarea') el.textContent = value ?? '';
   return h('div', { class: opts.full ? 'f-row full' : 'f-row' }, h('label', {}, label), el);
 }
 function selectField(name, label, value, options, opts = {}) {
-  const sel = h('select', { name },
+  const selAttrs = { name };
+  if (opts.id) selAttrs.id = opts.id;
+  const sel = h('select', selAttrs,
     ...options.map(o => {
       const v = typeof o === 'object' ? o.value : o;
       const t = typeof o === 'object' ? o.label : o;
@@ -1728,9 +1927,12 @@ function parseFieldOptions(raw) {
 function customFieldInput(cf, val) {
   const name = 'cf_' + cf.key;
   const opts = parseFieldOptions(cf.options);
+  // Required attribute on the underlying input — backed up by JS validation
+  // in the lead-modal submit handler so multi-select / checkbox cases also work.
+  const reqAttr = cf.is_required ? { required: true } : {};
   let input;
-  if (cf.field_type === 'textarea') input = h('textarea', { name }, val || '');
-  else if (cf.field_type === 'select') input = h('select', { name },
+  if (cf.field_type === 'textarea') input = h('textarea', Object.assign({ name }, reqAttr), val || '');
+  else if (cf.field_type === 'select') input = h('select', Object.assign({ name }, reqAttr),
     h('option', { value: '' }, '—'),
     ...opts.map(o => h('option', { value: o, selected: val === o ? 'selected' : null }, o)));
   else if (cf.field_type === 'multiselect') {
@@ -1752,7 +1954,7 @@ function customFieldInput(cf, val) {
     }
   }
   else if (cf.field_type === 'checkbox') input = h('input', { type: 'checkbox', name, checked: val ? 'checked' : null, value: '1' });
-  else input = h('input', { name, value: val || '', type: cf.field_type === 'number' ? 'number' : cf.field_type === 'date' ? 'date' : 'text' });
+  else input = h('input', Object.assign({ name, value: val || '', type: cf.field_type === 'number' ? 'number' : cf.field_type === 'date' ? 'date' : 'text' }, reqAttr));
   // Long-form fields span both columns in the grid for breathing room.
   const rowClass = (cf.field_type === 'multiselect' || cf.field_type === 'textarea') ? 'f-row full' : 'f-row';
   return h('div', { class: rowClass }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
@@ -2384,12 +2586,14 @@ VIEWS.followups = async (view) => {
               style: { marginLeft: '.3rem' }, title: 'WhatsApp' }, '💬') : null,
             h('button', { class: 'btn sm', style: { marginLeft: '.3rem' },
               onclick: () => openLeadModal(r.lead_id), title: 'Open lead' }, '✎'),
-            r.id ? h('button', { class: 'btn sm', style: { marginLeft: '.3rem' },
-              onclick: async () => {
-                try { await api('api_followup_done', r.id); toast('Marked done'); navigateTo('followups'); }
-                catch (e) { toast(e.message, 'err'); }
-              }
-            }, '✓ Done') : null
+            // "Next Follow Up" replaces the old "Done" button — opens a small
+            // modal where the user picks a new date+time and writes a remark,
+            // which closes the current follow-up AND creates the next one.
+            // Forces the user to commit to a next action instead of just
+            // dismissing the reminder.
+            r.id ? h('button', { class: 'btn sm primary', style: { marginLeft: '.3rem' },
+              onclick: () => openNextFollowupModal(r, () => navigateTo('followups'))
+            }, '⏰ Next follow-up') : null
           )
         );
       }))
@@ -2751,6 +2955,7 @@ VIEWS.admin = async (view) => {
     { id: 'sources',      label: 'Sources' },
     { id: 'statuses',     label: 'Statuses' },
     { id: 'customfields', label: 'Custom Fields' },
+    { id: 'tags',         label: 'Tags' },
     { id: 'rules',        label: 'Auto-assign Rules' },
     { id: 'permissions',  label: '🔐 Permissions' },
     { id: 'duplicates',   label: 'Duplicates' },
@@ -2777,6 +2982,7 @@ async function showAdminTab(id) {
     if (id === 'sources')  body.replaceChildren(await adminSources());
     if (id === 'statuses') body.replaceChildren(await adminStatuses());
     if (id === 'customfields') body.replaceChildren(await adminCustomFields());
+    if (id === 'tags')     body.replaceChildren(await adminTags());
     if (id === 'rules')    body.replaceChildren(await adminRules());
     if (id === 'permissions') body.replaceChildren(await adminPermissions());
     if (id === 'duplicates') body.replaceChildren(await adminDuplicates());
@@ -3450,6 +3656,62 @@ async function adminStatuses() {
   ));
   return card;
 }
+/**
+ * Admin → Tags. Lets the admin maintain a master list of tags that
+ * non-admin users can choose from on the lead form. Non-admin users
+ * cannot create new tags; this prevents tag sprawl.
+ */
+async function adminTags() {
+  const wrap = h('div', {});
+  const tags = await api('api_tags_list');
+  const colorPick = h('input', { type: 'color', value: '#6366f1', style: { width: '50px' } });
+  const nameInput = h('input', { placeholder: 'Tag name (e.g. VIP, Hot, Cold)', style: { flex: '1' } });
+  wrap.appendChild(h('div', { class: 'card' },
+    h('h3', {}, 'Add a new tag'),
+    h('p', { class: 'muted' }, 'Only admins can add tags. Other users will see this list as a multi-select on the lead form.'),
+    h('div', { style: { display: 'flex', gap: '.5rem', alignItems: 'center', marginTop: '.5rem' } },
+      nameInput, colorPick,
+      h('button', { class: 'btn primary', onclick: async () => {
+        const name = String(nameInput.value || '').trim();
+        if (!name) { toast('Tag name required', 'err'); return; }
+        try {
+          await api('api_tags_save', { name, color: colorPick.value });
+          toast('Tag added');
+          CRM.cache.tagLibrary = null; // force re-fetch
+          showAdminTab('tags'); // refresh
+        } catch (e) { toast(e.message, 'err'); }
+      } }, '+ Add tag')
+    )
+  ));
+
+  const list = h('div', { class: 'card' }, h('h3', {}, 'Existing tags (' + tags.length + ')'));
+  if (tags.length === 0) {
+    list.appendChild(h('p', { class: 'muted' }, 'No tags yet. Add some above.'));
+  } else {
+    list.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Color'), h('th', {}, 'Preview'), h('th', { style: { textAlign: 'right' } }, 'Actions'))),
+      h('tbody', {}, ...tags.map(t => h('tr', {},
+        h('td', {}, t.name),
+        h('td', {}, h('code', {}, t.color)),
+        h('td', {}, h('span', { class: 'tag', style: { background: t.color, color: '#fff' } }, t.name)),
+        h('td', { style: { textAlign: 'right' } },
+          h('button', { class: 'btn sm', onclick: async () => {
+            if (!confirm(`Delete tag "${t.name}"? Existing leads tagged with this name will keep showing it but new leads cannot pick it.`)) return;
+            try {
+              await api('api_tags_delete', t.id);
+              toast('Deleted');
+              CRM.cache.tagLibrary = null;
+              showAdminTab('tags');
+            } catch (e) { toast(e.message, 'err'); }
+          } }, '🗑️ Delete')
+        )
+      )))
+    )));
+  }
+  wrap.appendChild(list);
+  return wrap;
+}
+
 async function adminCustomFields() {
   const fields = await api('api_customFields_list');
   const card = h('div', { class: 'card' }, h('h4', {}, 'Custom lead fields'));
@@ -5338,7 +5600,7 @@ function popupFollowupDue(d) {
           f.note ? h('div', {}, f.note) : null,
           h('div', { class: 'actions' },
             telHref ? h('a', { class: 'btn sm primary', href: telHref }, '📞 Call') : null,
-            f.id ? h('button', { class: 'btn sm', onclick: async () => { await api('api_followup_done', f.id); toast('Marked done'); refreshNotifs(); } }, '✓ Done') : null,
+            f.id ? h('button', { class: 'btn sm primary', onclick: () => openNextFollowupModal(f, () => refreshNotifs()) }, '⏰ Next follow-up') : null,
             h('button', { class: 'btn sm ghost', onclick: () => { close(); navigateTo('leads'); setTimeout(() => openLeadModal(f.lead_id), 300); } }, 'Open lead')
           )
         );

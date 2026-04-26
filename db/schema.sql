@@ -351,3 +351,48 @@ CREATE TABLE IF NOT EXISTS call_events (
 );
 CREATE INDEX IF NOT EXISTS idx_call_events_lead ON call_events(lead_id);
 CREATE INDEX IF NOT EXISTS idx_call_events_user ON call_events(user_id, created_at);
+
+-- v8: editable email templates (one row per event_type)
+CREATE TABLE IF NOT EXISTS email_templates (
+  id           SERIAL PRIMARY KEY,
+  event_type   TEXT UNIQUE NOT NULL,    -- new_lead | lead_assigned | new_device_login | morning_followups | day_end
+  name         TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  body_html    TEXT NOT NULL,
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Track which devices each user has signed in from. Drives the
+-- new_device_login email — fires only when an unfamiliar fingerprint shows up.
+CREATE TABLE IF NOT EXISTS user_devices (
+  id            SERIAL PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  fingerprint   TEXT NOT NULL,            -- sha256 of UA + IP
+  user_agent    TEXT,
+  ip            TEXT,
+  first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_user_devices_user ON user_devices(user_id);
+
+-- ---- v10: admin-managed tag library --------------------------------
+-- Tags are now centrally managed by admins. Non-admin users can only
+-- choose from this list, not create new tags freeform. The leads.tags
+-- column stays as a comma-separated string (back-compat) but now only
+-- contains values from this table when set via the UI.
+CREATE TABLE IF NOT EXISTS tag_library (
+  id           SERIAL PRIMARY KEY,
+  name         TEXT NOT NULL UNIQUE,
+  color        TEXT NOT NULL DEFAULT '#6366f1',
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---- v10: qualified flag --------------------------------
+-- Separate from status — answers "did this lead pass our minimum
+-- qualification?" regardless of where they are in the pipeline.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified_at TIMESTAMPTZ;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified_by INTEGER REFERENCES users(id) ON DELETE SET NULL;

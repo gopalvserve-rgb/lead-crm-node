@@ -84,9 +84,31 @@ async function api_notifications_mine(token) {
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const unread_notifications = notifications.filter(n => Number(n.is_read) === 0);
 
+  // Today's NEW leads — visible to this user, created today (in IST so the
+  // "today" boundary matches what the user expects, not server UTC).
+  const tzFmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: process.env.TIMEZONE || 'Asia/Kolkata',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const localToday = tzFmt.format(new Date());
+  const new_today_leads = allLeads.filter(l => {
+    if (!isMine(l) && Number(l.assigned_to) !== Number(me.id) && me.role !== 'admin') return false;
+    const created = l.created_at;
+    if (!created) return false;
+    const localDay = tzFmt.format(new Date(created));
+    return localDay === localToday;
+  });
+
   return {
     overdue, due_today, upcoming, unread_notifications,
-    counts: { overdue: overdue.length, due_today: due_today.length, unread: unread_notifications.length, upcoming: upcoming.length }
+    new_today: new_today_leads.length,
+    counts: {
+      overdue: overdue.length,
+      due_today: due_today.length,
+      unread: unread_notifications.length,
+      upcoming: upcoming.length,
+      new_today: new_today_leads.length
+    }
   };
 }
 

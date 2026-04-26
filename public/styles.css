@@ -176,6 +176,16 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 @media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 
+/* Clickable KPI cards on dashboard */
+.card.stat.clickable { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
+.card.stat.clickable:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+
+/* Qualified lead pill in modal head + toggle row */
+.qual-pill { display: inline-block; padding: .15rem .55rem; border-radius: 999px; font-size: .75rem; font-weight: 600; }
+.qual-pill.ok { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.qual-toggle { display: flex; align-items: center; gap: .35rem; cursor: pointer; }
+.qual-toggle input { width: auto; margin: 0; }
+
 /* Reports → Lead funnel — CSS-based decreasing-width visual.
    Uses an `rfun-` (reports-funnel) prefix to avoid colliding with the
    `.funnel-*` classes used by the Pipeline view. */
