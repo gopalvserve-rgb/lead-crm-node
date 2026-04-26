@@ -4230,6 +4230,22 @@ async function wbActivity() {
     catSel,
     searchInp,
     h('button', { class: 'btn', onclick: reload, title: 'Refresh' }, '🔄'),
+    // Download raw webhook events as plain text (for offline analysis /
+    // sharing). Uses api_wb_webhook_logs_text which dumps all webhook_in /
+    // webhook_status / webhook_message entries with full JSON.
+    h('button', { class: 'btn', title: 'Download raw webhook log as wa_webhook_logs.txt', onclick: async () => {
+      try {
+        toast('Building log…');
+        const txt = await api('api_wb_webhook_logs_text');
+        const blob = new Blob([txt], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'wa_webhook_logs_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+        toast('Downloaded');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '⬇️ Download .txt'),
     h('button', { class: 'btn ghost danger', onclick: async () => {
       if (!await confirmDialog('Clear all activity log entries?')) return;
       await api('api_wb_activity_clear'); toast('Cleared'); showWbTab('activity');

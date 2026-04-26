@@ -972,6 +972,44 @@ async function api_wb_activity_get(token, id) {
   };
 }
 
+/**
+ * Plain-text dump of recent webhook events — designed to be downloaded
+ * as wa_webhook_logs.txt for offline / shared analysis. Includes raw
+ * request + response JSON for every webhook_in / webhook_status /
+ * webhook_message entry, newest first.
+ */
+async function api_wb_webhook_logs_text(token) {
+  await authUser(token);
+  const { rows } = await db.query(
+    `SELECT id, category, name, response_code, type, request_json, response_json, recorded_on
+       FROM wa_activity_log
+       WHERE category IN ('webhook_in', 'webhook_status', 'webhook_message')
+       ORDER BY recorded_on DESC LIMIT 500`
+  );
+  const lines = [];
+  lines.push('=========================================================');
+  lines.push('  WhatsApp Webhook Log');
+  lines.push('  Generated: ' + new Date().toISOString());
+  lines.push('  Total entries: ' + rows.length);
+  lines.push('  (newest first, max 500)');
+  lines.push('=========================================================');
+  lines.push('');
+  for (const r of rows) {
+    lines.push('---------------------------------------------------------');
+    lines.push('[' + r.recorded_on + ']  ' + r.category + ' / ' + (r.name || '-') + '  (HTTP ' + (r.response_code || '-') + ')');
+    const req = typeof r.request_json === 'string' ? safeJsonObj(r.request_json) : (r.request_json || {});
+    const res = typeof r.response_json === 'string' ? safeJsonObj(r.response_json) : (r.response_json || {});
+    if (req && Object.keys(req).length) {
+      lines.push('  Request:  ' + JSON.stringify(req));
+    }
+    if (res && Object.keys(res).length) {
+      lines.push('  Response: ' + JSON.stringify(res, null, 0));
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
 async function api_wb_activity_clear(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
@@ -1293,6 +1331,7 @@ module.exports = {
   api_wb_campaigns_pause, api_wb_campaigns_targets,
   // Activity
   api_wb_activity_list, api_wb_activity_get, api_wb_activity_clear,
+  api_wb_webhook_logs_text,
   // Express
   expressVerify, expressEvent,
   // Worker
