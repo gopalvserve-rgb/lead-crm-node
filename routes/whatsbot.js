@@ -557,6 +557,15 @@ async function _sendTemplate({ to, templateName, language, variables, imageUrl, 
         templateName, errorText, imageUrl || null
       ]
     );
+    // Lead activity timeline log
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_out', userId || null, {
+          template: templateName, preview: String(preview).slice(0, 200),
+          error: errorText || null, type: 'template'
+        });
+      } catch (_) {}
+    }
   } catch (_) {}
   return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
@@ -579,6 +588,14 @@ async function _sendText({ to, text, replyTo, leadId, userId }, cfg) {
        VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, 'text', $8, $9)`,
       [leadId || null, userId || null, c.phoneId, body.to, text, waMsgId, r.body?.error ? 'failed' : 'sent', replyTo || null, errorText]
     );
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_out', userId || null, {
+          preview: String(text || '').slice(0, 200),
+          error: errorText || null, type: 'text'
+        });
+      } catch (_) {}
+    }
   } catch (_) {}
   return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
@@ -600,6 +617,14 @@ async function _sendMedia({ to, mediaType, mediaUrl, caption, leadId, userId }, 
        VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, $8, $9, $10)`,
       [leadId || null, userId || null, c.phoneId, body.to, caption || '', waMsgId, r.body?.error ? 'failed' : 'sent', mediaType, mediaUrl, errorText]
     );
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_out', userId || null, {
+          preview: caption || '[' + mediaType + ']',
+          error: errorText || null, type: mediaType
+        });
+      } catch (_) {}
+    }
   } catch (_) {}
   return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
@@ -1194,6 +1219,14 @@ async function _handleInbound(m, value) {
        VALUES ($1, 'in', $2, $3, $4, $5, 'received', $6, $7)`,
       [leadId, from, to, text, m.id || null, mtype, mediaId]
     );
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_in', null, {
+          preview: String(text || '').slice(0, 200),
+          type: mtype, from
+        });
+      } catch (_) {}
+    }
   } catch (e) { console.warn('[wb] save inbound failed:', e.message); }
 
   // Try matching a Message Bot or Template Bot by trigger

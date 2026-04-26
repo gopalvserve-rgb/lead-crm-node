@@ -2040,14 +2040,20 @@ function customFieldInput(cf, val) {
  */
 function actionTimelineBlock(leadId) {
   const wrap = h('div', { class: 'timeline-block' },
-    h('h4', {}, '⏱️ Action timeline'),
+    h('div', { class: 'timeline-head' },
+      h('h4', {}, '📋 Activity timeline'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Every action on this lead — newest first')
+    ),
     h('div', { class: 'muted' }, 'Loading…')
   );
   api('api_lead_actions', leadId).then(rows => {
     wrap.innerHTML = '';
-    wrap.appendChild(h('h4', {}, '⏱️ Action timeline'));
+    wrap.appendChild(h('div', { class: 'timeline-head' },
+      h('h4', {}, '📋 Activity timeline'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, (rows?.length || 0) + ' events · newest first')
+    ));
     if (!rows || rows.length === 0) {
-      wrap.appendChild(h('p', { class: 'muted' }, 'No actions logged yet for this lead.'));
+      wrap.appendChild(h('p', { class: 'muted' }, 'No activity logged yet for this lead.'));
       return;
     }
     const created = rows[0]?.created_at;
@@ -2059,32 +2065,57 @@ function actionTimelineBlock(leadId) {
       if (diffMs < 86_400_000) return (diffMs / 3_600_000).toFixed(1) + ' hr';
       return (diffMs / 86_400_000).toFixed(1) + ' days';
     };
-    const labelMap = {
-      created: '🎯 Lead received',
-      status_change: '🔄 Status changed',
-      remark: '💬 Remark added',
-      followup_set: '⏰ Follow-up scheduled',
-      assigned: '👤 Reassigned',
-      call: '📞 Call'
+    // Visual config per action type — icon + label + chip color so the
+    // timeline reads at a glance.
+    const cfg = {
+      created:        { icon: '🎯', label: 'Lead received',        color: '#3b82f6' },
+      status_change:  { icon: '🔄', label: 'Status changed',       color: '#8b5cf6' },
+      remark:         { icon: '💬', label: 'Remark added',         color: '#06b6d4' },
+      followup_set:   { icon: '⏰', label: 'Follow-up scheduled',  color: '#f59e0b' },
+      assigned:       { icon: '👤', label: 'Reassigned',           color: '#64748b' },
+      call:           { icon: '📞', label: 'Call',                 color: '#ec4899' },
+      whatsapp_out:   { icon: '📤', label: 'WhatsApp sent',        color: '#25d366' },
+      whatsapp_in:    { icon: '📥', label: 'WhatsApp received',    color: '#10b981' },
+      qualified:      { icon: '⭐', label: 'Marked qualified',     color: '#10b981' },
+      unqualified:    { icon: '✕',  label: 'Unmarked qualified',   color: '#ef4444' },
+      duplicated:     { icon: '📋', label: 'Duplicated',           color: '#64748b' },
+      email_out:      { icon: '📧', label: 'Email sent',           color: '#3b82f6' }
     };
-    const ul = h('ul', { class: 'timeline' });
-    let actionIndex = 0;
-    rows.forEach(r => {
-      const isCreated = r.action_type === 'created';
-      if (!isCreated) actionIndex++;
-      const stepLabel = isCreated ? 'Lead received' : `${actionIndex}${actionIndex === 1 ? 'st' : actionIndex === 2 ? 'nd' : actionIndex === 3 ? 'rd' : 'th'} action`;
+
+    // Render in REVERSE chronological order (newest first) — easier to skim
+    // when checking "what was the last thing that happened?"
+    const sorted = [...rows].reverse();
+    const ul = h('ul', { class: 'timeline timeline-rich' });
+    sorted.forEach(r => {
+      const c = cfg[r.action_type] || { icon: '•', label: r.action_type, color: '#94a3b8' };
+      const m = r.meta || {};
+      // Compose a sub-line based on action type
+      let sub = null;
+      if (r.action_type === 'status_change') {
+        sub = m.to_status_id || m.from_status_id ? ('Status #' + (m.from_status_id || '?') + ' → #' + (m.to_status_id || '?')) : null;
+      } else if (r.action_type === 'remark') {
+        sub = m.remark || null;
+      } else if (r.action_type === 'followup_set') {
+        sub = m.due_at ? ('Due ' + fmtDate(m.due_at)) : null;
+      } else if (r.action_type === 'assigned') {
+        sub = (m.from && m.to) ? ('User #' + m.from + ' → #' + m.to) : null;
+      } else if (r.action_type === 'whatsapp_out') {
+        sub = (m.template ? '[Template: ' + m.template + '] ' : '') + (m.preview || '');
+        if (m.error) sub += ' ⚠ ' + m.error;
+      } else if (r.action_type === 'whatsapp_in') {
+        sub = m.preview || ('[' + (m.type || 'message') + ']');
+      }
       ul.appendChild(h('li', {},
-        h('span', { class: 'tl-dot' }),
+        h('span', { class: 'tl-dot tl-dot-rich', style: { background: c.color } }, c.icon),
         h('div', { class: 'tl-body' },
           h('div', { class: 'tl-title' },
-            h('b', {}, labelMap[r.action_type] || r.action_type),
-            ' · ',
-            h('span', { class: 'muted' }, stepLabel)
+            h('b', {}, c.label),
+            r.user_name ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' by ' + r.user_name) : null
           ),
+          sub ? h('div', { class: 'tl-sub muted', style: { fontSize: '.85rem', marginTop: '.15rem' } }, String(sub).slice(0, 240) + (String(sub).length > 240 ? '…' : '')) : null,
           h('div', { class: 'tl-meta muted' },
             fmtDate(r.created_at, 'relative'),
-            r.user_name ? ' · ' + r.user_name : '',
-            !isCreated ? ' · +' + fmtAge(r.created_at) + ' since received' : ''
+            r.action_type !== 'created' ? ' · +' + fmtAge(r.created_at) + ' since received' : ''
           )
         )
       ));

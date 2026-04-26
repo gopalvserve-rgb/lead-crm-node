@@ -427,6 +427,7 @@ async function api_leads_update(token, id, patch) {
       allowed.qualified = nowQualified ? 1 : 0;
       allowed.qualified_at = nowQualified ? db.nowIso() : null;
       allowed.qualified_by = nowQualified ? me.id : null;
+      try { require('./tat').logAction(id, nowQualified ? 'qualified' : 'unqualified', me.id, {}); } catch (_) {}
     }
   }
 

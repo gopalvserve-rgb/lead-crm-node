@@ -342,21 +342,32 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 
 /* Action timeline (Lead modal) */
 .timeline-block { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-light); }
-.timeline-block h4 { margin: 0 0 .5rem; }
+.timeline-block h4 { margin: 0 0 .25rem; }
+.timeline-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
 .timeline { list-style: none; margin: 0; padding: 0; position: relative; }
 .timeline::before {
-  content: ''; position: absolute; left: 9px; top: 6px; bottom: 6px;
+  content: ''; position: absolute; left: 13px; top: 12px; bottom: 12px;
   width: 2px; background: var(--border-light);
 }
-.timeline li { display: flex; gap: .65rem; padding: .35rem 0; align-items: flex-start; position: relative; }
+.timeline li { display: flex; gap: .65rem; padding: .5rem 0; align-items: flex-start; position: relative; }
 .tl-dot {
   flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%;
   background: #6366f1; border: 3px solid #fff; box-shadow: 0 0 0 1px #cbd5e1;
   margin-top: 2px;
 }
-.tl-body { flex: 1; }
+/* Rich timeline — emoji-icon dots */
+.tl-dot-rich {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: .85rem; flex: 0 0 28px; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.08);
+  margin-top: 0;
+}
+.timeline-rich::before { left: 13px; top: 16px; bottom: 16px; }
+.tl-body { flex: 1; min-width: 0; }
 .tl-title { font-size: .92rem; }
-.tl-meta { font-size: .8rem; }
+.tl-sub { word-break: break-word; }
+.tl-meta { font-size: .78rem; }
 
 /* Sidebar count badges (Overdue / Due today / Upcoming / New today) */
 .nav-count {
