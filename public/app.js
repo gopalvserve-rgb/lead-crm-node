@@ -5031,16 +5031,33 @@ function openAutomationModal(existing) {
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
           const f = $('#auto-form');
-          let subject = f.subject.value;
+          // Use FormData — reading f.name etc. directly clashes with built-in
+          // HTMLFormElement properties (.name, .action, .method, .elements,
+          // .submit) and can return the form's attribute instead of the
+          // named input. FormData uses the internal named-element collection
+          // which is reliable.
+          const fd = new FormData(f);
+          const name      = String(fd.get('name')      || '').trim();
+          const eventKey  = String(fd.get('event')     || '').trim();
+          const channel   = String(fd.get('channel')   || '').trim();
+          const recipient = String(fd.get('recipient') || 'lead');
+          const condition = String(fd.get('condition') || '');
+          const template  = String(fd.get('template')  || '').trim();
+          let subject     = String(fd.get('subject')   || '');
           const waSel = $('#wa-template-select');
-          if (f.channel.value === 'whatsapp' && waSel && waSel.value) {
+          if (channel === 'whatsapp' && waSel && waSel.value) {
             const opt = waSel.options[waSel.selectedIndex];
             subject = 'template:' + waSel.value + ':' + (opt.dataset.lang || 'en_US');
           }
-          const payload = { id: a.id,
-            name: f.name.value, event: f.event.value, channel: f.channel.value,
-            recipient: f.recipient.value, condition: f.condition.value,
-            subject, template: f.template.value, is_active: 1 };
+          // Friendlier client-side validation — tells you exactly what's missing
+          const missing = [];
+          if (!name) missing.push('Name');
+          if (!eventKey) missing.push('Event');
+          if (!channel) missing.push('Channel');
+          if (!template) missing.push('Template / body');
+          if (missing.length) { toast('Fill in: ' + missing.join(', '), 'err'); return; }
+          const payload = { id: a.id, name, event: eventKey, channel,
+            recipient, condition, subject, template, is_active: 1 };
           try { await api('api_automations_save', payload); toast('Saved'); modal.remove(); showAdminTab('automations'); }
           catch (e) { toast(e.message, 'err'); }
         } }, 'Save')
