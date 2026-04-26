@@ -2698,7 +2698,8 @@ async function renderNewTodayLeads(view) {
   let rows = [];
   try {
     const r = await api('api_leads_list', { from: today, to: today, page_size: 500 });
-    rows = (r && r.rows) || r || [];
+    // api_leads_list returns { leads: [...], total, status_count, page, page_size }
+    rows = (r && r.leads) || (r && r.rows) || [];
   } catch (e) { /* fall through */ }
   const wrap = h('div', { class: 'card' },
     h('h3', {}, '✨ New leads today ', h('span', { class: 'chip-count accent' }, rows.length))
