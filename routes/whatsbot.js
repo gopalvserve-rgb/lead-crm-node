@@ -240,13 +240,54 @@ async function api_wb_disconnect(token) {
  *
  * Doc: https://developers.facebook.com/docs/whatsapp/cloud-api/reference/registration
  */
-async function api_wb_register_phone(token, pin) {
+/**
+ * List every phone number on the connected WhatsApp Business Account,
+ * with its quality, status, verified name, and the phone_number_id
+ * (used for sending). Useful when the WABA has multiple numbers — the
+ * UI shows them as a table with a Register button per row.
+ */
+async function api_wb_phones_list(token) {
+  await authUser(token);
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.wabaId) throw new Error('Connect WhatsApp first.');
+  const r = await _graphGet(
+    `${cfg.wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,status,name_status,code_verification_status,certificate,is_official_business_account,messaging_limit_tier,platform_type`,
+    cfg
+  );
+  if (r.body && r.body.error) throw new Error(r.body.error.message);
+  const rows = (r.body.data || []).map(p => ({
+    id: p.id,
+    display_phone_number: p.display_phone_number,
+    verified_name: p.verified_name,
+    quality_rating: p.quality_rating,
+    status: p.status,
+    name_status: p.name_status,
+    code_verification_status: p.code_verification_status,
+    is_official_business_account: !!p.is_official_business_account,
+    messaging_limit_tier: p.messaging_limit_tier || '',
+    platform_type: p.platform_type || '',
+    is_current: String(p.id) === String(cfg.phoneId)
+  }));
+  return rows;
+}
+
+async function api_wb_phones_set_current(token, phoneNumberId) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  if (!phoneNumberId) throw new Error('phoneNumberId required');
+  await db.setConfig('WHATSAPP_PHONE_NUMBER_ID', String(phoneNumberId));
+  return { ok: true };
+}
+
+async function api_wb_register_phone(token, pin, phoneIdOverride) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
   const cfg = await _cfg();
-  if (!cfg.token || !cfg.phoneId) throw new Error('Connect WhatsApp first.');
+  if (!cfg.token) throw new Error('Connect WhatsApp first.');
+  const phoneId = phoneIdOverride || cfg.phoneId;
+  if (!phoneId) throw new Error('No phone_number_id available — connect a number first.');
   const usePin = String(pin || '000000').replace(/\D/g, '').slice(0, 6) || '000000';
-  const r = await _graphPost(`${cfg.phoneId}/register`, {
+  const r = await _graphPost(`${phoneId}/register`, {
     messaging_product: 'whatsapp',
     pin: usePin
   }, cfg);
@@ -997,6 +1038,7 @@ module.exports = {
   // Settings
   api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
   api_wb_emb_signin, api_wb_register_phone,
+  api_wb_phones_list, api_wb_phones_set_current,
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat

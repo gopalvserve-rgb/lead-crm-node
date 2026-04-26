@@ -2969,6 +2969,59 @@ async function wbConnect() {
       h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.5rem', marginBottom: 0 } },
         '⚠ If sending fails with "account not registered" — click 🔐 Register phone above. WhatsApp Cloud API needs each number registered once with a PIN (use 000000 if you don\'t have 2FA on the number).')
     ));
+
+    // ---- All WABA phone numbers — pulled live from /phone_numbers ----
+    const phonesCard = h('div', { class: 'card' });
+    phonesCard.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '📞 Phone Numbers on this WABA'),
+      h('button', { class: 'btn sm ghost', onclick: () => showWbTab('connect') }, '🔄 Refresh')
+    ));
+    const phonesList = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+    phonesCard.appendChild(phonesList);
+    wrap.appendChild(phonesCard);
+    // Fire async so the rest of the page renders immediately
+    api('api_wb_phones_list').then(rows => {
+      phonesList.innerHTML = '';
+      if (!rows.length) { phonesList.appendChild(h('p', { class: 'muted' }, 'No phone numbers found on this WABA.')); return; }
+      const qColor = q => q === 'GREEN' ? '#10b981' : q === 'YELLOW' ? '#f59e0b' : q === 'RED' ? '#ef4444' : '#94a3b8';
+      const sColor = s => /CONNECTED|VERIFIED/i.test(String(s)) ? '#10b981'
+                     : /UNVERIFIED|PENDING/i.test(String(s)) ? '#f59e0b'
+                     : /OFFLINE|FLAGGED|RESTRICTED/i.test(String(s)) ? '#ef4444'
+                     : '#64748b';
+      phonesList.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Number'),
+          h('th', {}, 'Verified name'),
+          h('th', {}, 'Quality'),
+          h('th', {}, 'Status'),
+          h('th', {}, 'Name approval'),
+          h('th', {}, 'Tier'),
+          h('th', {}, 'Phone ID'),
+          h('th', {}, 'Actions')
+        )),
+        h('tbody', {}, ...rows.map(p => h('tr', {},
+          h('td', {}, p.is_current ? h('b', {}, p.display_phone_number, ' ', h('span', { style: { color: '#3b82f6', fontSize: '.7rem' } }, '★ current')) : (p.display_phone_number || '—')),
+          h('td', {}, p.verified_name || '—'),
+          h('td', {}, h('span', { class: 'tag', style: { background: qColor(p.quality_rating), color: '#fff' } }, p.quality_rating || 'UNKNOWN')),
+          h('td', {}, h('span', { class: 'tag', style: { background: sColor(p.status), color: '#fff' } }, p.status || 'UNKNOWN')),
+          h('td', { class: 'muted', style: { fontSize: '.78rem' } }, p.name_status || '—'),
+          h('td', { class: 'muted', style: { fontSize: '.78rem' } }, p.messaging_limit_tier || '—'),
+          h('td', {}, h('code', { style: { fontSize: '.72rem' } }, p.id)),
+          h('td', { style: { whiteSpace: 'nowrap' } },
+            !p.is_current ? h('button', { class: 'btn sm', onclick: async () => {
+              try { await api('api_wb_phones_set_current', p.id); toast('Switched to ' + p.display_phone_number); showWbTab('connect'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '★ Use this') : null,
+            h('button', { class: 'btn sm wa-cloud-btn', style: { marginLeft: '.25rem' },
+              onclick: () => openRegisterPhoneModal(p.id)
+            }, '🔐 Register')
+          )
+        )))
+      )));
+    }).catch(e => {
+      phonesList.innerHTML = '';
+      phonesList.appendChild(h('div', { class: 'error-box' }, 'Could not load phone numbers: ' + e.message));
+    });
   }
 
   if (embOn) {
@@ -3106,7 +3159,7 @@ async function wbConnect() {
  * 000000. If it does, the user must paste the 6-digit PIN they configured
  * when first claiming the number on whatsapp.com / Business Manager.
  */
-function openRegisterPhoneModal() {
+function openRegisterPhoneModal(phoneIdOverride) {
   const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
   const body = h('div', { class: 'modal' });
   body.appendChild(h('div', { class: 'modal-head' },
@@ -3117,6 +3170,10 @@ function openRegisterPhoneModal() {
     'WhatsApp Cloud API requires each phone number to be registered ONCE before it can send messages. ',
     'If two-step verification is OFF for this number, leave the PIN as ', h('code', {}, '000000'), '. ',
     'If 2FA is ON, paste the 6-digit PIN you set on the WhatsApp app or Meta Business Manager.'));
+  if (phoneIdOverride) {
+    body.appendChild(h('p', { class: 'muted', style: { fontSize: '.8rem' } },
+      'Registering phone ID ', h('code', {}, phoneIdOverride)));
+  }
   const pinInput = h('input', {
     type: 'text', value: '000000', maxLength: 6,
     style: { fontFamily: 'monospace', fontSize: '1.2rem', textAlign: 'center', letterSpacing: '.5rem' }
@@ -3130,7 +3187,7 @@ function openRegisterPhoneModal() {
     h('button', { class: 'btn primary', onclick: async () => {
       try {
         const pin = String(pinInput.value || '000000').replace(/\D/g, '').slice(0, 6) || '000000';
-        await api('api_wb_register_phone', pin);
+        await api('api_wb_register_phone', pin, phoneIdOverride || undefined);
         toast('✅ Phone registered with Cloud API. Try sending again.');
         m.remove();
       } catch (e) { toast(e.message, 'err'); }
