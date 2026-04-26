@@ -85,6 +85,9 @@ async function apiRaw(fn, ...args) {
       // so it doesn't block initial render. Silently skips on browsers that
       // don't support push or where the user declines permission.
       setTimeout(() => registerWebPush().catch(() => {}), 2000);
+      // Native push (Capacitor APK only) — talks to Firebase Cloud Messaging.
+      // No-ops in regular browsers / installed PWAs (those use Web Push above).
+      setTimeout(() => registerCapacitorPush().catch(() => {}), 2500);
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
@@ -5064,6 +5067,82 @@ async function registerWebPush() {
     await api('api_push_subscribe', sub.toJSON ? sub.toJSON() : sub, navigator.userAgent);
     console.log('[push] subscription registered');
   } catch (e) { console.warn('[push] register on server failed:', e.message); }
+}
+
+/**
+ * Register the Capacitor app for Firebase Cloud Messaging push.
+ *
+ * Only runs inside the native APK — browsers and PWAs go through Web Push
+ * (registerWebPush) instead. FCM is what makes notifications survive the
+ * Android OS killing the WebView, because Google's servers wake the device
+ * directly instead of relying on a service worker.
+ *
+ * Flow:
+ *   1. Request POST_NOTIFICATIONS permission (Android 13+)
+ *   2. Register with FCM → token is delivered async via the 'registration' event
+ *   3. POST the token to /api → fcm_tokens table
+ *   4. Wire 'pushNotificationActionPerformed' so tapping a notification
+ *      navigates the WebView to the URL we baked into the data payload.
+ */
+async function registerCapacitorPush() {
+  const cap = window.Capacitor;
+  if (!cap || typeof cap.isNativePlatform !== 'function' || !cap.isNativePlatform()) return;
+  const Push = cap.Plugins && cap.Plugins.PushNotifications;
+  if (!Push) {
+    console.warn('[push] PushNotifications plugin not present (rebuild APK after npm install)');
+    return;
+  }
+  try {
+    let perm = await Push.checkPermissions();
+    if (perm.receive !== 'granted') {
+      perm = await Push.requestPermissions();
+    }
+    if (perm.receive !== 'granted') {
+      console.warn('[push] notification permission not granted on Android');
+      return;
+    }
+
+    // Listener BEFORE register() — token can arrive within milliseconds.
+    Push.addListener('registration', async (tk) => {
+      console.log('[push] FCM token received');
+      try {
+        await api('api_fcm_register', tk.value, 'android', navigator.userAgent);
+        console.log('[push] FCM token sent to server');
+      } catch (e) { console.warn('[push] FCM token register failed:', e.message); }
+    });
+
+    Push.addListener('registrationError', (err) => {
+      console.warn('[push] FCM registrationError:', err && err.error);
+    });
+
+    // App in foreground: show a toast so users know a push arrived (otherwise
+    // FCM only shows the notification when the app is backgrounded).
+    Push.addListener('pushNotificationReceived', (n) => {
+      try {
+        const t = (n && n.title) || 'Lead CRM';
+        const b = (n && n.body)  || '';
+        if (typeof toast === 'function') toast(t + (b ? ' — ' + b : ''));
+      } catch (_) {}
+    });
+
+    // Tap → navigate inside the WebView to the URL we put in `data.url`.
+    Push.addListener('pushNotificationActionPerformed', (action) => {
+      try {
+        const url = action && action.notification && action.notification.data && action.notification.data.url;
+        if (url) {
+          // Hash-routed SPA — `location.hash = '#/foo'` is the right move.
+          if (url.startsWith('/#/')) location.hash = url.slice(1);
+          else if (url.startsWith('#/')) location.hash = url;
+          else if (url.startsWith('/')) location.hash = '#' + url;
+          else location.href = url;
+        }
+      } catch (_) {}
+    });
+
+    await Push.register();
+  } catch (e) {
+    console.warn('[push] Capacitor push register failed:', e && e.message);
+  }
 }
 
 // Convert the URL-safe base64 VAPID public key into the Uint8Array the
