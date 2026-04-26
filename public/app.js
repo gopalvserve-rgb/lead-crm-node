@@ -3133,14 +3133,15 @@ function startEmbeddedSignup(appId, configId) {
   const wrapped = (event) => { if (event.origin === 'https://www.facebook.com') _gotMessage = true; _origListener(event); };
   window.removeEventListener('message', _origListener);
   window.addEventListener('message', wrapped);
-  FB.login(async (response) => {
+  // The FB SDK rejects async functions as callbacks with the error
+  // 'Expression is of type asyncfunction, not function'. Use a regular
+  // function and wrap the body in an async IIFE so we can still await
+  // the api() call inside.
+  FB.login(function (response) {
     window.removeEventListener('message', wrapped);
-    if (!response.authResponse) {
-      // Most common cause: the FB app whitelist rejects the redirect URI,
-      // so the popup shows "URL blocked" and auto-closes. Detect this
-      // pattern (no postMessage ever received) and show a helpful message.
+    if (!response || !response.authResponse) {
       if (!_gotMessage) {
-        toast('Facebook rejected the popup. Open Meta App Dashboard → Settings → Basic and add "' + location.host + '" to App Domains, then in Use cases → Authentication → Settings, add "' + location.origin + '/" and "' + location.origin + '/#/whatsbot/connect" to Valid OAuth Redirect URIs. Save and try again.', 'err');
+        toast('Facebook rejected the popup. Add "' + location.origin + '/" to Valid OAuth Redirect URIs in your Meta App → Facebook Login for Business → Settings, then save and try again.', 'err');
       } else {
         toast('Login cancelled by user.', 'warn');
       }
@@ -3152,21 +3153,20 @@ function startEmbeddedSignup(appId, configId) {
       return;
     }
     if (!phoneNumberId || !wabaId) {
-      // We didn't catch the postMessage — most likely user closed dialog
-      // mid-way OR the Login-for-Business config doesn't have WhatsApp
-      // asset selection enabled. Fall back to manual entry.
       toast('Did not receive WABA / phone number from the dialog. Check the Config ID has WhatsApp Business Platform asset selection enabled.', 'err');
       return;
     }
-    try {
-      toast('Exchanging credentials with Meta…');
-      const r = await api('api_wb_emb_signin', code, phoneNumberId, wabaId);
-      let msg = `✅ Connected (WABA ${r.waba_id}, Phone ${r.phone_number_id})`;
-      if (r.templates_synced > 0) msg += ` · ${r.templates_synced} templates synced`;
-      if (!r.subscribed && r.subscribe_error) msg += ` · ⚠ webhook subscribe failed: ${r.subscribe_error}`;
-      toast(msg);
-      setTimeout(() => showWbTab('connect'), 500);
-    } catch (e) { toast(e.message, 'err'); }
+    (async () => {
+      try {
+        toast('Exchanging credentials with Meta…');
+        const r = await api('api_wb_emb_signin', code, phoneNumberId, wabaId);
+        let msg = `✅ Connected (WABA ${r.waba_id}, Phone ${r.phone_number_id})`;
+        if (r.templates_synced > 0) msg += ` · ${r.templates_synced} templates synced`;
+        if (!r.subscribed && r.subscribe_error) msg += ` · ⚠ webhook subscribe failed: ${r.subscribe_error}`;
+        toast(msg);
+        setTimeout(() => showWbTab('connect'), 500);
+      } catch (e) { toast(e.message, 'err'); }
+    })();
   }, {
     config_id: configId,
     response_type: 'code',
