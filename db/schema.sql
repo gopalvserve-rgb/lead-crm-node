@@ -396,3 +396,56 @@ CREATE TABLE IF NOT EXISTS tag_library (
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified_at TIMESTAMPTZ;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS qualified_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+-- ---- v11: TAT (Turn-Around Time) tracking ----------------------------
+-- A lead's lifecycle is recorded as two parallel logs:
+--   1. lead_stage_log — every time the status changes, log from→to + when.
+--   2. lead_actions   — every "action" the user takes on the lead
+--      (created, status_change, remark, call, followup_set). The first
+--      such action AFTER `created_at` is the "1st action"; the next is
+--      the "2nd action", etc. Used by the action-timeline report.
+CREATE TABLE IF NOT EXISTS lead_stage_log (
+  id              SERIAL PRIMARY KEY,
+  lead_id         INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  from_status_id  INTEGER,
+  to_status_id    INTEGER,
+  user_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  duration_s      INTEGER,                  -- seconds spent in from_status (filled when leaving it)
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_stage_log_lead ON lead_stage_log(lead_id, created_at);
+
+CREATE TABLE IF NOT EXISTS lead_actions (
+  id            SERIAL PRIMARY KEY,
+  lead_id       INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  action_type   TEXT NOT NULL,             -- created | status_change | remark | call | followup_set | assigned
+  user_id       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  meta_json     JSONB,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_lead_actions_lead ON lead_actions(lead_id, created_at);
+
+-- TAT threshold per status (admin-configured). If absent, no TAT enforcement.
+CREATE TABLE IF NOT EXISTS tat_thresholds (
+  id                 SERIAL PRIMARY KEY,
+  status_id          INTEGER UNIQUE REFERENCES statuses(id) ON DELETE CASCADE,
+  threshold_minutes  INTEGER NOT NULL DEFAULT 60,
+  is_active          INTEGER NOT NULL DEFAULT 1,
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- One row per lead-stage breach. Escalation level walks up: 1=employee,
+-- 2=manager, 3=admin. resolved_at populated when the lead leaves the stage.
+CREATE TABLE IF NOT EXISTS tat_violations (
+  id                 SERIAL PRIMARY KEY,
+  lead_id            INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+  status_id          INTEGER,
+  user_id            INTEGER,                  -- the assigned salesperson
+  threshold_minutes  INTEGER,
+  triggered_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  resolved_at        TIMESTAMPTZ,
+  escalation_level   INTEGER NOT NULL DEFAULT 1,
+  last_escalated_at  TIMESTAMPTZ,
+  notes              TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tat_v_open ON tat_violations(lead_id) WHERE resolved_at IS NULL;

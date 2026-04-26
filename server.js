@@ -32,6 +32,7 @@ const routes = {
   admin:       require('./routes/admin'),
   customFields:require('./routes/customFields'),
   tags:        require('./routes/tags'),
+  tat:         require('./routes/tat'),
   sources:     require('./routes/sources'),
   products:    require('./routes/products'),
   statuses:    require('./routes/statuses'),
@@ -713,6 +714,8 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
   await bootstrap();
   try { require('./utils/reminders').start(); }
   catch (e) { console.error('[boot] reminders start failed:', e.message); }
+  try { require('./routes/tat').startTatWorker(); }
+  catch (e) { console.error('[boot] tat worker start failed:', e.message); }
   app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);

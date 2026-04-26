@@ -274,6 +274,7 @@ const NAV = [
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
   { id: 'attendance', label: 'Attendance',   icon: '🕒' },
   { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
@@ -1695,6 +1696,7 @@ async function openLeadModal(id) {
   });
 
   body.appendChild(form);
+  if (id) body.appendChild(actionTimelineBlock(id));
   if (id) body.appendChild(remarksBlock(remarks, id));
   if (id) body.appendChild(recordingsBlock(id));
   // Action row — Cancel / Save / [Duplicate & reassign for managers+]
@@ -1979,6 +1981,70 @@ function customFieldInput(cf, val) {
   // Long-form fields span both columns in the grid for breathing room.
   const rowClass = (cf.field_type === 'multiselect' || cf.field_type === 'textarea') ? 'f-row full' : 'f-row';
   return h('div', { class: rowClass }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
+}
+
+/**
+ * Action timeline block — fetches lead_actions for this lead and shows
+ * a vertical timeline: Created → 1st action → 2nd action → … with the
+ * minutes elapsed since lead-create next to each step.
+ *
+ * Always renders a placeholder while loading; on failure, hides itself
+ * silently so the modal remains usable on older deploys.
+ */
+function actionTimelineBlock(leadId) {
+  const wrap = h('div', { class: 'timeline-block' },
+    h('h4', {}, '⏱️ Action timeline'),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  api('api_lead_actions', leadId).then(rows => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('h4', {}, '⏱️ Action timeline'));
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('p', { class: 'muted' }, 'No actions logged yet for this lead.'));
+      return;
+    }
+    const created = rows[0]?.created_at;
+    const fmtAge = (when) => {
+      if (!created || !when) return '';
+      const diffMs = new Date(when).getTime() - new Date(created).getTime();
+      if (diffMs < 60_000) return Math.round(diffMs / 1000) + ' sec';
+      if (diffMs < 3_600_000) return Math.round(diffMs / 60_000) + ' min';
+      if (diffMs < 86_400_000) return (diffMs / 3_600_000).toFixed(1) + ' hr';
+      return (diffMs / 86_400_000).toFixed(1) + ' days';
+    };
+    const labelMap = {
+      created: '🎯 Lead received',
+      status_change: '🔄 Status changed',
+      remark: '💬 Remark added',
+      followup_set: '⏰ Follow-up scheduled',
+      assigned: '👤 Reassigned',
+      call: '📞 Call'
+    };
+    const ul = h('ul', { class: 'timeline' });
+    let actionIndex = 0;
+    rows.forEach(r => {
+      const isCreated = r.action_type === 'created';
+      if (!isCreated) actionIndex++;
+      const stepLabel = isCreated ? 'Lead received' : `${actionIndex}${actionIndex === 1 ? 'st' : actionIndex === 2 ? 'nd' : actionIndex === 3 ? 'rd' : 'th'} action`;
+      ul.appendChild(h('li', {},
+        h('span', { class: 'tl-dot' }),
+        h('div', { class: 'tl-body' },
+          h('div', { class: 'tl-title' },
+            h('b', {}, labelMap[r.action_type] || r.action_type),
+            ' · ',
+            h('span', { class: 'muted' }, stepLabel)
+          ),
+          h('div', { class: 'tl-meta muted' },
+            fmtDate(r.created_at, 'relative'),
+            r.user_name ? ' · ' + r.user_name : '',
+            !isCreated ? ' · +' + fmtAge(r.created_at) + ' since received' : ''
+          )
+        )
+      ));
+    });
+    wrap.appendChild(ul);
+  }).catch(() => { wrap.style.display = 'none'; });
+  return wrap;
 }
 
 function recordingsBlock(leadId) {
@@ -2743,6 +2809,101 @@ async function ensureChartJs() {
     } catch (_) { /* non-fatal: charts still render, just without labels */ }
   }
 }
+/**
+ * TAT report view. Shows three sections:
+ *   - Top KPI cards   (open violations, total leads, avg first-action min)
+ *   - Per-user table  (avg time-to-1st-action, avg time-to-2nd-action)
+ *   - Per-stage table (avg minutes leads spend in each stage)
+ *   - Active violation list (escalation level, age, assignee)
+ * Filters by date range + user.
+ */
+VIEWS.tatreport = async (view) => {
+  view.innerHTML = '';
+  const { users = [] } = CRM.cache;
+  const fromInp = h('input', { type: 'date' });
+  const toInp   = h('input', { type: 'date' });
+  const userSel = h('select', {},
+    h('option', { value: '' }, 'All users'),
+    ...users.map(u => h('option', { value: u.id }, u.name))
+  );
+  const out = h('div', {});
+  const fmtMin = m => m == null ? '—' : (m < 60 ? m + ' min' : (m / 60 < 24 ? (m / 60).toFixed(1) + ' hr' : (m / 1440).toFixed(1) + ' days'));
+  const fmtSec = s => s == null ? '—' : fmtMin(Math.round(s / 60));
+  async function load() {
+    out.innerHTML = '<div class="loading">Loading…</div>';
+    try {
+      const r = await api('api_tat_report', { from: fromInp.value || undefined, to: toInp.value || undefined, user_id: userSel.value || undefined });
+      out.innerHTML = '';
+
+      // KPI cards
+      out.appendChild(h('div', { class: 'cards' },
+        h('div', { class: 'card stat accent' }, h('div', { class: 'stat-icon' }, '🎯'), h('div', { class: 'stat-body' }, h('div', { class: 'stat-label' }, 'Leads'), h('div', { class: 'stat-value' }, r.totals.leads))),
+        h('div', { class: 'card stat ok' },     h('div', { class: 'stat-icon' }, '⚡'), h('div', { class: 'stat-body' }, h('div', { class: 'stat-label' }, 'Avg time to 1st action'), h('div', { class: 'stat-value' }, fmtMin(r.totals.avg_first_min)))),
+        h('div', { class: 'card stat err' },    h('div', { class: 'stat-icon' }, '🚨'), h('div', { class: 'stat-body' }, h('div', { class: 'stat-label' }, 'Open violations'), h('div', { class: 'stat-value' }, r.open_violations)))
+      ));
+
+      // By user
+      out.appendChild(h('div', { class: 'card card-wide' },
+        h('h3', {}, 'By user — avg response time'),
+        r.by_user.length === 0 ? h('p', { class: 'muted' }, 'No data in scope.') :
+        h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'User'), h('th', {}, 'Leads'), h('th', {}, 'Actioned'), h('th', {}, 'Avg → 1st action'), h('th', {}, 'Avg → 2nd action'))),
+          h('tbody', {}, ...r.by_user.map(u => h('tr', {},
+            h('td', {}, u.user_name || '—'),
+            h('td', {}, u.leads),
+            h('td', {}, u.actioned + ' / ' + u.leads),
+            h('td', {}, fmtMin(u.avg_first_min)),
+            h('td', {}, fmtMin(u.avg_second_min))
+          )))
+        ))
+      ));
+
+      // By stage
+      out.appendChild(h('div', { class: 'card card-wide' },
+        h('h3', {}, 'By stage — avg time leads spend before moving on'),
+        r.by_stage.length === 0 ? h('p', { class: 'muted' }, 'No completed stage transitions yet. (Move some leads through stages and this will populate.)') :
+        h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Stage'), h('th', {}, 'Transitions'), h('th', {}, 'Avg minutes in stage'))),
+          h('tbody', {}, ...r.by_stage.map(s => h('tr', {},
+            h('td', {}, s.status_name),
+            h('td', {}, s.transitions),
+            h('td', {}, fmtMin(s.avg_minutes))
+          )))
+        ))
+      ));
+
+      // Active violations
+      out.appendChild(h('div', { class: 'card card-wide' },
+        h('h3', {}, '🚨 Active TAT violations'),
+        r.open_violation_rows.length === 0 ? h('p', { class: 'muted' }, 'No open violations. 🎉') :
+        h('div', { class: 'table-wrap' }, h('table', {},
+          h('thead', {}, h('tr', {}, h('th', {}, 'Lead'), h('th', {}, 'Stage'), h('th', {}, 'Owner'), h('th', {}, 'Threshold'), h('th', {}, 'Triggered'), h('th', {}, 'Escalation'))),
+          h('tbody', {}, ...r.open_violation_rows.map(v => h('tr', {},
+            h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(v.lead_id); } }, v.lead_name || ('Lead #' + v.lead_id))),
+            h('td', {}, v.status_name),
+            h('td', {}, v.user_name || '—'),
+            h('td', {}, v.threshold_minutes + ' min'),
+            h('td', {}, fmtDate(v.triggered_at, 'relative')),
+            h('td', {}, v.escalation_level === 3 ? '🚨 Admin (L3)' : v.escalation_level === 2 ? '⚠️ Manager (L2)' : '⏱️ Employee (L1)')
+          )))
+        ))
+      ));
+    } catch (e) {
+      out.innerHTML = `<div class="error-box">${esc(e.message)}</div>`;
+    }
+  }
+  view.append(
+    h('div', { class: 'toolbar' },
+      h('span', {}, 'From'), fromInp,
+      h('span', {}, 'to'), toInp,
+      userSel,
+      h('button', { class: 'btn primary', onclick: load }, '🔎 Apply')
+    ),
+    out
+  );
+  await load();
+};
+
 VIEWS.reports = async (view) => {
   await ensureChartJs();
   view.innerHTML = '';
@@ -3068,6 +3229,7 @@ VIEWS.admin = async (view) => {
     { id: 'statuses',     label: 'Statuses' },
     { id: 'customfields', label: 'Custom Fields' },
     { id: 'tags',         label: 'Tags' },
+    { id: 'tat',          label: '⏱️ TAT' },
     { id: 'rules',        label: 'Auto-assign Rules' },
     { id: 'permissions',  label: '🔐 Permissions' },
     { id: 'duplicates',   label: 'Duplicates' },
@@ -3095,6 +3257,7 @@ async function showAdminTab(id) {
     if (id === 'statuses') body.replaceChildren(await adminStatuses());
     if (id === 'customfields') body.replaceChildren(await adminCustomFields());
     if (id === 'tags')     body.replaceChildren(await adminTags());
+    if (id === 'tat')      body.replaceChildren(await adminTat());
     if (id === 'rules')    body.replaceChildren(await adminRules());
     if (id === 'permissions') body.replaceChildren(await adminPermissions());
     if (id === 'duplicates') body.replaceChildren(await adminDuplicates());
@@ -3821,6 +3984,44 @@ async function adminTags() {
     )));
   }
   wrap.appendChild(list);
+  return wrap;
+}
+
+/**
+ * Admin → TAT thresholds. One row per status with a "max minutes in this
+ * stage before we escalate" input. Active toggle lets the admin pause
+ * enforcement per-stage without losing the configured value.
+ */
+async function adminTat() {
+  const wrap = h('div', {});
+  const rows = await api('api_tat_thresholds_list');
+  wrap.appendChild(h('div', { class: 'card' },
+    h('h3', {}, '⏱️ TAT thresholds per stage'),
+    h('p', { class: 'muted' },
+      'Set the maximum time a lead can sit in each stage before escalation. ' +
+      'Reminder timing: at threshold (employee) → 2× (manager) → 3× (admin). ' +
+      'Leave blank or untick to disable enforcement for that stage.'),
+    h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {}, h('th', {}, 'Stage'), h('th', {}, 'Threshold (minutes)'), h('th', {}, 'Active'), h('th', { style: { textAlign: 'right' } }, ''))),
+      h('tbody', {}, ...rows.map(r => {
+        const minInput = h('input', { type: 'number', min: '1', value: r.threshold_minutes ?? '', placeholder: 'e.g. 60', style: { width: '110px' } });
+        const activeChk = h('input', { type: 'checkbox', checked: r.is_active ? 'checked' : null });
+        return h('tr', {},
+          h('td', {}, h('span', { class: 'tag', style: { background: r.status_color, color: '#fff' } }, r.status_name)),
+          h('td', {}, minInput),
+          h('td', {}, activeChk),
+          h('td', { style: { textAlign: 'right' } },
+            h('button', { class: 'btn sm primary', onclick: async () => {
+              try {
+                await api('api_tat_thresholds_save', r.status_id, Number(minInput.value) || 60, activeChk.checked ? 1 : 0);
+                toast('Saved');
+              } catch (e) { toast(e.message, 'err'); }
+            } }, 'Save')
+          )
+        );
+      }))
+    ))
+  ));
   return wrap;
 }
 

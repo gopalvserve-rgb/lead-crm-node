@@ -388,6 +388,17 @@ async function api_leads_create(token, payload) {
         });
       }
     } catch (e) { console.warn('[push] lead_assigned failed:', e.message); }
+
+    // ---- TAT — log the lead-created action and the initial stage entry ----
+    try {
+      const tat = require('./tat');
+      await tat.logAction(id, 'created', me.id, { source: base.source });
+      // Initial stage entry: from=null, to=initialStatus
+      await db.query(
+        `INSERT INTO lead_stage_log (lead_id, from_status_id, to_status_id, user_id) VALUES ($1, $2, $3, $4)`,
+        [Number(id), null, base.status_id || null, me.id]
+      );
+    } catch (e) { console.warn('[tat] create-log failed:', e.message); }
   });
 
   return { id, duplicate: dup.duplicate, matched_id: dup.matched_id };
@@ -443,9 +454,14 @@ async function api_leads_update(token, id, patch) {
     });
     // Fire automations
     try { require('../utils/automations').fire('status_changed', { lead: Object.assign({}, lead, allowed), user: me, new_status: s }); } catch (_) {}
+    // TAT — write stage log + close any open violation for this lead
+    try { await require('./tat').logStageChange(id, lead.status_id, patch.status_id, me.id); } catch (_) {}
+    // Stamp last_status_change_at so the TAT worker knows when this lead entered the new stage
+    try { await db.update('leads', id, { last_status_change_at: db.nowIso() }); } catch (_) {}
   }
   if (assigneeChanged) {
     try { require('../utils/automations').fire('lead_assigned', { lead: Object.assign({}, lead, allowed), user: me }); } catch (_) {}
+    try { require('./tat').logAction(id, 'assigned', me.id, { from: lead.assigned_to, to: patch.assigned_to }); } catch (_) {}
     // Direct push to the new assignee — same SMS-style banner the lead-create
     // flow uses. Fire-and-forget so we don't block the response.
     setImmediate(async () => {
@@ -494,6 +510,9 @@ async function api_leads_addRemark(token, leadId, payload) {
   const me = await authUser(token);
   const p = payload || {};
   if (!p.remark) throw new Error('remark required');
+  // Was the status changed by this remark? If so, capture the prior status_id
+  const lead = await db.findById('leads', leadId);
+  const priorStatus = lead ? Number(lead.status_id) : null;
   await db.insert('remarks', {
     lead_id: leadId, user_id: me.id,
     remark: p.remark, status_id: p.status_id || ''
@@ -501,6 +520,7 @@ async function api_leads_addRemark(token, leadId, payload) {
   const leadPatch = { updated_at: db.nowIso() };
   if (p.status_id) leadPatch.status_id = p.status_id;
   if (p.next_followup_at) leadPatch.next_followup_at = p.next_followup_at;
+  if (p.status_id && Number(p.status_id) !== priorStatus) leadPatch.last_status_change_at = db.nowIso();
   await db.update('leads', leadId, leadPatch);
   if (p.next_followup_at) {
     await db.insert('followups', {
@@ -508,6 +528,17 @@ async function api_leads_addRemark(token, leadId, payload) {
       due_at: p.next_followup_at, note: p.remark, is_done: 0
     });
   }
+  // TAT — every remark counts as an action; status change also writes stage_log.
+  try {
+    const tat = require('./tat');
+    await tat.logAction(leadId, 'remark', me.id, { remark: String(p.remark).slice(0, 200) });
+    if (p.status_id && Number(p.status_id) !== priorStatus) {
+      await tat.logStageChange(leadId, priorStatus, Number(p.status_id), me.id);
+    }
+    if (p.next_followup_at) {
+      await tat.logAction(leadId, 'followup_set', me.id, { due_at: p.next_followup_at });
+    }
+  } catch (_) {}
   return { ok: true };
 }
 
