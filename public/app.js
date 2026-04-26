@@ -630,6 +630,13 @@ VIEWS.leads = async (view) => {
     (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
       ? h('button', { class: 'btn ghost danger', onclick: deleteAllDuplicates, title: 'Delete every lead marked DUP' }, '🗑️ Dedupe')
       : null,
+    (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+      ? h('button', { class: 'btn ghost', title: 'Move every lead with <10-digit phone to Junk', onclick: async () => {
+          if (!await confirmDialog('Scan all leads and move ones with phone < 10 digits to Junk? This is a one-shot cleanup; you can re-run later.')) return;
+          try { const r = await api('api_leads_cleanupJunk'); toast(`Moved ${r.moved} leads to Junk · ${r.skipped} skipped`); loadLeads(); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, '🧹 Junk cleanup')
+      : null,
     h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
   );
   view.appendChild(toolbar);

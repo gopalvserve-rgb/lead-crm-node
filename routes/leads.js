@@ -681,6 +681,44 @@ async function api_leads_bulkUpdate(token, leadIds, patch) {
  * Returns the count of leads deleted. The corresponding remarks/followups
  * are removed via ON DELETE CASCADE.
  */
+/**
+ * Backfill — scan every existing lead, find those with phone digits < 10,
+ * and move them to the Junk status. Logs the change as an action so it's
+ * visible in each lead's activity timeline. Only admin / manager can run.
+ *
+ * Returns { ok, moved, skipped, junk_status_id }.
+ */
+async function api_leads_cleanupJunk(token) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
+  const junkId = await _junkStatusId();
+  const all = await db.getAll('leads');
+  let moved = 0; let skipped = 0;
+  for (const l of all) {
+    const phoneDigits = String(l.phone || '').replace(/\D/g, '');
+    if (!phoneDigits || phoneDigits.length >= 10) { skipped++; continue; }
+    if (Number(l.status_id) === Number(junkId)) { skipped++; continue; }
+    try {
+      await db.update('leads', l.id, {
+        status_id: junkId,
+        last_status_change_at: db.nowIso(),
+        notes: '⚠ Auto-flagged Junk by backfill: phone "' + (l.phone || '') + '" has only ' + phoneDigits.length + ' digits.\n' + (l.notes || '')
+      });
+      // Stage log + action so it shows in the activity timeline
+      try {
+        const tat = require('./tat');
+        await tat.logStageChange(l.id, l.status_id, junkId, me.id);
+        await tat.logAction(l.id, 'status_change', me.id, { from_status_id: l.status_id, to_status_id: junkId, reason: 'auto_junk_backfill', phone_digits: phoneDigits.length });
+      } catch (_) {}
+      moved++;
+    } catch (e) {
+      console.warn('[junk_backfill] lead ' + l.id + ' failed:', e.message);
+      skipped++;
+    }
+  }
+  return { ok: true, moved, skipped, total: all.length, junk_status_id: junkId };
+}
+
 async function api_leads_deleteAllDuplicates(token) {
   const me = await authUser(token);
   if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
@@ -927,5 +965,6 @@ module.exports = {
   api_leads_addRemark, api_leads_pipeline, api_myFollowups, api_followup_done,
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
   api_leads_deleteAllDuplicates, api_leads_duplicateAndReassign,
+  api_leads_cleanupJunk,
   api_whatsapp_send
 };
