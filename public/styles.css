@@ -100,6 +100,11 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
   border: 1px solid var(--border); border-radius: 999px;
   font-size: .72rem; color: var(--text-soft);
 }
+.status-chip.clickable { cursor: pointer; user-select: none; transition: transform .1s ease, box-shadow .1s ease; }
+.status-chip.clickable:hover { box-shadow: 0 1px 3px rgba(0,0,0,.1); transform: translateY(-1px); }
+.status-chip.clickable.active { color: #fff !important; font-weight: 600; }
+.status-chip.clickable.active .chip-count { background: rgba(255,255,255,.25); color: #fff; }
+.status-chip.clickable.active .chip-dot { display: none; }
 .chip-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 .chip-count { background: var(--bg-alt); padding: 0 6px; border-radius: 10px; font-weight: 600; font-size: .7rem; color: var(--text); }
 .chip-count.warn { background: var(--warn-soft); color: var(--warn); }

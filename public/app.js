@@ -776,14 +776,42 @@ function renderStatusChips(statusCount) {
   if (!el) return;
   const { statuses } = CRM.cache;
   el.innerHTML = '';
+  // Active status comes from the filter dropdown — chip for the matching
+  // status gets a highlighted "active" style so the user can see what's
+  // applied at a glance.
+  const activeStatusId = String($('#f-status')?.value || CRM.prefs.filters.status_id || '');
+  // "All" chip — clicking it clears the status filter
+  const allActive = !activeStatusId;
+  el.appendChild(h('span', {
+    class: 'status-chip clickable' + (allActive ? ' active' : ''),
+    onclick: () => applyStatusChipFilter('')
+  },
+    h('span', { class: 'chip-label' }, 'All'),
+    h('span', { class: 'chip-count' }, Object.values(statusCount || {}).reduce((a, b) => a + Number(b || 0), 0))
+  ));
   statuses.forEach(s => {
     const c = statusCount?.[String(s.id)] || statusCount?.[s.id] || 0;
-    el.appendChild(h('span', { class: 'status-chip' },
+    const isActive = String(s.id) === activeStatusId;
+    el.appendChild(h('span', {
+      class: 'status-chip clickable' + (isActive ? ' active' : ''),
+      onclick: () => applyStatusChipFilter(s.id),
+      style: isActive ? { background: s.color, color: '#fff', borderColor: s.color } : null
+    },
       h('span', { class: 'chip-dot', style: { background: s.color } }),
       h('span', { class: 'chip-label' }, s.name),
       h('span', { class: 'chip-count' }, c)
     ));
   });
+}
+
+/** Click handler used by both the chips and other parts of the UI. */
+function applyStatusChipFilter(statusId) {
+  const sel = document.getElementById('f-status');
+  if (sel) sel.value = String(statusId || '');
+  CRM.prefs.filters = Object.assign({}, CRM.prefs.filters, { status_id: statusId || '' });
+  try { localStorage.setItem('crm_filters', JSON.stringify(CRM.prefs.filters)); } catch (_) {}
+  CRM._leadsPage = 1;
+  loadLeads({ page: 1 });
 }
 
 function getActiveColumns() {
