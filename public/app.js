@@ -2931,14 +2931,43 @@ VIEWS.dial = async (view) => {
     return;
   }
   const tel = 'tel:' + phone.replace(/\s+/g, '');
-  // Try to launch immediately
-  setTimeout(() => { try { location.href = tel; } catch (_) {} }, 100);
+
+  // Multi-strategy auto-dial. Capacitor WebView blocks tel: by default,
+  // so we have to delegate to Android's Intent system via the @capacitor/app
+  // plugin. Falls back to window.open('_system') and plain href on browsers
+  // / older WebViews.
+  async function autoDial() {
+    const cap = window.Capacitor;
+    // Strategy 1 — Capacitor App.openUrl (Android: launches ACTION_DIAL)
+    try {
+      if (cap && cap.Plugins && cap.Plugins.App && typeof cap.Plugins.App.openUrl === 'function') {
+        const r = await cap.Plugins.App.openUrl({ url: tel });
+        if (r && r.completed !== false) return 'capacitor';
+      }
+    } catch (_) {}
+    // Strategy 2 — window.open with _system target. Capacitor maps this to
+    // an Intent on Android. On normal browsers, this opens a system handler.
+    try {
+      const w = window.open(tel, '_system');
+      if (w) return 'window';
+    } catch (_) {}
+    // Strategy 3 — plain location.href. Works on regular browsers.
+    try { location.href = tel; return 'href'; } catch (_) {}
+    return 'failed';
+  }
+
+  setTimeout(() => { autoDial().catch(() => {}); }, 150);
 
   view.appendChild(h('div', { class: 'card', style: { maxWidth: '380px', margin: '2rem auto', textAlign: 'center', padding: '1.5rem' } },
     h('div', { style: { fontSize: '3rem' } }, '📞'),
     h('h2', { style: { margin: '.5rem 0' } }, 'Calling…'),
     h('p', { class: 'muted', style: { fontSize: '1rem', marginTop: 0 } }, phone),
-    h('a', { class: 'btn primary', style: { display: 'block', marginTop: '1rem', fontSize: '1.1rem', padding: '.75rem 1.25rem' }, href: tel }, '📞 Tap to call'),
+    // Big tap-to-call button — using a plain <a href="tel:..."> is the most
+    // reliable way; Android handles a real anchor tap as a hard Intent
+    // launch even from inside a WebView.
+    h('a', { class: 'btn primary', style: { display: 'block', marginTop: '1rem', fontSize: '1.1rem', padding: '.85rem 1.25rem' }, href: tel,
+      onclick: ev => { ev.preventDefault(); autoDial(); }
+    }, '📞 Tap to call'),
     h('p', { class: 'muted', style: { fontSize: '.8rem', marginTop: '1rem' } }, 'If your dialer didn\'t open automatically, tap the button above.'),
     h('a', { class: 'btn ghost', style: { marginTop: '.5rem' }, href: '#/leads' }, '← Back to leads')
   ));

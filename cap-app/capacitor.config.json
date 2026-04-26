@@ -6,7 +6,13 @@
     "url": "https://crm.celesteabode.com",
     "cleartext": false,
     "androidScheme": "https",
-    "iosScheme": "https"
+    "iosScheme": "https",
+    "allowNavigation": [
+      "crm.celesteabode.com",
+      "tel:*",
+      "mailto:*",
+      "whatsapp:*"
+    ]
   },
   "android": {
     "allowMixedContent": false,
