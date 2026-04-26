@@ -291,4 +291,120 @@ async function api_reports_exportLeads(token, filters) {
   return { leads: out, total: out.length, truncated, max: MAX };
 }
 
-module.exports = { api_reports_summary, api_reports_funnel, api_reports_daily, api_reports_exportLeads };
+/**
+ * Aggregate filtered leads by an arbitrary dimension. Powers the Report
+ * Builder tab — pick any field (built-in OR custom) and get a breakdown.
+ *
+ * `groupBy` accepts:
+ *   - Built-in lead fields: 'status', 'source', 'product', 'assigned_to',
+ *     'city', 'state', 'country', 'utm_source', 'utm_medium',
+ *     'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'qualified',
+ *     'is_duplicate', 'created_day', 'created_month', 'tags'
+ *   - Custom fields: 'extra:<key>'  (key matches custom_fields.key)
+ *
+ * Returns `{ rows: [{ value, count, lead_ids }], total, dimension }` with
+ * rows sorted DESC by count. Empty values bucket under "— None —" so they
+ * show up in the chart instead of being silently dropped.
+ *
+ * `lead_ids` is included so the UI can offer a "drill in" link straight to
+ * the matching leads — no need for a second round-trip.
+ */
+async function api_reports_groupBy(token, filters, groupBy) {
+  const me = await authUser(token);
+  let rows = await _visibleLeads(me);
+  const users = await db.getAll('users');
+  rows = await _applyReportFilters(rows, filters, users);
+
+  const [statuses, products] = await Promise.all([
+    db.getAll('statuses'), db.getAll('products')
+  ]);
+  const usersById = {}, statusesById = {}, productsById = {};
+  users.forEach(u => { usersById[Number(u.id)] = u; });
+  statuses.forEach(s => { statusesById[Number(s.id)] = s; });
+  products.forEach(p => { productsById[Number(p.id)] = p; });
+
+  const dim = String(groupBy || '').trim();
+  if (!dim) throw new Error('groupBy is required');
+
+  // Resolve the dimension into a "give me the bucket label for this lead"
+  // function. Centralising this here means the chart, the table, and the
+  // export all see the same bucketing logic.
+  const NONE = '— None —';
+  let labelFor;
+  if (dim === 'status') {
+    labelFor = (l) => statusesById[Number(l.status_id)]?.name || NONE;
+  } else if (dim === 'source') {
+    labelFor = (l) => (l.source && String(l.source).trim()) || NONE;
+  } else if (dim === 'product') {
+    labelFor = (l) => productsById[Number(l.product_id)]?.name || NONE;
+  } else if (dim === 'assigned_to') {
+    labelFor = (l) => usersById[Number(l.assigned_to)]?.name || NONE;
+  } else if (dim === 'qualified') {
+    labelFor = (l) => Number(l.qualified) === 1 ? 'Qualified' : 'Not qualified';
+  } else if (dim === 'is_duplicate') {
+    labelFor = (l) => Number(l.is_duplicate) === 1 ? 'Duplicate' : 'Unique';
+  } else if (dim === 'created_day') {
+    labelFor = (l) => _tzDate(l.created_at) || NONE;
+  } else if (dim === 'created_month') {
+    labelFor = (l) => {
+      const d = _tzDate(l.created_at);
+      return d ? d.slice(0, 7) : NONE;
+    };
+  } else if (dim === 'tags') {
+    // Tags are multi-valued — explode each lead into one row per tag so the
+    // total in this view can exceed the lead count (correct for tags).
+    labelFor = null;
+  } else if (dim.startsWith('extra:')) {
+    const key = dim.slice('extra:'.length);
+    labelFor = (l) => {
+      let extra = l.extra_json;
+      try { if (typeof extra === 'string') extra = JSON.parse(extra || '{}'); } catch (_) { extra = {}; }
+      const v = (extra && extra[key] != null) ? String(extra[key]) : '';
+      return v.trim() || NONE;
+    };
+  } else if (['city', 'state', 'country',
+              'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+              'gclid', 'gad_campaignid', 'company'].includes(dim)) {
+    labelFor = (l) => (l[dim] && String(l[dim]).trim()) || NONE;
+  } else {
+    throw new Error('Unknown groupBy dimension: ' + dim);
+  }
+
+  // Aggregate
+  const buckets = {}; // label -> { count, lead_ids: [...] }
+  if (dim === 'tags') {
+    rows.forEach(l => {
+      const tags = String(l.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+      if (tags.length === 0) {
+        const label = NONE;
+        if (!buckets[label]) buckets[label] = { count: 0, lead_ids: [] };
+        buckets[label].count++;
+        buckets[label].lead_ids.push(Number(l.id));
+      } else {
+        tags.forEach(t => {
+          if (!buckets[t]) buckets[t] = { count: 0, lead_ids: [] };
+          buckets[t].count++;
+          buckets[t].lead_ids.push(Number(l.id));
+        });
+      }
+    });
+  } else {
+    rows.forEach(l => {
+      const label = labelFor(l);
+      if (!buckets[label]) buckets[label] = { count: 0, lead_ids: [] };
+      buckets[label].count++;
+      buckets[label].lead_ids.push(Number(l.id));
+    });
+  }
+
+  const out = Object.keys(buckets)
+    .map(k => ({ value: k, count: buckets[k].count, lead_ids: buckets[k].lead_ids }))
+    .sort((a, b) => b.count - a.count);
+
+  return { rows: out, total: rows.length, dimension: dim };
+}
+
+module.exports = {
+  api_reports_summary, api_reports_funnel, api_reports_daily,
+  api_reports_exportLeads, api_reports_groupBy
+};

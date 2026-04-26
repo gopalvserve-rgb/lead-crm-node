@@ -283,6 +283,7 @@ const NAV = [
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
@@ -4926,6 +4927,362 @@ function makeChart(canvasId, type, labels, data, colors, extra) {
     },
     options: merged
   });
+}
+
+/* ---------------- Report Builder ----------------------------------
+ * Pivot-style report — pick ANY field (built-in or custom) as the
+ * "group by" dimension and instantly see the breakdown as a bar chart
+ * + table, with drill-in to the underlying leads. Same filter set as
+ * the regular Reports tab so the two views stay numerically consistent.
+ * ------------------------------------------------------------------ */
+VIEWS.reportbuilder = async (view) => {
+  await ensureChartJs();
+  view.innerHTML = '';
+  const { users = [], products = [], sources = [], statuses = [], customFields = [] } = CRM.cache;
+
+  // Built-in dimensions every CRM has — grouped so the dropdown reads naturally.
+  const builtIn = [
+    { value: 'product',       label: 'Product' },
+    { value: 'status',        label: 'Status' },
+    { value: 'source',        label: 'Source' },
+    { value: 'assigned_to',   label: 'Assigned user' },
+    { value: 'qualified',     label: 'Qualified flag' },
+    { value: 'is_duplicate',  label: 'Duplicate flag' },
+    { value: 'tags',          label: 'Tag (multi-value)' },
+    { value: 'city',          label: 'City' },
+    { value: 'state',         label: 'State' },
+    { value: 'country',       label: 'Country' },
+    { value: 'company',       label: 'Company' },
+    { value: 'utm_source',    label: 'UTM Source' },
+    { value: 'utm_medium',    label: 'UTM Medium' },
+    { value: 'utm_campaign',  label: 'UTM Campaign' },
+    { value: 'utm_term',      label: 'UTM Term' },
+    { value: 'utm_content',   label: 'UTM Content' },
+    { value: 'gclid',         label: 'GCLID' },
+    { value: 'gad_campaignid',label: 'Google Ads Campaign ID' },
+    { value: 'created_day',   label: 'Created date (day)' },
+    { value: 'created_month', label: 'Created date (month)' }
+  ];
+  const customDims = (customFields || []).map(cf => ({
+    value: 'extra:' + cf.key,
+    label: 'Custom · ' + cf.label
+  }));
+
+  // Build a grouped <select> so users see "Built-in" vs "Custom fields"
+  // sections rather than one giant flat list — much easier to scan.
+  const dimSelect = h('select', { id: 'rb-dim', style: { minWidth: '220px' } });
+  const builtInGroup = document.createElement('optgroup');
+  builtInGroup.label = 'Built-in';
+  builtIn.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.value; opt.textContent = o.label;
+    builtInGroup.appendChild(opt);
+  });
+  dimSelect.appendChild(builtInGroup);
+  if (customDims.length) {
+    const customGroup = document.createElement('optgroup');
+    customGroup.label = 'Custom fields';
+    customDims.forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.value; opt.textContent = o.label;
+      customGroup.appendChild(opt);
+    });
+    dimSelect.appendChild(customGroup);
+  }
+
+  view.append(
+    h('div', { class: 'card', style: { padding: '1rem', marginBottom: '1rem' } },
+      h('h3', { style: { marginTop: 0 } }, '🧪 Report builder'),
+      h('p', { class: 'muted', style: { marginBottom: '.75rem' } },
+        'Pick any field below — including any custom field on your leads — and ' +
+        'see how leads break down by that field. Apply date and other filters ' +
+        'on the right. Click any row in the table to view the leads in that bucket.'),
+      h('div', { class: 'toolbar', style: { flexWrap: 'wrap' } },
+        h('span', { class: 'muted' }, 'Group by'),
+        dimSelect,
+        h('span', { class: 'muted', style: { marginLeft: '1rem' } }, 'From'),
+        h('input', { type: 'date', id: 'rb-from' }),
+        h('span', { class: 'muted' }, 'to'),
+        h('input', { type: 'date', id: 'rb-to' }),
+        selectOpts('rb-user', [{ id: '', name: 'All users' }, ...users]),
+        h('select', { id: 'rb-status' },
+          h('option', { value: '' }, 'Any status'),
+          ...statuses.map(s => h('option', { value: s.id }, s.name))
+        ),
+        h('select', { id: 'rb-product' },
+          h('option', { value: '' }, 'Any product'),
+          ...products.map(p => h('option', { value: p.id }, p.name))
+        ),
+        selectOpts('rb-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))]),
+        h('select', { id: 'rb-qualified' },
+          h('option', { value: '' }, 'Any qualified'),
+          h('option', { value: '1' }, 'Qualified only'),
+          h('option', { value: '0' }, 'Not qualified')
+        ),
+        h('button', { class: 'btn primary', onclick: loadReportBuilder }, '🔎 Generate'),
+        h('button', { class: 'btn', onclick: downloadReportBuilderExcel, title: 'Export breakdown + lead details to Excel' }, '📊 Export Excel'),
+        h('button', { class: 'btn', onclick: downloadReportBuilderCsv, title: 'Export breakdown to CSV' }, '⬇️ CSV')
+      )
+    ),
+    h('div', { id: 'rb-summary', class: 'cards', style: { marginBottom: '1rem' } }),
+    h('div', { class: 'chart-grid' },
+      h('div', { class: 'card card-wide' },
+        h('h3', { id: 'rb-chart-title' }, 'Breakdown'),
+        h('div', { class: 'chart-wrap', style: { height: '320px' } }, h('canvas', { id: 'rb-chart' }))
+      ),
+      h('div', { class: 'card card-wide' },
+        h('h3', {}, 'Detail'),
+        h('div', { id: 'rb-table' })
+      )
+    )
+  );
+
+  // Persist last-chosen dimension so coming back to the tab is fast.
+  const last = localStorage.getItem('rb_last_dim');
+  if (last && [...dimSelect.options].some(o => o.value === last)) dimSelect.value = last;
+
+  await loadReportBuilder();
+};
+
+function _currentReportBuilderFilters() {
+  return {
+    from:        $('#rb-from')?.value || undefined,
+    to:          $('#rb-to')?.value   || undefined,
+    scope_user_id: $('#rb-user')?.value   || undefined,
+    status_id:   $('#rb-status')?.value   || undefined,
+    product_id:  $('#rb-product')?.value  || undefined,
+    source:      $('#rb-source')?.value   || undefined,
+    qualified:   $('#rb-qualified')?.value || undefined
+  };
+}
+
+async function loadReportBuilder() {
+  const dim = $('#rb-dim')?.value || 'product';
+  localStorage.setItem('rb_last_dim', dim);
+  const filters = _currentReportBuilderFilters();
+  let resp;
+  try {
+    resp = await api('api_reports_groupBy', filters, dim);
+  } catch (e) {
+    $('#rb-table').innerHTML = `<div class="error-box">${esc(e.message || e)}</div>`;
+    return;
+  }
+  const dimLabel = $('#rb-dim')?.options[$('#rb-dim').selectedIndex]?.text || dim;
+  const titleEl = $('#rb-chart-title');
+  if (titleEl) titleEl.textContent = 'Leads by ' + dimLabel;
+
+  // Top stat cards — buckets, total, top bucket
+  const summaryEl = $('#rb-summary');
+  if (summaryEl) {
+    summaryEl.innerHTML = '';
+    const top = resp.rows[0];
+    [
+      ['Total leads', resp.total, 'accent'],
+      ['Distinct values', resp.rows.length, ''],
+      ['Top bucket', top ? `${top.value} (${top.count})` : '—', 'ok']
+    ].forEach(([label, val, klass]) => {
+      summaryEl.appendChild(h('div', { class: `card stat ${klass}` },
+        h('div', { class: 'stat-body' },
+          h('div', { class: 'stat-label' }, label),
+          h('div', { class: 'stat-value', style: { fontSize: '1.2rem' } }, String(val))
+        )
+      ));
+    });
+  }
+
+  // Chart — top 25 buckets so a high-cardinality dimension (e.g. UTM Term)
+  // doesn't render an unreadable forest of bars.
+  const top25 = resp.rows.slice(0, 25);
+  const ctx = document.getElementById('rb-chart');
+  if (ctx) {
+    if (ctx._chart) ctx._chart.destroy();
+    const palette = ['#6366f1', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'];
+    ctx._chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: top25.map(r => r.value),
+        datasets: [{
+          label: 'Leads',
+          data: top25.map(r => r.count),
+          backgroundColor: top25.map((_, i) => palette[i % palette.length]),
+          borderWidth: 0
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, datalabels: { color: '#111', anchor: 'end', align: 'right', font: { weight: 'bold' } } },
+        scales: { x: { beginAtZero: true, ticks: { stepSize: 1, precision: 0 } } }
+      }
+    });
+  }
+
+  // Detail table — every bucket, with click-to-drill into the leads view
+  const tableEl = $('#rb-table');
+  tableEl.innerHTML = '';
+  if (!resp.rows.length) {
+    tableEl.innerHTML = '<p class="muted">No leads match these filters.</p>';
+    return;
+  }
+  const totalCount = resp.rows.reduce((a, r) => a + r.count, 0);
+  tableEl.appendChild(h('div', { class: 'table-wrap', style: { maxHeight: '480px', overflowY: 'auto' } },
+    h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, dimLabel),
+        h('th', { style: { textAlign: 'right' } }, 'Leads'),
+        h('th', { style: { textAlign: 'right' } }, '% of total'),
+        h('th', { style: { textAlign: 'right' } }, '')
+      )),
+      h('tbody', {}, ...resp.rows.map(r => h('tr', {},
+        h('td', {}, r.value),
+        h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.count),
+        h('td', { style: { textAlign: 'right' } }, totalCount > 0 ? ((r.count / totalCount) * 100).toFixed(1) + '%' : '0%'),
+        h('td', { style: { textAlign: 'right' } },
+          h('a', { href: '#', onclick: (e) => { e.preventDefault(); _drillReportBuilder(r.lead_ids); } }, 'View leads →')
+        )
+      ))),
+      h('tfoot', {}, h('tr', { style: { fontWeight: 700, background: '#f9fafb' } },
+        h('td', {}, 'Total'),
+        h('td', { style: { textAlign: 'right' } }, totalCount),
+        h('td', { style: { textAlign: 'right' } }, '100%'),
+        h('td', {}, '')
+      ))
+    )
+  ));
+}
+
+/**
+ * Open a modal listing the leads in a bucket. Lighter than navigating the
+ * leads page — keeps the report context on screen for follow-up clicks.
+ */
+async function _drillReportBuilder(leadIds) {
+  if (!leadIds || !leadIds.length) return;
+  // Reuse the leads view by stashing the id set in a query and navigating.
+  // The simplest UX: open each lead in turn would be too noisy. Instead we
+  // open a quick popup listing names + a link to each.
+  let leads = [];
+  try {
+    // Pull just the matching leads — cap to 200 to keep the popup snappy.
+    const ids = leadIds.slice(0, 200);
+    const r = await api('api_leads_list', { page_size: 500 });
+    leads = (r.leads || []).filter(l => ids.includes(Number(l.id)));
+  } catch (e) {
+    alert('Could not load leads: ' + (e.message || e));
+    return;
+  }
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, 'Leads in this bucket'),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('p', { class: 'muted' }, leadIds.length + ' lead' + (leadIds.length === 1 ? '' : 's') + ' in this bucket' +
+          (leadIds.length > 200 ? ' (showing first 200)' : '')),
+        h('div', { class: 'table-wrap', style: { maxHeight: '50vh', overflowY: 'auto' } },
+          h('table', { class: 'mini-table' },
+            h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Phone'), h('th', {}, 'Status'), h('th', {}, 'Owner'), h('th', {}, ''))),
+            h('tbody', {}, ...leads.map(l => h('tr', {},
+              h('td', {}, l.name || '—'),
+              h('td', {}, l.phone || ''),
+              h('td', {}, l.status_name || ''),
+              h('td', {}, l.assigned_name || ''),
+              h('td', {}, h('a', { href: '#', onclick: (e) => { e.preventDefault(); m.remove(); openLeadModal(l.id); } }, 'Open →'))
+            )))
+          )
+        )
+      )
+    )
+  );
+  document.body.appendChild(m);
+}
+
+async function downloadReportBuilderCsv() {
+  const dim = $('#rb-dim')?.value || 'product';
+  const filters = _currentReportBuilderFilters();
+  let resp;
+  try { resp = await api('api_reports_groupBy', filters, dim); }
+  catch (e) { alert('Could not load: ' + (e.message || e)); return; }
+  if (!resp.rows.length) { alert('No data to export.'); return; }
+
+  const dimLabel = $('#rb-dim')?.options[$('#rb-dim').selectedIndex]?.text || dim;
+  const total = resp.rows.reduce((a, r) => a + r.count, 0);
+  const escape = (v) => {
+    if (v == null) return '';
+    const s = String(v);
+    if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  };
+  const lines = [[dimLabel, 'Leads', '% of total'].map(escape).join(',')];
+  resp.rows.forEach(r => {
+    const pct = total > 0 ? ((r.count / total) * 100).toFixed(2) + '%' : '0%';
+    lines.push([r.value, r.count, pct].map(escape).join(','));
+  });
+  lines.push(['Total', total, '100%'].map(escape).join(','));
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.download = 'report-by-' + dim.replace(/[^a-z0-9]+/gi, '-') + '_' + stamp + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadReportBuilderExcel() {
+  const dim = $('#rb-dim')?.value || 'product';
+  const filters = _currentReportBuilderFilters();
+  let resp, leadsResp;
+  try {
+    [resp, leadsResp] = await Promise.all([
+      api('api_reports_groupBy', filters, dim),
+      api('api_reports_exportLeads', filters)
+    ]);
+  } catch (e) { alert('Could not load: ' + (e.message || e)); return; }
+  if (!resp.rows.length) { alert('No data to export.'); return; }
+
+  let XLSX;
+  try { XLSX = await ensureXLSX(); }
+  catch (_) { return downloadReportBuilderCsv(); }
+
+  const dimLabel = $('#rb-dim')?.options[$('#rb-dim').selectedIndex]?.text || dim;
+  const total = resp.rows.reduce((a, r) => a + r.count, 0);
+
+  // Sheet 1: the breakdown
+  const breakdown = resp.rows.map(r => ({
+    [dimLabel]: r.value,
+    'Leads': r.count,
+    '% of total': total > 0 ? ((r.count / total) * 100).toFixed(2) + '%' : '0%'
+  }));
+  breakdown.push({ [dimLabel]: 'Total', 'Leads': total, '% of total': '100%' });
+
+  const wb = XLSX.utils.book_new();
+  const ws1 = XLSX.utils.json_to_sheet(breakdown);
+  ws1['!cols'] = [{ wch: 32 }, { wch: 10 }, { wch: 12 }];
+  XLSX.utils.book_append_sheet(wb, ws1, 'Breakdown');
+
+  // Sheet 2: the underlying leads (with the same column shape as the regular
+  // report Excel export, so users get one file with both views).
+  if (leadsResp && leadsResp.leads && leadsResp.leads.length) {
+    const rows = leadsResp.leads.map(_buildExportRow);
+    const ws2 = XLSX.utils.json_to_sheet(rows);
+    if (rows.length) {
+      const cols = [];
+      Object.keys(rows[0]).forEach((header, i) => {
+        let max = String(header).length;
+        rows.forEach(r => {
+          const v = r[header] == null ? '' : String(r[header]);
+          if (v.length > max) max = v.length;
+        });
+        cols[i] = { wch: Math.min(Math.max(max + 2, 10), 50) };
+      });
+      ws2['!cols'] = cols;
+    }
+    XLSX.utils.book_append_sheet(wb, ws2, 'Leads');
+  }
+
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, 'report-by-' + dim.replace(/[^a-z0-9]+/gi, '-') + '_' + stamp + '.xlsx');
 }
 
 /* ---------------- Admin ---------------- */
