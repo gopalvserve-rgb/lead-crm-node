@@ -896,7 +896,7 @@ function renderLeadsMobile(rows) {
       l.recent_remark ? h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.3rem' } }, '💬 ' + (l.recent_remark || '').slice(0, 80)) : null,
       h('div', { class: 'lc-actions' },
         digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
-        digits ? h('a', { class: 'btn sm', href: `https://wa.me/${digits}`, target: '_blank' }, '💬 WA') : null,
+        digits ? h('button', { class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(l) }, '🟢 WA') : null,
         h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
         h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎ Edit')
       )
@@ -1068,7 +1068,13 @@ function renderCell(col, l, statuses) {
         l.phone || '',
         digits ? h('button', { class: 'btn icon', title: 'Call', onclick: ev => { ev.stopPropagation(); callLead(l); } }, '📞') : null,
         l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: ev => { ev.stopPropagation(); navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
-        digits ? h('a', { class: 'btn icon', href: `https://wa.me/${digits}`, target: '_blank', title: 'WhatsApp', onclick: ev => ev.stopPropagation() }, '💬') : null
+        // Green WhatsApp icon — opens the Initiate Chat modal which lets
+        // the user pick an approved template, fill variables, preview and
+        // send. Replaces the old wa.me deep link.
+        digits ? h('button', {
+          class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template',
+          onclick: ev => { ev.stopPropagation(); openInitiateChatModal(l); }
+        }, '🟢') : null
       );
     }
     case 'email':    return h('td', {}, l.email || '');
@@ -3448,6 +3454,191 @@ async function wbCampaigns() {
   return wrap;
 }
 
+/**
+ * Initiate Chat — sends an approved template to a single lead via the
+ * green WhatsApp icon in the leads list.
+ *
+ * Layout:
+ *   - Top: Template picker dropdown (only APPROVED templates).
+ *   - Left card: Variables — one input per body_param, with @{merge}
+ *     hints. If the template has no variables, shows "no variables".
+ *   - Right card: Live preview of the template body with {{N}} swapped
+ *     for the user's input AS THEY TYPE.
+ *   - Bottom: Cancel / Send.
+ *
+ * On send, calls api_wb_initiate_chat which renders @{name}, @{phone},
+ * etc. against the lead row, persists the message, and surfaces any
+ * Meta error in a toast. Status / read receipts arrive via webhook
+ * and update the chat thread automatically.
+ */
+async function openInitiateChatModal(lead) {
+  // Lazy-load the templates cache
+  let templates = CRM.cache.waTemplates;
+  if (!templates) {
+    try { templates = await api('api_wb_templates_list'); CRM.cache.waTemplates = templates; }
+    catch (e) { toast('Could not load templates: ' + e.message, 'err'); return; }
+  }
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  if (!approved.length) {
+    toast('No approved templates yet. Settings → WhatsBot → Templates → Sync from Meta.', 'warn');
+    return;
+  }
+  const phone = String(lead?.phone || lead?.whatsapp || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, 'Initiate Chat'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+
+  // Template picker
+  const tplSel = h('select', {},
+    h('option', { value: '' }, '— pick a template —'),
+    ...approved.map(t => h('option', { value: t.name + '||' + t.language }, t.name + ' (' + t.language + ')'))
+  );
+  const tplRow = h('div', { class: 'f-row full' },
+    h('label', {}, 'Template'),
+    tplSel
+  );
+  body.appendChild(h('form', { class: 'form-grid' }, tplRow));
+
+  // Two-column body: variables (left) + preview (right)
+  const cols = h('div', { class: 'init-chat-grid' });
+  const varsCol = h('div', { class: 'card' });
+  varsCol.appendChild(h('div', { class: 'init-chat-col-head' }, 'Variables ',
+    h('span', { class: 'muted', style: { fontWeight: 'normal', fontSize: '.78rem' } }, "Use '@' Sign for add merge fields.")));
+  const varsBody = h('div', { class: 'init-chat-vars' });
+  varsCol.appendChild(varsBody);
+
+  const previewCol = h('div', { class: 'card' });
+  previewCol.appendChild(h('div', { class: 'init-chat-col-head' }, 'Preview'));
+  const previewBox = h('div', { class: 'init-chat-preview' }, h('div', { class: 'muted', style: { textAlign: 'center', padding: '2rem' } }, 'Pick a template above…'));
+  previewCol.appendChild(previewBox);
+
+  cols.appendChild(varsCol);
+  cols.appendChild(previewCol);
+  body.appendChild(cols);
+
+  // Footer
+  const sendBtn = h('button', { class: 'btn primary', disabled: 'disabled' }, 'Send');
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Close'),
+    sendBtn
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+
+  let currentTpl = null;
+  function refreshPreview() {
+    if (!currentTpl) {
+      previewBox.innerHTML = '';
+      previewBox.appendChild(h('div', { class: 'muted', style: { textAlign: 'center', padding: '2rem' } }, 'Pick a template above…'));
+      return;
+    }
+    let bodyText = currentTpl.body_text || '';
+    const inputs = [...varsBody.querySelectorAll('input.var-input')];
+    inputs.forEach((inp, idx) => {
+      const placeholder = '{{' + (idx + 1) + '}}';
+      const val = String(inp.value || '').trim() || placeholder;
+      // Render @{merge} fields against the lead so the preview reflects what
+      // the recipient will actually receive (e.g. @{name} → "Imran Khan")
+      const merged = renderMergeClient(val, lead);
+      bodyText = bodyText.split(placeholder).join(merged);
+    });
+    // Use existing template's full body — also render header/footer
+    const components = currentTpl.components || [];
+    const header = components.find(c => c.type === 'HEADER');
+    const footer = components.find(c => c.type === 'FOOTER');
+    const buttons = components.find(c => c.type === 'BUTTONS');
+    previewBox.innerHTML = '';
+    const card = h('div', { class: 'init-chat-card' });
+    if (header && header.format === 'TEXT' && header.text) {
+      card.appendChild(h('div', { class: 'tpl-header' }, header.text));
+    }
+    if (header && header.format === 'IMAGE') {
+      card.appendChild(h('div', { class: 'tpl-header-img muted' }, '🖼 [Image header]'));
+    }
+    card.appendChild(h('div', { class: 'tpl-body' }, bodyText));
+    if (footer && footer.text) {
+      card.appendChild(h('div', { class: 'tpl-footer muted' }, footer.text));
+    }
+    if (buttons && Array.isArray(buttons.buttons)) {
+      buttons.buttons.forEach(b => {
+        card.appendChild(h('div', { class: 'tpl-btn' }, b.text || b.url || ''));
+      });
+    }
+    previewBox.appendChild(card);
+  }
+
+  function setTemplate(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    currentTpl = t || null;
+    varsBody.innerHTML = '';
+    if (!t) {
+      sendBtn.disabled = 'disabled';
+      refreshPreview();
+      return;
+    }
+    if (!t.body_params) {
+      varsBody.appendChild(h('div', { class: 'muted', style: { padding: '.75rem' } },
+        'Currently, the variable is not available for this template.'));
+    } else {
+      for (let i = 0; i < t.body_params; i++) {
+        varsBody.appendChild(h('div', { style: { marginBottom: '.5rem' } },
+          h('label', { class: 'muted', style: { fontSize: '.8rem' } }, 'Variable ' + (i + 1)),
+          h('input', { class: 'var-input', placeholder: '@{name}, @{firstname}, @{phone}, …', oninput: refreshPreview })
+        ));
+      }
+    }
+    sendBtn.disabled = null;
+    refreshPreview();
+  }
+  tplSel.addEventListener('change', () => setTemplate(tplSel.value));
+
+  sendBtn.addEventListener('click', async () => {
+    if (!currentTpl) return;
+    const variables = [...varsBody.querySelectorAll('input.var-input')].map(i => i.value);
+    sendBtn.disabled = 'disabled';
+    sendBtn.textContent = 'Sending…';
+    try {
+      await api('api_wb_initiate_chat', {
+        lead_id: lead?.id,
+        phone,
+        template_name: currentTpl.name,
+        template_language: currentTpl.language,
+        variables
+      });
+      toast('Sent — view delivery status in WhatsBot → Chat');
+      m.remove();
+    } catch (e) {
+      toast(e.message, 'err');
+      sendBtn.disabled = null;
+      sendBtn.textContent = 'Send';
+    }
+  });
+}
+
+/** Replace @{merge_field} with values from the lead row — same syntax as
+ *  the campaign worker server-side, just for the live preview here. */
+function renderMergeClient(template, lead) {
+  if (!template) return '';
+  const ctx = lead || {};
+  return String(template).replace(/@\{(\w+)\}/g, (_, key) => {
+    const k = key.toLowerCase();
+    if (k === 'firstname' || k === 'first_name') return String(ctx.name || '').split(' ')[0] || '';
+    if (k === 'lastname' || k === 'last_name')   return String(ctx.name || '').split(' ').slice(1).join(' ') || '';
+    if (k === 'name')   return String(ctx.name || '');
+    if (k === 'phone')  return String(ctx.phone || '');
+    if (k === 'email')  return String(ctx.email || '');
+    if (k === 'source') return String(ctx.source || '');
+    if (ctx[k] !== undefined) return String(ctx[k]);
+    return '@{' + key + '}';
+  });
+}
+
 function openCampaignModal(templates) {
   const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
   const body = h('div', { class: 'modal modal-lg' });
@@ -3556,10 +3747,22 @@ async function wbChat() {
     right.appendChild(h('div', { class: 'wb-chat-head' }, h('b', {}, phone)));
     const log = h('div', { class: 'wb-chat-log' });
     msgs.forEach(msg => {
-      log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') },
+      const isFailed = msg.status === 'failed' || !!msg.error_text;
+      const tickClass = msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sent';
+      const tickGlyph = isFailed ? '⚠'
+                      : msg.read_at ? '✓✓'
+                      : msg.delivered_at ? '✓✓'
+                      : '✓';
+      log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
         h('div', { class: 'wb-msg-body' }, msg.body || '[' + (msg.message_type || '') + ']'),
-        h('div', { class: 'wb-msg-meta muted' }, fmtDate(msg.created_at, 'relative'),
-          msg.direction === 'out' ? ' · ' + (msg.read_at ? '✓✓ read' : msg.delivered_at ? '✓✓' : '✓') : '')
+        // Inline error block — visible only on failed outbound messages.
+        isFailed && msg.error_text
+          ? h('div', { class: 'wb-msg-error' }, '[ERROR: ' + msg.error_text + ']')
+          : null,
+        h('div', { class: 'wb-msg-meta muted' },
+          fmtDate(msg.created_at, 'relative'),
+          msg.direction === 'out' ? h('span', { class: 'wb-tick ' + (isFailed ? 'failed' : tickClass), title: isFailed ? (msg.error_text || 'failed') : tickClass }, ' · ' + tickGlyph) : null
+        )
       ));
     });
     right.appendChild(log);

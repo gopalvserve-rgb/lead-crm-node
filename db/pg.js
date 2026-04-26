@@ -152,8 +152,10 @@ const SCHEMA = {
     json: ['payload']
   },
   whatsapp_messages: {
-    columns: ['lead_id', 'direction', 'from_number', 'to_number',
-              'body', 'wa_message_id', 'status', 'created_at'],
+    columns: ['lead_id', 'user_id', 'direction', 'from_number', 'to_number',
+              'body', 'wa_message_id', 'status', 'message_type',
+              'media_url', 'media_id', 'reply_to', 'read_at', 'delivered_at',
+              'error_text', 'template_name', 'created_at'],
     json: []
   },
   automations: {

@@ -283,7 +283,7 @@ function safeJson(s) { try { return JSON.parse(s); } catch (_) { return []; } }
 
 // ---------- Send a single template (used by chat + bots + campaigns) ----
 
-async function _sendTemplate({ to, templateName, language, variables, imageUrl }, cfg) {
+async function _sendTemplate({ to, templateName, language, variables, imageUrl, leadId, userId }, cfg) {
   const c = cfg || await _cfg();
   // Components: BODY variables + optional HEADER image
   const components = [];
@@ -308,18 +308,37 @@ async function _sendTemplate({ to, templateName, language, variables, imageUrl }
   };
   const r = await _graphPost(`${c.phoneId}/messages`, body, c);
   const waMsgId = r.body?.messages?.[0]?.id || null;
-  // Persist outbound row
+  const errorText = r.body?.error?.message || null;
+
+  // Reconstruct a human-readable preview of the template (for the chat log).
+  // Pulls the template's body_text from the cache and substitutes {{N}}.
+  let preview = JSON.stringify({ template: templateName, variables });
+  try {
+    const tpl = await db.findOneBy('wa_templates', 'name', templateName);
+    if (tpl && tpl.body_text) {
+      preview = String(tpl.body_text).replace(/\{\{(\d+)\}\}/g, (_, n) => {
+        const idx = Number(n) - 1;
+        return (variables && variables[idx] != null) ? String(variables[idx]) : '{{' + n + '}}';
+      });
+    }
+  } catch (_) {}
+
   try {
     await db.query(
-      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type)
-       VALUES ($1, 'out', $2, $3, $4, $5, $6, 'template')`,
-      [null, c.phoneId, body.to, JSON.stringify({ template: templateName, variables }), waMsgId, r.body?.error ? 'failed' : 'sent']
+      `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, template_name, error_text, media_url)
+       VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, 'template', $8, $9, $10)`,
+      [
+        leadId || null, userId || null,
+        c.phoneId, body.to, preview, waMsgId,
+        r.body?.error ? 'failed' : 'sent',
+        templateName, errorText, imageUrl || null
+      ]
     );
   } catch (_) {}
-  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+  return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
 
-async function _sendText({ to, text, replyTo }, cfg) {
+async function _sendText({ to, text, replyTo, leadId, userId }, cfg) {
   const c = cfg || await _cfg();
   const body = {
     messaging_product: 'whatsapp',
@@ -330,17 +349,18 @@ async function _sendText({ to, text, replyTo }, cfg) {
   if (replyTo) body.context = { message_id: replyTo };
   const r = await _graphPost(`${c.phoneId}/messages`, body, c);
   const waMsgId = r.body?.messages?.[0]?.id || null;
+  const errorText = r.body?.error?.message || null;
   try {
     await db.query(
-      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type, reply_to)
-       VALUES (NULL, 'out', $1, $2, $3, $4, $5, 'text', $6)`,
-      [c.phoneId, body.to, text, waMsgId, r.body?.error ? 'failed' : 'sent', replyTo || null]
+      `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, reply_to, error_text)
+       VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, 'text', $8, $9)`,
+      [leadId || null, userId || null, c.phoneId, body.to, text, waMsgId, r.body?.error ? 'failed' : 'sent', replyTo || null, errorText]
     );
   } catch (_) {}
-  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+  return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
 
-async function _sendMedia({ to, mediaType, mediaUrl, caption }, cfg) {
+async function _sendMedia({ to, mediaType, mediaUrl, caption, leadId, userId }, cfg) {
   const c = cfg || await _cfg();
   const body = {
     messaging_product: 'whatsapp',
@@ -350,14 +370,15 @@ async function _sendMedia({ to, mediaType, mediaUrl, caption }, cfg) {
   };
   const r = await _graphPost(`${c.phoneId}/messages`, body, c);
   const waMsgId = r.body?.messages?.[0]?.id || null;
+  const errorText = r.body?.error?.message || null;
   try {
     await db.query(
-      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type, media_url)
-       VALUES (NULL, 'out', $1, $2, $3, $4, $5, $6, $7)`,
-      [c.phoneId, body.to, caption || '', waMsgId, r.body?.error ? 'failed' : 'sent', mediaType, mediaUrl]
+      `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, media_url, error_text)
+       VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [leadId || null, userId || null, c.phoneId, body.to, caption || '', waMsgId, r.body?.error ? 'failed' : 'sent', mediaType, mediaUrl, errorText]
     );
   } catch (_) {}
-  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+  return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
 
 // ---------- Live Chat ---------------------------------------------
@@ -434,18 +455,69 @@ async function api_wb_chat_messages(token, phone) {
 }
 
 async function api_wb_chat_send(token, payload) {
-  await authUser(token);
+  const me = await authUser(token);
   const p = payload || {};
   if (!p.phone) throw new Error('phone required');
   if (!p.text && !p.media_url) throw new Error('Empty message');
   const cfg = await _cfg();
+  // Resolve lead_id from phone so the message links back in the chat thread.
+  let leadId = p.lead_id || null;
+  if (!leadId) {
+    const ph = String(p.phone).replace(/\D/g, '');
+    try {
+      const ld = await db.query(
+        `SELECT id FROM leads
+           WHERE regexp_replace(COALESCE(phone, ''),    '\\D', '', 'g') = $1
+              OR regexp_replace(COALESCE(whatsapp, ''), '\\D', '', 'g') = $1
+           LIMIT 1`, [ph]);
+      if (ld.rows.length) leadId = ld.rows[0].id;
+    } catch (_) {}
+  }
   let r;
   if (p.media_url) {
-    r = await _sendMedia({ to: p.phone, mediaType: p.media_type || 'image', mediaUrl: p.media_url, caption: p.text }, cfg);
+    r = await _sendMedia({ to: p.phone, mediaType: p.media_type || 'image', mediaUrl: p.media_url, caption: p.text, leadId, userId: me.id }, cfg);
   } else {
-    r = await _sendText({ to: p.phone, text: p.text, replyTo: p.reply_to }, cfg);
+    r = await _sendText({ to: p.phone, text: p.text, replyTo: p.reply_to, leadId, userId: me.id }, cfg);
   }
   await _logActivity({ category: 'chat', response_code: r.status, request: { to: p.phone }, response: r.body });
+  if (r.body?.error) throw new Error(r.body.error.message);
+  return { ok: true, wa_message_id: r.wa_message_id };
+}
+
+/**
+ * Initiate Chat — send a TEMPLATE message to a single contact, used by
+ * the green WhatsApp icon in the leads list. Variables and image URL are
+ * optional. Persisted into whatsapp_messages so the message appears in
+ * the Chat tab thread; status/read receipts arrive via the webhook.
+ *
+ * Args: (token, { lead_id?, phone, template_name, template_language?, variables?, image_url? })
+ */
+async function api_wb_initiate_chat(token, payload) {
+  const me = await authUser(token);
+  const p = payload || {};
+  if (!p.phone)         throw new Error('phone required');
+  if (!p.template_name) throw new Error('template_name required');
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.phoneId) throw new Error('WhatsApp not connected. Settings → WhatsBot → Connect Account.');
+
+  // Render @{merge} fields against the lead, if a lead_id is supplied.
+  let lead = null;
+  if (p.lead_id) {
+    try { lead = await db.findById('leads', p.lead_id); } catch (_) {}
+  }
+  const rendered = (p.variables || []).map(v => _renderMerge(String(v ?? ''), lead, { phone: p.phone }));
+
+  const r = await _sendTemplate({
+    to: p.phone, templateName: p.template_name, language: p.template_language || 'en_US',
+    variables: rendered, imageUrl: p.image_url || null,
+    leadId: p.lead_id || null, userId: me.id
+  }, cfg);
+
+  await _logActivity({
+    category: 'chat', name: 'initiate_chat', template_name: p.template_name,
+    response_code: r.status, request: { to: p.phone, vars: rendered },
+    response: r.body
+  });
   if (r.body?.error) throw new Error(r.body.error.message);
   return { ok: true, wa_message_id: r.wa_message_id };
 }
@@ -749,19 +821,26 @@ async function expressEvent(req, res) {
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         const value = change.value || {};
-        // Status updates (delivered / read)
+        // Status updates (sent / delivered / read / failed). For 'failed'
+        // Meta also sends an `errors[]` array with a code + title + reason —
+        // capture the first one in error_text so the chat UI can display it.
         if (Array.isArray(value.statuses)) {
           for (const s of value.statuses) {
             const upd = {};
             if (s.status === 'delivered') upd.delivered_at = db.nowIso();
             if (s.status === 'read')      upd.read_at = db.nowIso();
             if (s.status) upd.status = s.status;
-            if (s.id && Object.keys(upd).length) {
+            const err = (s.errors && s.errors[0]) ? (s.errors[0].title || s.errors[0].message || s.errors[0].error_data?.details || JSON.stringify(s.errors[0])) : null;
+            if (s.id && (Object.keys(upd).length || err)) {
               try {
                 await db.query(
-                  `UPDATE whatsapp_messages SET status = COALESCE($2, status), delivered_at = COALESCE($3, delivered_at), read_at = COALESCE($4, read_at)
-                     WHERE wa_message_id = $1`,
-                  [s.id, upd.status || null, upd.delivered_at || null, upd.read_at || null]
+                  `UPDATE whatsapp_messages
+                      SET status = COALESCE($2, status),
+                          delivered_at = COALESCE($3, delivered_at),
+                          read_at = COALESCE($4, read_at),
+                          error_text = COALESCE($5, error_text)
+                    WHERE wa_message_id = $1`,
+                  [s.id, upd.status || null, upd.delivered_at || null, upd.read_at || null, err]
                 );
                 // Reflect into campaign_targets too
                 if (s.status === 'delivered' || s.status === 'read') {
@@ -769,6 +848,11 @@ async function expressEvent(req, res) {
                   await db.query(
                     `UPDATE wa_campaign_targets SET status = $2, ${col} = NOW() WHERE wa_message_id = $1 AND status NOT IN ('failed')`,
                     [s.id, s.status]
+                  );
+                } else if (s.status === 'failed') {
+                  await db.query(
+                    `UPDATE wa_campaign_targets SET status = 'failed', error = $2 WHERE wa_message_id = $1`,
+                    [s.id, err || 'failed']
                   );
                 }
               } catch (_) {}
@@ -887,7 +971,7 @@ module.exports = {
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat
-  api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send,
+  api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send, api_wb_initiate_chat,
   // Bots
   api_wb_message_bots_list, api_wb_message_bots_save, api_wb_message_bots_delete,
   api_wb_template_bots_list, api_wb_template_bots_save, api_wb_template_bots_delete,

@@ -460,6 +460,8 @@ ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS reply_to     TEXT;       
 ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS read_at      TIMESTAMPTZ;
 ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_wa_msg_phone ON whatsapp_messages(from_number, to_number, created_at);
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS error_text TEXT;
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS template_name TEXT;
 
 -- Cached approved templates from Meta (refreshed periodically)
 CREATE TABLE IF NOT EXISTS wa_templates (
