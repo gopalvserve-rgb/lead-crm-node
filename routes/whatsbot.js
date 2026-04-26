@@ -82,7 +82,12 @@ async function api_wb_settings_get(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
   const cfg = await _cfg();
-  const verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+  const [verifyToken, fbAppId, fbAppSecretSet, fbConfigId] = await Promise.all([
+    db.getConfig('WHATSAPP_VERIFY_TOKEN', ''),
+    db.getConfig('WB_FB_APP_ID', ''),
+    db.getConfig('WB_FB_APP_SECRET', '').then(v => !!(v && v.length)),
+    db.getConfig('WB_FB_CONFIG_ID', '')
+  ]);
   const baseUrl = (process.env.BASE_URL || '').replace(/\/+$/, '');
   return {
     waba_id: cfg.wabaId || '',
@@ -93,7 +98,11 @@ async function api_wb_settings_get(token) {
     autolead_on: cfg.autoLeadOn,
     autolead_source: cfg.autoLeadSource,
     default_user_id: cfg.defaultUser,
-    default_status_id: cfg.defaultStatus
+    default_status_id: cfg.defaultStatus,
+    // Embedded Signup config
+    fb_app_id: fbAppId,
+    fb_app_secret_set: fbAppSecretSet,
+    fb_config_id: fbConfigId
   };
 }
 
@@ -109,7 +118,86 @@ async function api_wb_settings_save(token, payload) {
   if ('autolead_source' in p)     await db.setConfig('WB_AUTOLEAD_SOURCE', String(p.autolead_source || 'WhatsApp'));
   if ('default_user_id' in p)     await db.setConfig('WB_DEFAULT_USER_ID', String(p.default_user_id || ''));
   if ('default_status_id' in p)   await db.setConfig('WB_DEFAULT_STATUS_ID', String(p.default_status_id || ''));
+  // Embedded Signup config — set once by the admin
+  if ('fb_app_id' in p)        await db.setConfig('WB_FB_APP_ID', String(p.fb_app_id || '').trim());
+  if ('fb_app_secret' in p && p.fb_app_secret) await db.setConfig('WB_FB_APP_SECRET', String(p.fb_app_secret).trim());
+  if ('fb_config_id' in p)     await db.setConfig('WB_FB_CONFIG_ID', String(p.fb_config_id || '').trim());
   return { ok: true };
+}
+
+/**
+ * Embedded Signup callback — finishes the Facebook Login for Business flow:
+ *   1. Receives the OAuth `code` plus the WABA ID and phone number ID that
+ *      Facebook sent via postMessage during the dialog.
+ *   2. Exchanges the code for a long-lived user access token using our app
+ *      credentials.
+ *   3. Persists everything to config (waba_id, phone_number_id, access_token).
+ *   4. Subscribes the WABA to webhook events so inbound messages start flowing.
+ *   5. Syncs the approved templates so the user sees them immediately.
+ */
+async function api_wb_emb_signin(token, code, phoneNumberId, wabaId) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  if (!code) throw new Error('Missing code from Facebook');
+  if (!phoneNumberId || !wabaId) {
+    throw new Error('Did not receive phone_number_id / waba_id from the dialog. Make sure your Login-for-Business config has WhatsApp asset selection enabled.');
+  }
+  const [appId, appSecret] = await Promise.all([
+    db.getConfig('WB_FB_APP_ID', ''),
+    db.getConfig('WB_FB_APP_SECRET', '')
+  ]);
+  if (!appId || !appSecret) {
+    throw new Error('Set Facebook App ID + Secret in settings first.');
+  }
+
+  // Exchange code → access token
+  const exchangeUrl = `${GRAPH}/oauth/access_token?client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}&code=${encodeURIComponent(code)}`;
+  const r = await fetch(exchangeUrl);
+  const j = await r.json();
+  if (j.error || !j.access_token) {
+    throw new Error('Token exchange failed: ' + (j.error?.message || 'no access_token returned'));
+  }
+  const accessToken = j.access_token;
+
+  // Persist
+  await db.setConfig('WHATSAPP_ACCESS_TOKEN', accessToken);
+  await db.setConfig('WHATSAPP_BUSINESS_ACCOUNT_ID', String(wabaId));
+  await db.setConfig('WHATSAPP_PHONE_NUMBER_ID', String(phoneNumberId));
+
+  // Subscribe the WABA to webhooks (so inbound messages reach our /hook)
+  let subscribeOk = true; let subscribeErr = '';
+  try {
+    const sub = await fetch(`${GRAPH}/${wabaId}/subscribed_apps`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }
+    });
+    const sj = await sub.json();
+    if (sj.error) { subscribeOk = false; subscribeErr = sj.error.message; }
+  } catch (e) { subscribeOk = false; subscribeErr = e.message; }
+
+  // Best-effort template sync — surface failure but don't block
+  let templatesSynced = 0; let templateErr = '';
+  try {
+    const tr = await api_wb_templates_sync(token);
+    templatesSynced = tr.count || 0;
+  } catch (e) { templateErr = e.message; }
+
+  await _logActivity({
+    category: 'template_sync', name: 'embedded_signup',
+    response_code: 200,
+    request: { phoneNumberId, wabaId },
+    response: { subscribed: subscribeOk, templatesSynced, subscribeErr, templateErr }
+  });
+
+  return {
+    ok: true,
+    waba_id: String(wabaId),
+    phone_number_id: String(phoneNumberId),
+    subscribed: subscribeOk,
+    subscribe_error: subscribeErr,
+    templates_synced: templatesSynced,
+    template_error: templateErr
+  };
 }
 
 async function api_wb_connect_verify(token) {
@@ -795,6 +883,7 @@ async function _handleInbound(m, value) {
 module.exports = {
   // Settings
   api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
+  api_wb_emb_signin,
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat

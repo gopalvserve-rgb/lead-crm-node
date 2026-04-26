@@ -2894,9 +2894,95 @@ async function showWbTab(id) {
 async function wbConnect() {
   const s = await api('api_wb_settings_get');
   const wrap = h('div', {});
-  const card = h('div', { class: 'card' });
-  card.appendChild(h('h3', {}, '🔗 Connect WhatsApp Business'));
-  const form = h('form', { class: 'form-grid', onsubmit: async ev => {
+
+  // ---- Connection status banner ----
+  const isConnected = !!(s.access_token_present && s.waba_id && s.phone_number_id);
+  const statusCard = h('div', { class: 'card' });
+  if (isConnected) {
+    statusCard.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '.75rem' } },
+      h('div', { style: { fontSize: '1.5rem' } }, '✅'),
+      h('div', { style: { flex: 1 } },
+        h('h3', { style: { margin: 0 } }, 'WhatsApp Connected'),
+        h('div', { class: 'muted' }, 'WABA: ', h('code', {}, s.waba_id), ' · Phone ID: ', h('code', {}, s.phone_number_id))
+      ),
+      h('button', { class: 'btn', onclick: async () => {
+        try {
+          const r = await api('api_wb_connect_verify');
+          if (r.ok) toast(`${r.display_phone_number} · Quality ${r.quality_rating || '—'} · ${r.status || ''}`);
+          else toast(r.error || 'Verify failed', 'err');
+        } catch (e) { toast(e.message, 'err'); }
+      } }, '✅ Verify'),
+      h('button', { class: 'btn ghost danger', onclick: async () => {
+        if (!await confirmDialog('Disconnect WhatsApp? Stored tokens will be cleared.')) return;
+        try { await api('api_wb_disconnect'); toast('Disconnected'); showWbTab('connect'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '✕ Disconnect')
+    ));
+    wrap.appendChild(statusCard);
+  } else {
+    statusCard.appendChild(h('h3', { style: { margin: '0 0 .5rem' } }, '🔗 Connect WhatsApp Business'));
+    statusCard.appendChild(h('p', { class: 'muted', style: { marginTop: 0 } },
+      'The fastest way is Facebook Embedded Signup — log in with Facebook and pick the WhatsApp Business Account + phone number you want to connect. We capture all credentials automatically.'));
+
+    // ---- Embedded Signup section ----
+    const fbReady = !!(s.fb_app_id && s.fb_app_secret_set && s.fb_config_id);
+    if (fbReady) {
+      statusCard.appendChild(h('button', {
+        class: 'btn primary', style: { fontSize: '1rem', padding: '.6rem 1.25rem' },
+        onclick: () => startEmbeddedSignup(s.fb_app_id, s.fb_config_id)
+      }, '🅵 Continue with Facebook'));
+      statusCard.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: '.5rem' } },
+        'You\'ll see your WhatsApp Business Accounts in the dialog. Pick a phone number and click Finish — we handle the rest.'));
+    } else {
+      statusCard.appendChild(h('div', { class: 'error-box' },
+        h('b', {}, 'One-time setup required'),
+        h('p', { style: { margin: '.5rem 0 0' } },
+          'Before Embedded Signup works, an admin needs to set the Facebook App ID, App Secret, and Login-for-Business Config ID below. ',
+          h('a', { href: 'https://developers.facebook.com/docs/whatsapp/embedded-signup/implementation#step-2--create-facebook-login-for-business-configuration', target: '_blank' }, 'How to get a Config ID →'))
+      ));
+    }
+    wrap.appendChild(statusCard);
+  }
+
+  // ---- Embedded Signup config (App ID / Secret / Config ID) ----
+  const fbCard = h('details', { class: 'card', open: !isConnected ? 'open' : null });
+  fbCard.appendChild(h('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, '⚙️ Facebook App configuration (one-time setup)'));
+  const fbForm = h('form', { class: 'form-grid', style: { marginTop: '.75rem' }, onsubmit: async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    try {
+      await api('api_wb_settings_save', {
+        fb_app_id: fd.get('fb_app_id'),
+        fb_app_secret: fd.get('fb_app_secret') || undefined,
+        fb_config_id: fd.get('fb_config_id')
+      });
+      toast('Saved'); showWbTab('connect');
+    } catch (e) { toast(e.message, 'err'); }
+  }});
+  fbForm.appendChild(field('fb_app_id', 'Facebook App ID', s.fb_app_id, { required: true }));
+  fbForm.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'App Secret', s.fb_app_secret_set ? h('span', { class: 'muted', style: { fontSize: '.7rem', marginLeft: '.4rem' } }, '(saved)') : null),
+    h('input', { name: 'fb_app_secret', type: 'password', autocomplete: 'new-password',
+      placeholder: s.fb_app_secret_set ? '••••••••••' : 'paste from Meta App Dashboard' })
+  ));
+  fbForm.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Login-for-Business Config ID',
+      h('a', { href: 'https://developers.facebook.com/docs/whatsapp/embedded-signup/implementation#step-2--create-facebook-login-for-business-configuration', target: '_blank', style: { marginLeft: '.5rem', fontSize: '.75rem' } }, 'help →')),
+    h('input', { name: 'fb_config_id', value: s.fb_config_id || '', placeholder: 'e.g. 1234567890123456' })
+  ));
+  fbForm.appendChild(h('div', { class: 'f-row full' },
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save FB config')
+  ));
+  fbCard.appendChild(fbForm);
+  wrap.appendChild(fbCard);
+
+  // ---- Manual credential entry (fallback / advanced) ----
+  const manualCard = h('details', { class: 'card', open: isConnected ? 'open' : null });
+  manualCard.appendChild(h('summary', { style: { cursor: 'pointer', fontWeight: 600 } },
+    '🔧 Manual credentials (skip Embedded Signup) ',
+    h('span', { class: 'muted', style: { fontWeight: 'normal', fontSize: '.8rem' } },
+      '— paste WABA ID / Phone ID / Access Token directly')));
+  const form = h('form', { class: 'form-grid', style: { marginTop: '.75rem' }, onsubmit: async ev => {
     ev.preventDefault();
     const fd = new FormData(ev.target);
     try {
@@ -2944,23 +3030,83 @@ async function wbConnect() {
   form.appendChild(selectField('default_status_id', 'Default status for new WhatsApp leads', s.default_status_id,
     [{ value: '', label: '— First status —' }, ...statuses.map(st => ({ value: st.id, label: st.name }))]));
   form.appendChild(h('div', { class: 'f-row full' },
-    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save settings'),
-    h('button', { type: 'button', class: 'btn', style: { marginLeft: '.5rem' }, onclick: async () => {
-      try {
-        const r = await api('api_wb_connect_verify');
-        if (r.ok) toast(`Connected! ${r.display_phone_number} · Quality ${r.quality_rating || '—'} · ${r.status || ''}`);
-        else toast(r.error || 'Verify failed', 'err');
-      } catch (e) { toast(e.message, 'err'); }
-    } }, '✅ Verify connection'),
-    s.access_token_present ? h('button', { type: 'button', class: 'btn ghost', style: { marginLeft: '.5rem' }, onclick: async () => {
-      if (!await confirmDialog('Disconnect WhatsApp? Stored tokens will be cleared.')) return;
-      try { await api('api_wb_disconnect'); toast('Disconnected'); showWbTab('connect'); }
-      catch (e) { toast(e.message, 'err'); }
-    } }, '✕ Disconnect') : null
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save settings')
   ));
-  card.appendChild(form);
-  wrap.appendChild(card);
+  manualCard.appendChild(form);
+  wrap.appendChild(manualCard);
   return wrap;
+}
+
+/**
+ * Embedded Signup launcher. Loads the Facebook JS SDK, calls FB.login with
+ * the WhatsApp config_id and Embedded Signup `extras`, and listens for the
+ * postMessage events that carry phone_number_id + waba_id while the user
+ * goes through the dialog. When the user clicks Finish, we have all three:
+ *   - the OAuth code (from FB.login callback)
+ *   - phone_number_id + waba_id (from the postMessage WA_EMBEDDED_SIGNUP event)
+ * → POST those to /api → server exchanges the code for an access token and
+ * persists everything. Page reloads to show the connected state.
+ */
+async function startEmbeddedSignup(appId, configId) {
+  if (!appId || !configId) { toast('App ID + Config ID required', 'err'); return; }
+  await ensureFbSdkLoaded(appId);
+  if (!window.FB) { toast('Facebook SDK failed to load', 'err'); return; }
+
+  let phoneNumberId = '';
+  let wabaId = '';
+  // PostMessage listener — Meta sends phone_number_id + waba_id during the
+  // dialog when the user clicks "Finish". Without this, we get the OAuth
+  // code but don't know which assets they picked.
+  const sessionInfoListener = (event) => {
+    if (event.origin !== 'https://www.facebook.com') return;
+    try {
+      const data = (typeof event.data === 'string') ? JSON.parse(event.data) : event.data;
+      if (data && data.type === 'WA_EMBEDDED_SIGNUP' && data.event === 'FINISH') {
+        phoneNumberId = data.data?.phone_number_id || '';
+        wabaId       = data.data?.waba_id || '';
+      }
+    } catch (_) { /* not JSON, ignore */ }
+  };
+  window.addEventListener('message', sessionInfoListener);
+
+  toast('Opening Facebook…');
+  FB.login(async (response) => {
+    window.removeEventListener('message', sessionInfoListener);
+    if (!response.authResponse) {
+      toast('Login cancelled or popup blocked. Allow popups and try again.', 'warn');
+      return;
+    }
+    const code = response.authResponse.code;
+    if (!code) {
+      toast('No authorization code returned by Facebook.', 'err');
+      return;
+    }
+    if (!phoneNumberId || !wabaId) {
+      // We didn't catch the postMessage — most likely user closed dialog
+      // mid-way OR the Login-for-Business config doesn't have WhatsApp
+      // asset selection enabled. Fall back to manual entry.
+      toast('Did not receive WABA / phone number from the dialog. Check the Config ID has WhatsApp Business Platform asset selection enabled.', 'err');
+      return;
+    }
+    try {
+      toast('Exchanging credentials with Meta…');
+      const r = await api('api_wb_emb_signin', code, phoneNumberId, wabaId);
+      let msg = `✅ Connected (WABA ${r.waba_id}, Phone ${r.phone_number_id})`;
+      if (r.templates_synced > 0) msg += ` · ${r.templates_synced} templates synced`;
+      if (!r.subscribed && r.subscribe_error) msg += ` · ⚠ webhook subscribe failed: ${r.subscribe_error}`;
+      toast(msg);
+      setTimeout(() => showWbTab('connect'), 500);
+    } catch (e) { toast(e.message, 'err'); }
+  }, {
+    config_id: configId,
+    response_type: 'code',
+    override_default_response_type: true,
+    extras: {
+      setup: {},
+      featureType: '',
+      sessionInfoVersion: '2'
+    }
+  });
 }
 
 // ---------- Templates ----------
@@ -5676,7 +5822,8 @@ function ensureFbSdkLoaded(appId) {
     if (!appId) return reject(new Error('Set Facebook Application ID first (Admin → Facebook → Application Settings)'));
     window.fbAsyncInit = function () {
       try {
-        FB.init({ appId, cookie: true, xfbml: false, version: 'v19.0' });
+        // v21.0 — required for WhatsApp Embedded Signup (Login for Business)
+        FB.init({ appId, cookie: true, xfbml: false, version: 'v21.0', autoLogAppEvents: true });
         resolve();
       } catch (e) { reject(e); }
     };
