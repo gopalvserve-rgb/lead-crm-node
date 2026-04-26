@@ -435,6 +435,23 @@ async function api_leads_update(token, id, patch) {
   }
   if (assigneeChanged) {
     try { require('../utils/automations').fire('lead_assigned', { lead: Object.assign({}, lead, allowed), user: me }); } catch (_) {}
+    // Direct push to the new assignee — same SMS-style banner the lead-create
+    // flow uses. Fire-and-forget so we don't block the response.
+    setImmediate(async () => {
+      try {
+        const newAssignee = Number(patch.assigned_to);
+        if (!newAssignee || newAssignee === Number(me.id)) return;
+        const push = require('./push');
+        const updatedLead = Object.assign({}, lead, allowed);
+        await push.sendPushToUser(newAssignee, {
+          title: '🎯 Lead reassigned to you',
+          body:  `${updatedLead.name || 'Unknown'}${updatedLead.phone ? ' · ' + updatedLead.phone : ''}${updatedLead.source ? '\nSource: ' + updatedLead.source : ''}`,
+          url:   '/#/leads',
+          tag:   'lead-' + id,
+          sticky: true
+        });
+      } catch (e) { console.warn('[push] reassign notify failed:', e.message); }
+    });
   }
   return { ok: true };
 }
@@ -526,16 +543,44 @@ async function api_leads_bulkUpdate(token, leadIds, patch) {
   const allowed = {};
   ['assigned_to', 'status_id', 'source', 'product_id'].forEach(k => { if (k in patch) allowed[k] = patch[k]; });
   if (patch.status_id) allowed.last_status_change_at = db.nowIso();
+  // Track per-assignee bulk pushes — one summary push per recipient instead of
+  // 200 spammy banners if you reassign 200 leads.
+  const reassignedPerUser = {}; // userId -> [leadName, leadName, ...]
+  const newAssignee = (patch.assigned_to !== undefined && patch.assigned_to !== '')
+    ? Number(patch.assigned_to) : null;
   let count = 0;
   for (const id of (leadIds || [])) {
     const lead = await db.findById('leads', id); if (!lead) continue;
+    const wasAssignedTo = Number(lead.assigned_to) || 0;
     await db.update('leads', id, allowed);
     if (patch.status_id && Number(patch.status_id) !== Number(lead.status_id)) {
       const s = await db.findById('statuses', patch.status_id);
       await db.insert('remarks', { lead_id: id, user_id: me.id, remark: 'Status changed to ' + (s ? s.name : '') + ' (bulk)', status_id: patch.status_id });
     }
+    if (newAssignee && newAssignee !== wasAssignedTo && newAssignee !== Number(me.id)) {
+      if (!reassignedPerUser[newAssignee]) reassignedPerUser[newAssignee] = [];
+      reassignedPerUser[newAssignee].push(lead.name || ('Lead #' + id));
+    }
     count++;
   }
+  // Single summary push per assignee — fire-and-forget so the bulk update
+  // returns instantly even if FCM/Web Push are slow.
+  setImmediate(async () => {
+    try {
+      const push = require('./push');
+      for (const uid of Object.keys(reassignedPerUser)) {
+        const names = reassignedPerUser[uid];
+        const preview = names.slice(0, 3).join(', ') + (names.length > 3 ? ' …' : '');
+        await push.sendPushToUser(Number(uid), {
+          title: `🎯 ${names.length} new lead${names.length > 1 ? 's' : ''} assigned`,
+          body:  preview,
+          url:   '/#/leads',
+          tag:   'bulk-assign-' + uid,
+          sticky: true
+        });
+      }
+    } catch (e) { console.warn('[push] bulk reassign notify failed:', e.message); }
+  });
   return { ok: true, count };
 }
 
