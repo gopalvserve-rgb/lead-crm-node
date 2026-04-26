@@ -589,25 +589,37 @@ VIEWS.leads = async (view) => {
   // Auto-apply filter on dropdown change + debounced search input. Without
   // this, mobile users had to find the small 🔎 button after every change,
   // which made filters feel "broken" in the Android APK.
+  //
+  // We attach BOTH change AND input event listeners — Android WebView is
+  // flaky about which one fires first on native dropdown selection, and
+  // some users reported filters not applying despite the JS being correct.
+  // addEventListener is more robust than .onchange (nothing can clobber it).
   const applyFilters = () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); };
+  const wireFilter = (sel) => {
+    if (!sel) return sel;
+    sel.addEventListener('change', applyFilters);
+    sel.addEventListener('input', applyFilters); // Android WebView fallback
+    return sel;
+  };
   let _searchTimer = null;
   const debouncedSearch = () => {
     clearTimeout(_searchTimer);
     _searchTimer = setTimeout(applyFilters, 350);
   };
+  const searchInput = h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '' });
+  searchInput.addEventListener('input', debouncedSearch);
+  searchInput.addEventListener('keydown', ev => { if (ev.key === 'Enter') applyFilters(); });
   const toolbar = h('div', { class: 'toolbar' },
-    h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '',
-      oninput: debouncedSearch,
-      onkeydown: ev => { if (ev.key === 'Enter') applyFilters(); } }),
-    Object.assign(selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id), { onchange: applyFilters }),
-    Object.assign(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source), { onchange: applyFilters }),
-    Object.assign(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to), { onchange: applyFilters }),
-    Object.assign(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup), { onchange: applyFilters }),
-    Object.assign(selectOpts('f-duplicate', [
+    searchInput,
+    wireFilter(selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id)),
+    wireFilter(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source)),
+    wireFilter(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to)),
+    wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
+    wireFilter(selectOpts('f-duplicate', [
       { id: '', name: 'All leads' },
       { id: 'only', name: '⚠️ Duplicates only' },
       { id: 'unique', name: 'No duplicates' }
-    ], CRM.prefs.filters.duplicate), { onchange: applyFilters }),
+    ], CRM.prefs.filters.duplicate)),
     h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
     h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
