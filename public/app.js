@@ -2071,6 +2071,8 @@ function actionTimelineBlock(leadId) {
       created:        { icon: '🎯', label: 'Lead received',        color: '#3b82f6' },
       status_change:  { icon: '🔄', label: 'Status changed',       color: '#8b5cf6' },
       remark:         { icon: '💬', label: 'Remark added',         color: '#06b6d4' },
+      note_updated:   { icon: '📝', label: 'Notes updated',        color: '#06b6d4' },
+      tags_updated:   { icon: '🏷️', label: 'Tags updated',         color: '#06b6d4' },
       followup_set:   { icon: '⏰', label: 'Follow-up scheduled',  color: '#f59e0b' },
       assigned:       { icon: '👤', label: 'Reassigned',           color: '#64748b' },
       call:           { icon: '📞', label: 'Call',                 color: '#ec4899' },
@@ -2104,6 +2106,10 @@ function actionTimelineBlock(leadId) {
         if (m.error) sub += ' ⚠ ' + m.error;
       } else if (r.action_type === 'whatsapp_in') {
         sub = m.preview || ('[' + (m.type || 'message') + ']');
+      } else if (r.action_type === 'note_updated') {
+        sub = m.preview || null;
+      } else if (r.action_type === 'tags_updated') {
+        sub = m.tags || null;
       }
       ul.appendChild(h('li', {},
         h('span', { class: 'tl-dot tl-dot-rich', style: { background: c.color } }, c.icon),

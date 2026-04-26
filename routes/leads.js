@@ -460,6 +460,20 @@ async function api_leads_update(token, id, patch) {
     // Stamp last_status_change_at so the TAT worker knows when this lead entered the new stage
     try { await db.update('leads', id, { last_status_change_at: db.nowIso() }); } catch (_) {}
   }
+  // Note (the lead's `notes` column) updated by this save → log so it
+  // shows in the activity timeline. Only fires when the value actually
+  // changed, to avoid a noisy timeline on every unrelated save.
+  if ('notes' in patch && String(patch.notes || '') !== String(lead.notes || '')) {
+    try { require('./tat').logAction(id, 'note_updated', me.id, { preview: String(patch.notes || '').slice(0, 200) }); } catch (_) {}
+  }
+  // Lead-form fields that the user might want to track changes on
+  if ('next_followup_at' in patch && patch.next_followup_at !== lead.next_followup_at) {
+    try { require('./tat').logAction(id, 'followup_set', me.id, { due_at: patch.next_followup_at }); } catch (_) {}
+  }
+  if ('tags' in patch && String(patch.tags || '') !== String(lead.tags || '')) {
+    try { require('./tat').logAction(id, 'tags_updated', me.id, { tags: patch.tags || '' }); } catch (_) {}
+  }
+
   if (assigneeChanged) {
     try { require('../utils/automations').fire('lead_assigned', { lead: Object.assign({}, lead, allowed), user: me }); } catch (_) {}
     try { require('./tat').logAction(id, 'assigned', me.id, { from: lead.assigned_to, to: patch.assigned_to }); } catch (_) {}
