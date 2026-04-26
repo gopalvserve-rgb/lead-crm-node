@@ -2896,6 +2896,13 @@ async function wbConnect() {
   const wrap = h('div', { class: 'wb-connect' });
   const isConnected = !!(s.access_token_present && s.waba_id && s.phone_number_id);
   const fbReady = !!(s.fb_app_id && s.fb_app_secret_set && s.fb_config_id);
+  // Preload the FB SDK now so that when the user clicks "Connect with
+  // Facebook" later, FB.login runs SYNCHRONOUSLY inside the click handler.
+  // Without this, Chrome (and most browsers) block the popup because the
+  // user-gesture has already expired by the time the async SDK fetch returns.
+  if (s.fb_app_id) {
+    ensureFbSdkLoaded(s.fb_app_id).catch(e => console.warn('[wb] FB SDK preload failed:', e.message));
+  }
 
   // Embedded vs Manual mode toggle — matches the screenshot's layout.
   // Default ON unless the admin has explicitly stored a manual-only setup.
@@ -3087,10 +3094,18 @@ async function wbConnect() {
  * → POST those to /api → server exchanges the code for an access token and
  * persists everything. Page reloads to show the connected state.
  */
-async function startEmbeddedSignup(appId, configId) {
+function startEmbeddedSignup(appId, configId) {
   if (!appId || !configId) { toast('App ID + Config ID required', 'err'); return; }
-  await ensureFbSdkLoaded(appId);
-  if (!window.FB) { toast('Facebook SDK failed to load', 'err'); return; }
+  // Hot path — SDK already preloaded by wbConnect(). Calling FB.login
+  // synchronously inside the click handler is critical or Chrome blocks
+  // the popup as a "non-user-initiated" window.open.
+  if (!(window.FB && typeof window.FB.login === 'function')) {
+    toast('Loading Facebook SDK… please click "Connect with Facebook" again in 2 seconds.', 'warn');
+    ensureFbSdkLoaded(appId).then(() => {
+      toast('Facebook SDK ready — click Connect with Facebook now.');
+    }).catch(e => toast(e.message, 'err'));
+    return;
+  }
 
   let phoneNumberId = '';
   let wabaId = '';
