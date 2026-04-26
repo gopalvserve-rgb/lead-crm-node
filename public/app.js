@@ -3786,6 +3786,9 @@ async function adminFb() {
       h('button', { class: 'btn ghost', onclick: connectFacebookServerFlow }, '🔁 Re-login (different account)')
     );
     pagesToolbar.appendChild(
+      h('button', { class: 'btn ghost', onclick: openFbDebugModal, title: 'Show what Facebook is actually returning for this connection' }, '🔍 Debug')
+    );
+    pagesToolbar.appendChild(
       h('button', { class: 'btn ghost', onclick: async () => {
         if (!await confirmDialog('Disconnect Facebook? This will unsubscribe all monitored pages.')) return;
         try { await api('api_fb_disconnect'); toast('Disconnected'); showAdminTab('fb'); }
@@ -5160,6 +5163,83 @@ async function connectFacebookServerFlow() {
     location.href = auth_url;
   } catch (e) {
     toast(e.message || String(e), 'err');
+  }
+}
+
+/**
+ * Show a diagnostic of what Facebook is returning for the current connection.
+ * Used when the user connects via Embedded Login but no pages appear — we
+ * surface every probe (me, permissions, accounts, businesses) so it's clear
+ * which tier is failing and why.
+ */
+async function openFbDebugModal() {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🔍 Facebook connection debug'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const content = h('div', {}, h('p', { class: 'muted' }, 'Probing Facebook…'));
+  body.appendChild(content);
+  m.appendChild(body);
+  document.body.appendChild(m);
+
+  try {
+    const r = await api('api_fb_debug');
+    content.innerHTML = '';
+    if (!r.connected) {
+      content.appendChild(h('p', { class: 'muted' }, r.message || 'Not connected.'));
+      return;
+    }
+    // Summary
+    const liveCount = r.live_fetch?.pages_count || 0;
+    content.appendChild(h('div', { class: 'card' },
+      h('h4', { style: { marginTop: 0 } }, 'Summary'),
+      h('p', {}, h('b', {}, 'Live page count: '), liveCount,
+        liveCount === 0 ? h('span', { class: 'muted' }, ' — Facebook is not returning any pages for this connection. See probe details below.') : null
+      )
+    ));
+    // Probe details
+    const renderObj = (obj) => h('pre', { style: { background: '#0f172a', color: '#e2e8f0', padding: '.75rem', borderRadius: '6px', overflowX: 'auto', fontSize: '.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
+      JSON.stringify(obj, null, 2));
+    const probeKeys = Object.keys(r.probes || {});
+    const probesCard = h('div', { class: 'card' });
+    probesCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Live probes'));
+    probeKeys.forEach(k => {
+      probesCard.appendChild(h('div', { style: { marginBottom: '.75rem' } },
+        h('b', {}, k),
+        renderObj(r.probes[k])
+      ));
+    });
+    content.appendChild(probesCard);
+    // Last connect tiers
+    if (r.last_diag) {
+      content.appendChild(h('div', { class: 'card' },
+        h('h4', { style: { marginTop: 0 } }, 'Last connect attempt — tier results'),
+        renderObj(r.last_diag)
+      ));
+    }
+    // Live fetch
+    if (r.live_fetch) {
+      content.appendChild(h('div', { class: 'card' },
+        h('h4', { style: { marginTop: 0 } }, 'Live fetch (just ran)'),
+        renderObj(r.live_fetch.diag)
+      ));
+    }
+    if (liveCount === 0) {
+      content.appendChild(h('div', { class: 'error-box' },
+        'No pages came back. Possible fixes:',
+        h('ul', {},
+          h('li', {}, 'Re-run "Connect with Facebook" and during the dialog, make sure you tick the page(s) you want — the new "Login for Business" flow asks you to select assets explicitly.'),
+          h('li', {}, 'Verify the connected user has Page admin role (or Business admin if the page lives in a Business Manager).'),
+          h('li', {}, 'If your app is still in Development, only admins/testers/developers of the app can grant page access. Either submit for review or add yourself as a tester in Meta App Dashboard → App Roles.'),
+          h('li', {}, 'As a workaround: use "Add a page manually" below — paste a Page Access Token from Graph API Explorer and you skip the OAuth flow entirely.')
+        )
+      ));
+    }
+  } catch (e) {
+    content.innerHTML = '';
+    content.appendChild(h('div', { class: 'error-box' }, 'Debug failed: ' + e.message));
   }
 }
 

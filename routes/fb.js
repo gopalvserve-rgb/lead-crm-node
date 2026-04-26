@@ -67,24 +67,46 @@ async function _gpaged(url) {
  * Returns a deduped list keyed by page id, each with id, name, access_token,
  * category.
  */
-async function _fetchAllPages(userToken) {
+async function _fetchAllPages(userToken, diag) {
   const seen = new Map();   // page_id → page object
   const fields = 'id,name,access_token,category';
+  // Diagnostics container. The caller can pass {} and inspect after the call
+  // to see exactly which tiers returned data and which failed.
+  const _diag = diag || { tiers: {} };
 
   // Tier 1 — direct accounts
   try {
     const direct = await _gpaged(`${GRAPH}/me/accounts?fields=${fields}&limit=100&access_token=${userToken}`);
     for (const p of direct) seen.set(String(p.id), p);
+    _diag.tiers['me/accounts'] = { ok: true, count: direct.length };
   } catch (e) {
     console.warn('[fb] /me/accounts failed:', e.message);
+    _diag.tiers['me/accounts'] = { ok: false, error: e.message };
+  }
+
+  // Tier 1b — Embedded Login / Login for Business returns a token whose
+  // /me/accounts may be empty BUT the user has selected specific assets
+  // visible via /me?fields=accounts{...} (subfield form). Try this if Tier 1
+  // came back empty.
+  if (seen.size === 0) {
+    try {
+      const sub = await _gget(`${GRAPH}/me?fields=accounts{${fields}}&access_token=${userToken}`);
+      const arr = (sub && sub.accounts && sub.accounts.data) || [];
+      for (const p of arr) seen.set(String(p.id), p);
+      _diag.tiers['me?fields=accounts{...}'] = { ok: true, count: arr.length };
+    } catch (e) {
+      _diag.tiers['me?fields=accounts{...}'] = { ok: false, error: e.message };
+    }
   }
 
   // Tier 2 — Business Manager
   let businesses = [];
   try {
     businesses = await _gpaged(`${GRAPH}/me/businesses?fields=id,name&limit=50&access_token=${userToken}`);
+    _diag.tiers['me/businesses'] = { ok: true, count: businesses.length };
   } catch (e) {
     console.warn('[fb] /me/businesses failed:', e.message);
+    _diag.tiers['me/businesses'] = { ok: false, error: e.message };
   }
   for (const biz of businesses) {
     for (const which of ['owned_pages', 'client_pages']) {
@@ -101,12 +123,15 @@ async function _fetchAllPages(userToken) {
           }
           if (!seen.has(String(p.id))) seen.set(String(p.id), p);
         }
+        _diag.tiers[`${biz.id}/${which}`] = { ok: true, count: pgs.length };
       } catch (e) {
         console.warn(`[fb] /${biz.id}/${which} failed:`, e.message);
+        _diag.tiers[`${biz.id}/${which}`] = { ok: false, error: e.message };
       }
     }
   }
 
+  _diag.total = seen.size;
   return Array.from(seen.values());
 }
 
@@ -484,7 +509,12 @@ async function expressOAuthCallback(req, res) {
 
     // Long-lived token + fetch all pages (multi-tier — direct + Business Manager)
     const longToken = await _longLived(shortToken);
-    const pages = await _fetchAllPages(longToken);
+    const diag = { tiers: {} };
+    const pages = await _fetchAllPages(longToken, diag);
+    // Persist the last connect diagnostic so admin can hit api_fb_debug to
+    // see exactly what FB returned (or didn't) — invaluable when "connected
+    // but no pages" happens with the new Login for Business flow.
+    try { await db.setConfig('META_LAST_DIAG', JSON.stringify(diag)); } catch (_) {}
 
     const existing = await _readPagesList();
     const merged = pages.map(p => {
@@ -509,11 +539,53 @@ async function expressOAuthCallback(req, res) {
   }
 }
 
+/**
+ * Debug — pulls the current persisted user token, makes the same Graph API
+ * calls _fetchAllPages would, and returns a structured diagnostic. Lets the
+ * admin see why "Connected but no pages" — the most common cause is that
+ * the new "Login for Business" flow returns a granular token that doesn't
+ * surface assets via the legacy endpoints.
+ */
+async function api_fb_debug(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const userToken = await db.getConfig('META_USER_TOKEN', '');
+  const lastDiag = await db.getConfig('META_LAST_DIAG', '');
+  if (!userToken) {
+    return {
+      connected: false,
+      message: 'No saved Facebook user token. Click "Connect with Facebook" first.',
+      last_diag: lastDiag ? safeJson(lastDiag) : null
+    };
+  }
+  // Run the live probes
+  const out = {
+    connected: true,
+    last_diag: lastDiag ? safeJson(lastDiag) : null,
+    probes: {}
+  };
+  async function probe(name, url) {
+    try { out.probes[name] = await _gget(url); }
+    catch (e) { out.probes[name] = { error: e.message }; }
+  }
+  await probe('me',           `${GRAPH}/me?fields=id,name&access_token=${userToken}`);
+  await probe('me/permissions', `${GRAPH}/me/permissions?access_token=${userToken}`);
+  await probe('me/accounts',  `${GRAPH}/me/accounts?fields=id,name,category&limit=100&access_token=${userToken}`);
+  await probe('me/businesses', `${GRAPH}/me/businesses?fields=id,name&limit=50&access_token=${userToken}`);
+  await probe('me?fields=accounts{...}', `${GRAPH}/me?fields=accounts{id,name,category}&access_token=${userToken}`);
+  // Re-run the full fetch with fresh diagnostics
+  const liveDiag = { tiers: {} };
+  const pages = await _fetchAllPages(userToken, liveDiag);
+  out.live_fetch = { pages_count: pages.length, diag: liveDiag };
+  return out;
+}
+function safeJson(s) { try { return JSON.parse(s); } catch (_) { return { raw: s }; } }
+
 module.exports = {
   api_fb_connect, api_fb_disconnect, api_fb_status,
   api_fb_settings_get, api_fb_settings_set,
   api_fb_pages_list, api_fb_pages_refetch, api_fb_pages_toggle, api_fb_pages_addManual,
-  api_fb_oauth_url,
+  api_fb_oauth_url, api_fb_debug,
   // exported for server.js to mount as a plain route
   expressOAuthCallback,
   // exported for use inside webhooks.js
