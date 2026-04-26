@@ -24,16 +24,47 @@ const GRAPH = 'https://graph.facebook.com/v19.0';
 // ---------- shared helpers ----------------------------------------
 
 async function _cfg() {
-  const [wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn, autoLeadSource] = await Promise.all([
+  const [wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn, autoLeadSource, defaultCC] = await Promise.all([
     db.getConfig('WHATSAPP_BUSINESS_ACCOUNT_ID', process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || ''),
     db.getConfig('WHATSAPP_ACCESS_TOKEN',        process.env.WHATSAPP_ACCESS_TOKEN || ''),
     db.getConfig('WHATSAPP_PHONE_NUMBER_ID',     process.env.WHATSAPP_PHONE_NUMBER_ID || ''),
     db.getConfig('WB_DEFAULT_STATUS_ID', ''),
     db.getConfig('WB_DEFAULT_USER_ID', ''),
     db.getConfig('WB_AUTOLEAD_ON', '1'),
-    db.getConfig('WB_AUTOLEAD_SOURCE', 'WhatsApp')
+    db.getConfig('WB_AUTOLEAD_SOURCE', 'WhatsApp'),
+    db.getConfig('WB_DEFAULT_COUNTRY_CODE', '91')   // India default
   ]);
-  return { wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn: String(autoLeadOn) === '1', autoLeadSource };
+  return { wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn: String(autoLeadOn) === '1', autoLeadSource, defaultCC: (defaultCC || '91').replace(/\D/g, '') };
+}
+
+/**
+ * Normalise a phone number to E.164-without-plus, the format Meta requires.
+ *
+ * Inputs we typically see:
+ *   "9876543210"            (10-digit Indian mobile, no country code)
+ *   "+91 9876 543 210"      (formatted with code)
+ *   "91-9876543210"         (with code, no plus)
+ *   "919876543210"          (already correct)
+ *   "00919876543210"        (international 00 prefix)
+ *
+ * Strategy:
+ *   1. Strip every non-digit.
+ *   2. Drop a leading "00" (international long-distance prefix).
+ *   3. If the result is exactly 10 digits AND starts with a valid Indian
+ *      mobile-series digit (6/7/8/9), prepend the configured country code
+ *      (default "91" for India) — this is the #1 cause of "sent but never
+ *      delivered" because Meta silently drops sends to invalid numbers.
+ *   4. Otherwise leave alone (assume the user knows what they're doing).
+ */
+function _normalizePhone(raw, defaultCC) {
+  const cc = String(defaultCC || '91').replace(/\D/g, '') || '91';
+  let d = String(raw || '').replace(/\D/g, '');
+  if (d.startsWith('00')) d = d.slice(2);
+  // 10-digit Indian mobile: prepend country code
+  if (d.length === 10 && /^[6-9]/.test(d)) d = cc + d;
+  // 11-digit number that starts with 0 (e.g. "09876543210" — strip the trunk)
+  else if (d.length === 11 && d.startsWith('0') && /^0[6-9]/.test(d)) d = cc + d.slice(1);
+  return d;
 }
 
 async function _logActivity(payload) {
@@ -99,6 +130,7 @@ async function api_wb_settings_get(token) {
     autolead_source: cfg.autoLeadSource,
     default_user_id: cfg.defaultUser,
     default_status_id: cfg.defaultStatus,
+    default_country_code: cfg.defaultCC || '91',
     // Embedded Signup config
     fb_app_id: fbAppId,
     fb_app_secret_set: fbAppSecretSet,
@@ -118,6 +150,7 @@ async function api_wb_settings_save(token, payload) {
   if ('autolead_source' in p)     await db.setConfig('WB_AUTOLEAD_SOURCE', String(p.autolead_source || 'WhatsApp'));
   if ('default_user_id' in p)     await db.setConfig('WB_DEFAULT_USER_ID', String(p.default_user_id || ''));
   if ('default_status_id' in p)   await db.setConfig('WB_DEFAULT_STATUS_ID', String(p.default_status_id || ''));
+  if ('default_country_code' in p) await db.setConfig('WB_DEFAULT_COUNTRY_CODE', String(p.default_country_code || '91').replace(/\D/g, '') || '91');
   // Embedded Signup config — set once by the admin
   if ('fb_app_id' in p)        await db.setConfig('WB_FB_APP_ID', String(p.fb_app_id || '').trim());
   if ('fb_app_secret' in p && p.fb_app_secret) await db.setConfig('WB_FB_APP_SECRET', String(p.fb_app_secret).trim());
@@ -271,6 +304,32 @@ async function api_wb_phones_list(token) {
   return rows;
 }
 
+/**
+ * Diagnostic — given a raw phone string, return what we'd actually send
+ * to Meta and a quick sanity check on whether it looks deliverable.
+ * Catches the most common "single tick but not delivered" failure mode:
+ * 10-digit Indian number stored without country code.
+ */
+async function api_wb_phone_check(token, raw) {
+  await authUser(token);
+  const cfg = await _cfg();
+  const original = String(raw || '');
+  const stripped = original.replace(/\D/g, '');
+  const normalised = _normalizePhone(original, cfg.defaultCC);
+  const issues = [];
+  if (!normalised) issues.push('Empty after normalisation');
+  if (normalised && normalised.length < 10) issues.push('Too short (' + normalised.length + ' digits) — international numbers are 11-15 digits');
+  if (normalised && normalised.length > 15) issues.push('Too long (' + normalised.length + ' digits)');
+  if (stripped.length === 10 && /^[6-9]/.test(stripped) && cfg.defaultCC === '91') {
+    issues.push('Was 10 digits — auto-prepended ' + cfg.defaultCC + ' as Indian country code');
+  }
+  return {
+    original, normalised, country_code_used: cfg.defaultCC,
+    looks_ok: issues.length === 0 || issues.every(i => i.startsWith('Was ')),
+    issues
+  };
+}
+
 async function api_wb_phones_set_current(token, phoneNumberId) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
@@ -368,7 +427,7 @@ async function _sendTemplate({ to, templateName, language, variables, imageUrl, 
   }
   const body = {
     messaging_product: 'whatsapp',
-    to: String(to).replace(/\D/g, ''),
+    to: _normalizePhone(to, c.defaultCC),
     type: 'template',
     template: {
       name: templateName,
@@ -412,7 +471,7 @@ async function _sendText({ to, text, replyTo, leadId, userId }, cfg) {
   const c = cfg || await _cfg();
   const body = {
     messaging_product: 'whatsapp',
-    to: String(to).replace(/\D/g, ''),
+    to: _normalizePhone(to, c.defaultCC),
     type: 'text',
     text: { body: String(text || '') }
   };
@@ -434,7 +493,7 @@ async function _sendMedia({ to, mediaType, mediaUrl, caption, leadId, userId }, 
   const c = cfg || await _cfg();
   const body = {
     messaging_product: 'whatsapp',
-    to: String(to).replace(/\D/g, ''),
+    to: _normalizePhone(to, c.defaultCC),
     type: mediaType,
     [mediaType]: { link: mediaUrl, caption: caption || undefined }
   };
@@ -1038,7 +1097,7 @@ module.exports = {
   // Settings
   api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
   api_wb_emb_signin, api_wb_register_phone,
-  api_wb_phones_list, api_wb_phones_set_current,
+  api_wb_phones_list, api_wb_phones_set_current, api_wb_phone_check,
   // Templates
   api_wb_templates_sync, api_wb_templates_list,
   // Chat

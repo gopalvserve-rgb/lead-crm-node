@@ -3107,7 +3107,8 @@ async function wbConnect() {
         autolead_on: !!fd.get('autolead_on'),
         autolead_source: fd.get('autolead_source'),
         default_user_id: fd.get('default_user_id'),
-        default_status_id: fd.get('default_status_id')
+        default_status_id: fd.get('default_status_id'),
+        default_country_code: fd.get('default_country_code') || '91'
       });
       toast('Settings saved'); showWbTab('connect');
     } catch (e) { toast(e.message, 'err'); }
@@ -3135,6 +3136,7 @@ async function wbConnect() {
       ' Enabled')
   ));
   form.appendChild(field('autolead_source', 'Lead source (when auto-creating)', s.autolead_source || 'WhatsApp'));
+  form.appendChild(field('default_country_code', 'Default country code (for 10-digit numbers)', s.default_country_code || '91'));
   // Lead defaults pickers
   const users = CRM.cache.users || [];
   const statuses = CRM.cache.statuses || [];
@@ -3599,6 +3601,28 @@ async function openInitiateChatModal(lead) {
     h('h3', {}, 'Initiate Chat'),
     h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
   ));
+  // Show the actual phone number we'll send to (E.164) and any
+  // normalisation warning. Catches the most common "single tick but
+  // never delivered" case where the lead's stored phone is just
+  // 10 digits without a country code.
+  const phoneInfoBox = h('div', { class: 'muted', style: { padding: '.35rem .65rem', background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: '6px', marginBottom: '.75rem', fontSize: '.82rem' } }, 'Resolving phone…');
+  body.appendChild(phoneInfoBox);
+  api('api_wb_phone_check', phone).then(r => {
+    phoneInfoBox.style.background = r.looks_ok ? '#dcfce7' : '#fef2f2';
+    phoneInfoBox.style.borderColor = r.looks_ok ? '#22c55e' : '#ef4444';
+    phoneInfoBox.innerHTML = '';
+    phoneInfoBox.appendChild(h('span', {}, '📞 Will send to: ',
+      h('b', { style: { fontFamily: 'monospace' } }, '+' + r.normalised),
+      r.original && r.original.replace(/\D/g, '') !== r.normalised
+        ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, '(was: ' + r.original + ')')
+        : null
+    ));
+    if (r.issues && r.issues.length) {
+      r.issues.forEach(i => {
+        phoneInfoBox.appendChild(h('div', { style: { fontSize: '.78rem', marginTop: '.2rem' } }, '• ' + i));
+      });
+    }
+  }).catch(() => { phoneInfoBox.style.display = 'none'; });
 
   // Template picker
   const tplSel = h('select', {},
