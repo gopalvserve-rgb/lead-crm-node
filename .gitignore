@@ -4,6 +4,9 @@ node_modules/
 *.log
 .DS_Store
 service-account.json
+# Firebase Admin SDK service account keys — never commit
+*firebase-adminsdk*.json
+firebase-service-account*.json
 dist/
 .vscode/
 .idea/
