@@ -275,6 +275,7 @@ const NAV = [
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
   { id: 'attendance', label: 'Attendance',   icon: '🕒' },
   { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
@@ -2850,6 +2851,548 @@ async function ensureChartJs() {
     } catch (_) { /* non-fatal: charts still render, just without labels */ }
   }
 }
+/* ============================================================
+   WhatsBot module — Connect / Templates / Bots / Campaigns / Chat / Logs
+   ============================================================ */
+VIEWS.whatsbot = async (view) => {
+  view.innerHTML = '';
+  const tabs = [
+    { id: 'connect',   label: '🔗 Connect Account' },
+    { id: 'templates', label: '📋 Templates' },
+    { id: 'msgbots',   label: '💬 Message Bot' },
+    { id: 'tplbots',   label: '🤖 Template Bot' },
+    { id: 'campaigns', label: '📣 Campaigns' },
+    { id: 'chat',      label: '💭 Chat' },
+    { id: 'activity',  label: '📑 Activity Log' }
+  ];
+  const nav = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab', 'data-wbtab': t.id, onclick: () => showWbTab(t.id) }, t.label))
+  );
+  view.appendChild(nav);
+  view.appendChild(h('div', { id: 'wb-body' }));
+  const startTab = (location.hash.match(/whatsbot\/([a-z]+)/i) || [])[1] || 'connect';
+  showWbTab(startTab);
+};
+
+async function showWbTab(id) {
+  $$('.subtab').forEach(b => b.classList.toggle('active', b.dataset.wbtab === id));
+  const body = $('#wb-body');
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    if (id === 'connect')   body.replaceChildren(await wbConnect());
+    if (id === 'templates') body.replaceChildren(await wbTemplates());
+    if (id === 'msgbots')   body.replaceChildren(await wbMessageBots());
+    if (id === 'tplbots')   body.replaceChildren(await wbTemplateBots());
+    if (id === 'campaigns') body.replaceChildren(await wbCampaigns());
+    if (id === 'chat')      body.replaceChildren(await wbChat());
+    if (id === 'activity')  body.replaceChildren(await wbActivity());
+    location.hash = '#/whatsbot/' + id;
+  } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+// ---------- Connect Account ----------
+async function wbConnect() {
+  const s = await api('api_wb_settings_get');
+  const wrap = h('div', {});
+  const card = h('div', { class: 'card' });
+  card.appendChild(h('h3', {}, '🔗 Connect WhatsApp Business'));
+  const form = h('form', { class: 'form-grid', onsubmit: async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    try {
+      await api('api_wb_settings_save', {
+        waba_id: fd.get('waba_id'),
+        access_token: fd.get('access_token') || undefined,
+        phone_number_id: fd.get('phone_number_id'),
+        verify_token: fd.get('verify_token'),
+        autolead_on: !!fd.get('autolead_on'),
+        autolead_source: fd.get('autolead_source'),
+        default_user_id: fd.get('default_user_id'),
+        default_status_id: fd.get('default_status_id')
+      });
+      toast('Settings saved'); showWbTab('connect');
+    } catch (e) { toast(e.message, 'err'); }
+  }});
+  form.appendChild(field('waba_id', 'WhatsApp Business Account ID *', s.waba_id, { required: true }));
+  form.appendChild(field('phone_number_id', 'Phone Number ID *', s.phone_number_id, { required: true }));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Access Token *',
+      s.access_token_present ? h('span', { class: 'muted', style: { fontSize: '.75rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null),
+    h('input', { name: 'access_token', type: 'password', autocomplete: 'new-password',
+      placeholder: s.access_token_present ? '••••••••••••••' : 'paste from Meta App → System Users → Generate Token' })
+  ));
+  form.appendChild(field('verify_token', 'Webhook Verify Token', s.verify_token));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Webhook callback URL (paste this into Meta → WhatsApp → Webhooks)'),
+    h('input', { value: s.webhook_url, readonly: 'readonly',
+      style: { background: '#f1f5f9', fontFamily: 'monospace' },
+      onclick: ev => ev.target.select() })
+  ));
+  form.appendChild(h('h4', { style: { gridColumn: '1 / -1', marginTop: '1rem' } }, 'Auto-lead from inbound message'));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Convert new messages to leads'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'autolead_on', checked: s.autolead_on ? 'checked' : null }),
+      ' Enabled')
+  ));
+  form.appendChild(field('autolead_source', 'Lead source (when auto-creating)', s.autolead_source || 'WhatsApp'));
+  // Lead defaults pickers
+  const users = CRM.cache.users || [];
+  const statuses = CRM.cache.statuses || [];
+  form.appendChild(selectField('default_user_id', 'Default assignee for new WhatsApp leads', s.default_user_id,
+    [{ value: '', label: '— Use assignment rules —' }, ...users.map(u => ({ value: u.id, label: u.name }))]));
+  form.appendChild(selectField('default_status_id', 'Default status for new WhatsApp leads', s.default_status_id,
+    [{ value: '', label: '— First status —' }, ...statuses.map(st => ({ value: st.id, label: st.name }))]));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save settings'),
+    h('button', { type: 'button', class: 'btn', style: { marginLeft: '.5rem' }, onclick: async () => {
+      try {
+        const r = await api('api_wb_connect_verify');
+        if (r.ok) toast(`Connected! ${r.display_phone_number} · Quality ${r.quality_rating || '—'} · ${r.status || ''}`);
+        else toast(r.error || 'Verify failed', 'err');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '✅ Verify connection'),
+    s.access_token_present ? h('button', { type: 'button', class: 'btn ghost', style: { marginLeft: '.5rem' }, onclick: async () => {
+      if (!await confirmDialog('Disconnect WhatsApp? Stored tokens will be cleared.')) return;
+      try { await api('api_wb_disconnect'); toast('Disconnected'); showWbTab('connect'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, '✕ Disconnect') : null
+  ));
+  card.appendChild(form);
+  wrap.appendChild(card);
+  return wrap;
+}
+
+// ---------- Templates ----------
+async function wbTemplates() {
+  const wrap = h('div', {});
+  const list = await api('api_wb_templates_list').catch(() => []);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '📋 Templates (' + list.length + ')'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      try { const r = await api('api_wb_templates_sync'); toast('Synced ' + r.count + ' templates'); showWbTab('templates'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, '🔄 Sync from Meta')
+  ));
+  if (!list.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No templates yet. Click "Sync from Meta" to pull your approved templates.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Lang'), h('th', {}, 'Category'),
+      h('th', {}, 'Status'), h('th', {}, 'Body params'), h('th', {}, 'Body preview'))),
+    h('tbody', {}, ...list.map(t => h('tr', {},
+      h('td', {}, h('code', {}, t.name)),
+      h('td', {}, t.language),
+      h('td', {}, t.category || '—'),
+      h('td', {},
+        h('span', { class: t.status === 'APPROVED' ? 'tag' : 'tag err',
+          style: t.status === 'APPROVED' ? { background: '#10b981', color: '#fff' } : null
+        }, t.status)
+      ),
+      h('td', {}, t.body_params),
+      h('td', { style: { maxWidth: '420px' }, title: t.body_text || '' }, (t.body_text || '').slice(0, 100) + ((t.body_text || '').length > 100 ? '…' : ''))
+    )))
+  )));
+  return wrap;
+}
+
+// ---------- Message Bot ----------
+async function wbMessageBots() {
+  const wrap = h('div', {});
+  const bots = await api('api_wb_message_bots_list').catch(() => []);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '💬 Message Bots'),
+    h('button', { class: 'btn primary', onclick: () => openMsgBotModal() }, '+ New bot')
+  ));
+  if (!bots.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No message bots yet. Create one to auto-reply when a contact sends a keyword.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Trigger'), h('th', {}, 'Match'),
+      h('th', {}, 'Reply'), h('th', {}, 'Active'), h('th', {}, ''))),
+    h('tbody', {}, ...bots.map(b => h('tr', {},
+      h('td', {}, b.name),
+      h('td', {}, h('code', {}, b.trigger_text)),
+      h('td', {}, b.reply_type),
+      h('td', { style: { maxWidth: '320px' }, title: b.reply_text }, String(b.reply_text || '').slice(0, 80) + (String(b.reply_text || '').length > 80 ? '…' : '')),
+      h('td', {}, Number(b.is_active) === 1 ? '✓' : '—'),
+      h('td', {},
+        h('button', { class: 'btn sm', onclick: () => openMsgBotModal(b) }, '✎'),
+        h('button', { class: 'btn sm ghost danger', style: { marginLeft: '.25rem' }, onclick: async () => {
+          if (!await confirmDialog('Delete bot "' + b.name + '"?')) return;
+          await api('api_wb_message_bots_delete', b.id); toast('Deleted'); showWbTab('msgbots');
+        } }, '🗑️')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+function openMsgBotModal(bot) {
+  const b = bot || {};
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, b.id ? 'Edit message bot' : 'New message bot'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Bot Name *', b.name, { required: true }));
+  form.appendChild(selectField('relation_type', 'Relation Type', b.relation_type || 'leads', [{ value: 'leads', label: 'Leads' }]));
+  form.appendChild(h('div', { class: 'f-row full' }, h('label', {}, 'Reply text *'),
+    h('textarea', { name: 'reply_text', rows: 5, required: true }, b.reply_text || '')));
+  form.appendChild(selectField('reply_type', 'Reply type', b.reply_type || 'contains', [
+    { value: 'contains', label: 'Reply bot: When message contains' },
+    { value: 'exact', label: 'Reply bot: On exact match' }
+  ]));
+  form.appendChild(field('trigger_text', 'Trigger keywords (comma-separated) *', b.trigger_text, { required: true }));
+  form.appendChild(field('header', 'Header (optional)', b.header));
+  form.appendChild(field('footer', 'Footer (optional)', b.footer));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Active'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'is_active', checked: (b.id && Number(b.is_active) === 0) ? null : 'checked' }),
+      ' Enabled')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const fd = new FormData(form);
+      try {
+        await api('api_wb_message_bots_save', {
+          id: b.id || undefined,
+          name: fd.get('name'), relation_type: fd.get('relation_type'),
+          reply_text: fd.get('reply_text'), reply_type: fd.get('reply_type'),
+          trigger_text: fd.get('trigger_text'),
+          header: fd.get('header'), footer: fd.get('footer'),
+          is_active: fd.get('is_active') ? 1 : 0
+        });
+        toast('Saved'); m.remove(); showWbTab('msgbots');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save bot')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+
+// ---------- Template Bot ----------
+async function wbTemplateBots() {
+  const wrap = h('div', {});
+  const [bots, templates] = await Promise.all([api('api_wb_template_bots_list'), api('api_wb_templates_list')]);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '🤖 Template Bots'),
+    h('button', { class: 'btn primary', onclick: () => openTplBotModal(null, templates) }, '+ New bot')
+  ));
+  if (!bots.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No template bots. Create one to auto-reply with an approved template.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Trigger'), h('th', {}, 'Template'), h('th', {}, 'Active'), h('th', {}, ''))),
+    h('tbody', {}, ...bots.map(b => h('tr', {},
+      h('td', {}, b.name),
+      h('td', {}, h('code', {}, b.trigger_text)),
+      h('td', {}, h('code', {}, b.template_name)),
+      h('td', {}, Number(b.is_active) === 1 ? '✓' : '—'),
+      h('td', {},
+        h('button', { class: 'btn sm', onclick: () => openTplBotModal(b, templates) }, '✎'),
+        h('button', { class: 'btn sm ghost danger', style: { marginLeft: '.25rem' }, onclick: async () => {
+          if (!await confirmDialog('Delete bot "' + b.name + '"?')) return;
+          await api('api_wb_template_bots_delete', b.id); toast('Deleted'); showWbTab('tplbots');
+        } }, '🗑️')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+function openTplBotModal(bot, templates) {
+  const b = bot || {};
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, b.id ? 'Edit template bot' : 'New template bot'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Bot Name *', b.name, { required: true }));
+  form.appendChild(selectField('relation_type', 'Relation Type', b.relation_type || 'leads', [{ value: 'leads', label: 'Leads' }]));
+  // Template picker — only approved
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  const tplOpts = approved.map(t => ({ value: t.name + '||' + t.language, label: t.name + ' (' + t.language + ')' }));
+  const initialTpl = b.template_name ? (b.template_name + '||' + (b.template_language || 'en_US')) : '';
+  form.appendChild(selectField('template_combo', 'Template *', initialTpl,
+    [{ value: '', label: '— pick a template —' }, ...tplOpts], { full: true }));
+  // Variables — generate inputs based on selected template's body_params
+  const varsContainer = h('div', { class: 'f-row full', id: 'wb-var-container' });
+  form.appendChild(varsContainer);
+  function renderVars(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    varsContainer.innerHTML = '';
+    if (!t || !t.body_params) return;
+    varsContainer.appendChild(h('label', {}, 'Variables (use @{name}, @{phone}, etc.)'));
+    const existing = (b.variables_json && (typeof b.variables_json === 'string' ? safeJson_(b.variables_json) : b.variables_json)) || [];
+    for (let i = 0; i < t.body_params; i++) {
+      varsContainer.appendChild(h('input', {
+        name: 'var_' + i,
+        placeholder: 'V' + (i + 1),
+        value: existing[i] || ''
+      }));
+    }
+  }
+  form.querySelector('[name="template_combo"]')?.addEventListener('change', ev => renderVars(ev.target.value));
+  setTimeout(() => renderVars(initialTpl), 50);
+  form.appendChild(selectField('reply_type', 'Reply type', b.reply_type || 'exact', [
+    { value: 'exact', label: 'Reply bot: On exact match' },
+    { value: 'contains', label: 'Reply bot: When message contains' }
+  ]));
+  form.appendChild(field('trigger_text', 'Trigger keywords (comma-separated) *', b.trigger_text, { required: true }));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Active'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'is_active', checked: (b.id && Number(b.is_active) === 0) ? null : 'checked' }),
+      ' Enabled')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const combo = form.querySelector('[name="template_combo"]').value;
+      const [name, lang] = combo.split('||');
+      if (!name) { toast('Pick a template', 'err'); return; }
+      const variables = [];
+      [...form.querySelectorAll('input[name^="var_"]')].forEach(i => variables.push(i.value));
+      try {
+        await api('api_wb_template_bots_save', {
+          id: b.id || undefined,
+          name: form.name.value, relation_type: form.relation_type.value,
+          template_name: name, template_language: lang || 'en_US',
+          variables, reply_type: form.reply_type.value,
+          trigger_text: form.trigger_text.value,
+          is_active: form.is_active.checked ? 1 : 0
+        });
+        toast('Saved'); m.remove(); showWbTab('tplbots');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save bot')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+function safeJson_(s) { try { return JSON.parse(s); } catch (_) { return []; } }
+
+// ---------- Campaigns ----------
+async function wbCampaigns() {
+  const wrap = h('div', {});
+  const [campaigns, templates] = await Promise.all([api('api_wb_campaigns_list'), api('api_wb_templates_list')]);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '📣 Campaigns'),
+    h('button', { class: 'btn primary', onclick: () => openCampaignModal(templates) }, '+ Send new campaign')
+  ));
+  if (!campaigns.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No campaigns yet.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Template'), h('th', {}, 'Recipients'),
+      h('th', {}, 'Sent'), h('th', {}, 'Delivered'), h('th', {}, 'Read'), h('th', {}, 'Failed'),
+      h('th', {}, 'Status'), h('th', {}, 'Created'), h('th', {}, ''))),
+    h('tbody', {}, ...campaigns.map(c => h('tr', {},
+      h('td', {}, c.name),
+      h('td', {}, h('code', {}, c.template_name)),
+      h('td', {}, c.recipients_total),
+      h('td', {}, c.recipients_sent),
+      h('td', {}, c.recipients_delivered),
+      h('td', {}, c.recipients_read),
+      h('td', {}, c.recipients_failed),
+      h('td', {}, h('span', { class: 'tag', style: { background: c.status === 'completed' ? '#10b981' : c.status === 'sending' ? '#6366f1' : c.status === 'failed' ? '#ef4444' : '#64748b', color: '#fff' } }, c.status)),
+      h('td', { class: 'muted' }, fmtDate(c.created_at, 'relative')),
+      h('td', {},
+        c.status === 'draft' || c.status === 'paused'
+          ? h('button', { class: 'btn sm primary', onclick: async () => {
+              try { await api('api_wb_campaigns_send_now', c.id); toast('Sending…'); showWbTab('campaigns'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '▶ Send')
+          : c.status === 'sending'
+          ? h('button', { class: 'btn sm ghost', onclick: async () => {
+              try { await api('api_wb_campaigns_pause', c.id); toast('Paused'); showWbTab('campaigns'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '⏸ Pause')
+          : null
+      )
+    )))
+  )));
+  return wrap;
+}
+
+function openCampaignModal(templates) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '📣 Send new campaign'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  const statuses = CRM.cache.statuses || [];
+  const sources = CRM.cache.sources || [];
+  const users = CRM.cache.users || [];
+  const tplOpts = approved.map(t => ({ value: t.name + '||' + t.language, label: t.name + ' (' + t.language + ')' }));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Campaign name *', '', { required: true }));
+  form.appendChild(selectField('template_combo', 'Template *', '',
+    [{ value: '', label: '— pick a template —' }, ...tplOpts]));
+  // Filter pickers
+  form.appendChild(selectField('status_id', 'Filter — status', '',
+    [{ value: '', label: 'Any status' }, ...statuses.map(s => ({ value: s.id, label: s.name }))]));
+  form.appendChild(selectField('source', 'Filter — source', '',
+    [{ value: '', label: 'Any source' }, ...sources.map(s => ({ value: s.name, label: s.name }))]));
+  form.appendChild(selectField('assigned_to', 'Filter — assignee', '',
+    [{ value: '', label: 'Any' }, ...users.map(u => ({ value: u.id, label: u.name }))]));
+  form.appendChild(field('tag', 'Filter — tag', ''));
+  // Variables block
+  const varsBox = h('div', { class: 'f-row full', id: 'cm-vars' });
+  form.appendChild(varsBox);
+  function renderVars(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    varsBox.innerHTML = '';
+    if (!t) return;
+    varsBox.appendChild(h('label', {}, 'Variables — use @{name}, @{firstname}, @{phone}, @{email}, @{source} for merge fields'));
+    for (let i = 0; i < t.body_params; i++) {
+      varsBox.appendChild(h('input', { name: 'cv_' + i, placeholder: 'Variable ' + (i + 1) }));
+    }
+  }
+  form.querySelector('[name="template_combo"]')?.addEventListener('change', ev => renderVars(ev.target.value));
+  // Schedule
+  form.appendChild(field('scheduled_at', 'Scheduled send time (optional)', '', { type: 'datetime-local' }));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Send now'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'send_now', checked: 'checked' }),
+      ' Ignore schedule and send right away')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const combo = form.querySelector('[name="template_combo"]').value;
+      const [name, lang] = combo.split('||');
+      if (!name) { toast('Pick a template', 'err'); return; }
+      const variables = [];
+      [...form.querySelectorAll('input[name^="cv_"]')].forEach((i, idx) => variables.push({ name: 'V' + (idx + 1), value: i.value }));
+      const filter = {
+        status_id: form.status_id.value || undefined,
+        source: form.source.value || undefined,
+        assigned_to: form.assigned_to.value || undefined,
+        tag: form.tag.value || undefined
+      };
+      try {
+        const r = await api('api_wb_campaigns_create', {
+          name: form.name.value,
+          template_name: name, template_language: lang || 'en_US',
+          variables, filter,
+          scheduled_at: form.scheduled_at.value ? new Date(form.scheduled_at.value).toISOString() : null,
+          send_now: form.send_now.checked ? 1 : 0
+        });
+        toast(`Campaign created — ${r.recipients} recipients`);
+        m.remove();
+        showWbTab('campaigns');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Create campaign')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+
+// ---------- Chat ----------
+async function wbChat() {
+  const wrap = h('div', { class: 'wb-chat' });
+  const threads = await api('api_wb_chat_threads').catch(() => []);
+  const left = h('div', { class: 'wb-chat-list' });
+  const right = h('div', { class: 'wb-chat-thread' }, h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact'));
+  left.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '💭 Chats (' + threads.length + ')'));
+  if (!threads.length) {
+    left.appendChild(h('p', { class: 'muted' }, 'No conversations yet.'));
+  } else {
+    threads.forEach(t => {
+      left.appendChild(h('div', { class: 'wb-chat-row', onclick: () => openThread(t.phone) },
+        h('div', {}, h('b', {}, t.lead_name || t.phone), t.unread ? h('span', { class: 'wb-unread' }, t.unread) : null),
+        h('div', { class: 'muted', style: { fontSize: '.78rem' } }, t.phone),
+        h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t.last_message_type === 'text' ? t.last_message : ('[' + t.last_message_type + ']')),
+        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(t.last_at, 'relative'))
+      ));
+    });
+  }
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+
+  async function openThread(phone) {
+    right.innerHTML = '<div class="loading">Loading…</div>';
+    const msgs = await api('api_wb_chat_messages', phone).catch(() => []);
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head' }, h('b', {}, phone)));
+    const log = h('div', { class: 'wb-chat-log' });
+    msgs.forEach(msg => {
+      log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') },
+        h('div', { class: 'wb-msg-body' }, msg.body || '[' + (msg.message_type || '') + ']'),
+        h('div', { class: 'wb-msg-meta muted' }, fmtDate(msg.created_at, 'relative'),
+          msg.direction === 'out' ? ' · ' + (msg.read_at ? '✓✓ read' : msg.delivered_at ? '✓✓' : '✓') : '')
+      ));
+    });
+    right.appendChild(log);
+    setTimeout(() => { log.scrollTop = log.scrollHeight; }, 100);
+    const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
+    input.addEventListener('keydown', async ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        const text = input.value.trim(); if (!text) return;
+        input.disabled = true;
+        try {
+          await api('api_wb_chat_send', { phone, text });
+          input.value = ''; openThread(phone);
+        } catch (e) { toast(e.message, 'err'); }
+        finally { input.disabled = false; input.focus(); }
+      }
+    });
+    right.appendChild(h('div', { class: 'wb-chat-compose' }, input));
+  }
+  return wrap;
+}
+
+// ---------- Activity Log ----------
+async function wbActivity() {
+  const wrap = h('div', {});
+  const rows = await api('api_wb_activity_list', {}).catch(() => []);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '📑 Activity log (' + rows.length + ')'),
+    h('button', { class: 'btn ghost danger', onclick: async () => {
+      if (!await confirmDialog('Clear all activity log entries?')) return;
+      await api('api_wb_activity_clear'); toast('Cleared'); showWbTab('activity');
+    } }, '🗑️ Clear log')
+  ));
+  if (!rows.length) { wrap.appendChild(h('p', { class: 'muted' }, 'No activity yet.')); return wrap; }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Category'), h('th', {}, 'Name'), h('th', {}, 'Template'), h('th', {}, 'Code'), h('th', {}, 'Type'), h('th', {}, 'Recorded on'))),
+    h('tbody', {}, ...rows.map(r => h('tr', {},
+      h('td', {}, r.id),
+      h('td', {}, r.category),
+      h('td', {}, r.name || '—'),
+      h('td', {}, r.template_name ? h('code', {}, r.template_name) : '—'),
+      h('td', {}, h('span', { class: 'tag', style: { background: r.response_code === 200 ? '#10b981' : '#ef4444', color: '#fff' } }, r.response_code || 'err')),
+      h('td', {}, r.type || '—'),
+      h('td', { class: 'muted' }, fmtDate(r.recorded_on, 'relative'))
+    )))
+  )));
+  return wrap;
+}
+
 /**
  * TAT report view. Shows three sections:
  *   - Top KPI cards   (open violations, total leads, avg first-action min)

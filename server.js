@@ -33,6 +33,7 @@ const routes = {
   customFields:require('./routes/customFields'),
   tags:        require('./routes/tags'),
   tat:         require('./routes/tat'),
+  whatsbot:    require('./routes/whatsbot'),
   sources:     require('./routes/sources'),
   products:    require('./routes/products'),
   statuses:    require('./routes/statuses'),
@@ -174,6 +175,9 @@ app.get('/hook/meta',      webhooks.metaVerify);
 app.post('/hook/meta',     webhooks.metaEvent);
 app.get('/hook/whatsapp',  webhooks.whatsappVerify);
 app.post('/hook/whatsapp', webhooks.whatsappEvent);
+// New full-featured WhatsBot webhook (used by Meta when configured via the UI)
+app.get('/hook/whatsapp_webhook',  routes.whatsbot.expressVerify);
+app.post('/hook/whatsapp_webhook', routes.whatsbot.expressEvent);
 app.post('/hook/website',  webhooks.websiteHook);
 app.post('/hook/other',    webhooks.otherHook);
 
@@ -716,6 +720,8 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
   catch (e) { console.error('[boot] reminders start failed:', e.message); }
   try { require('./routes/tat').startTatWorker(); }
   catch (e) { console.error('[boot] tat worker start failed:', e.message); }
+  try { require('./routes/whatsbot').startCampaignWorker(); }
+  catch (e) { console.error('[boot] wb campaign worker start failed:', e.message); }
   app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);

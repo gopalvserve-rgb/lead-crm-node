@@ -181,6 +181,27 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 @media (max-width: 600px) { #btn-getapp .topbar-getapp-text { display: none; } }
 #view { padding: 1.25rem 1.5rem; }
 
+/* WhatsBot chat — 2-column layout */
+.wb-chat { display: grid; grid-template-columns: 320px 1fr; gap: 1rem; height: calc(100vh - 200px); }
+.wb-chat-list { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: .75rem; overflow-y: auto; }
+.wb-chat-row { padding: .55rem .5rem; border-radius: 8px; cursor: pointer; }
+.wb-chat-row:hover { background: var(--bg-alt); }
+.wb-unread { display: inline-block; background: #ef4444; color: #fff; font-size: .7rem; padding: 0 .4rem; border-radius: 999px; margin-left: .35rem; }
+.wb-chat-thread { display: flex; flex-direction: column; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.wb-chat-head { padding: .75rem 1rem; border-bottom: 1px solid var(--border); }
+.wb-chat-log  { flex: 1; overflow-y: auto; padding: .75rem 1rem; background: #fafbfc; }
+.wb-msg { margin: .25rem 0; padding: .55rem .75rem; border-radius: 12px; max-width: 80%; }
+.wb-msg.in  { background: #fff; border: 1px solid var(--border); }
+.wb-msg.out { background: #d1fae5; margin-left: auto; }
+.wb-msg-body { font-size: .92rem; white-space: pre-wrap; word-break: break-word; }
+.wb-msg-meta { font-size: .7rem; margin-top: .25rem; }
+.wb-chat-compose { padding: .5rem 1rem; border-top: 1px solid var(--border); }
+.wb-chat-compose textarea { width: 100%; resize: none; padding: .5rem; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+@media (max-width: 780px) {
+  .wb-chat { grid-template-columns: 1fr; height: auto; }
+  .wb-chat-list { max-height: 200px; }
+}
+
 /* Action timeline (Lead modal) */
 .timeline-block { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--border-light); }
 .timeline-block h4 { margin: 0 0 .5rem; }

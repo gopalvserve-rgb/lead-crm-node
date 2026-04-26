@@ -227,6 +227,51 @@ const SCHEMA = {
               'triggered_at', 'resolved_at', 'escalation_level',
               'last_escalated_at', 'notes'],
     json: []
+  },
+  // v12: WhatsBot — cached approved templates from Meta
+  wa_templates: {
+    columns: ['name', 'language', 'status', 'category', 'body_text',
+              'components_json', 'body_params', 'header_type', 'has_buttons',
+              'refreshed_at'],
+    json: ['components_json']
+  },
+  // v12: WhatsBot — outbound campaigns
+  wa_campaigns: {
+    columns: ['name', 'relation_type', 'template_name', 'template_language',
+              'variables_json', 'image_url', 'filter_json',
+              'scheduled_at', 'send_now', 'status',
+              'recipients_total', 'recipients_sent', 'recipients_failed',
+              'recipients_delivered', 'recipients_read',
+              'created_by', 'created_at', 'started_at', 'completed_at'],
+    json: ['variables_json', 'filter_json']
+  },
+  // v12: WhatsBot — per-recipient send rows
+  wa_campaign_targets: {
+    columns: ['campaign_id', 'lead_id', 'phone', 'name', 'rendered_message',
+              'status', 'wa_message_id', 'error',
+              'sent_at', 'delivered_at', 'read_at', 'created_at'],
+    json: []
+  },
+  // v12: WhatsBot — keyword → text reply
+  wa_message_bots: {
+    columns: ['name', 'relation_type', 'reply_text', 'reply_type',
+              'trigger_text', 'header', 'footer',
+              'buttons_json', 'cta_button_json', 'image_url',
+              'is_active', 'created_at'],
+    json: ['buttons_json', 'cta_button_json']
+  },
+  // v12: WhatsBot — keyword → template reply
+  wa_template_bots: {
+    columns: ['name', 'relation_type', 'template_name', 'template_language',
+              'variables_json', 'reply_type', 'trigger_text',
+              'is_active', 'created_at'],
+    json: ['variables_json']
+  },
+  // v12: WhatsBot — activity log
+  wa_activity_log: {
+    columns: ['category', 'name', 'template_name', 'response_code', 'type',
+              'request_json', 'response_json', 'recorded_on'],
+    json: ['request_json', 'response_json']
   }
 };
 

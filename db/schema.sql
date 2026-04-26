@@ -449,3 +449,118 @@ CREATE TABLE IF NOT EXISTS tat_violations (
   notes              TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tat_v_open ON tat_violations(lead_id) WHERE resolved_at IS NULL;
+
+-- ---- v12: WhatsBot module ------------------------------------
+-- Enrich whatsapp_messages with media + reply tracking
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS user_id      INTEGER;
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS message_type TEXT;       -- text|image|video|audio|document|template|button|interactive
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS media_url    TEXT;
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS media_id     TEXT;       -- WhatsApp media id (for retrieval)
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS reply_to     TEXT;       -- wa_message_id of the message being replied to
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS read_at      TIMESTAMPTZ;
+ALTER TABLE whatsapp_messages ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_wa_msg_phone ON whatsapp_messages(from_number, to_number, created_at);
+
+-- Cached approved templates from Meta (refreshed periodically)
+CREATE TABLE IF NOT EXISTS wa_templates (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  language        TEXT NOT NULL,
+  status          TEXT,                       -- APPROVED | PENDING | REJECTED
+  category        TEXT,                       -- MARKETING | UTILITY | AUTHENTICATION
+  body_text       TEXT,
+  components_json JSONB,
+  body_params     INTEGER NOT NULL DEFAULT 0,
+  header_type     TEXT,
+  has_buttons     INTEGER NOT NULL DEFAULT 0,
+  refreshed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (name, language)
+);
+
+-- Outbound campaigns (broadcast a template to many recipients)
+CREATE TABLE IF NOT EXISTS wa_campaigns (
+  id               SERIAL PRIMARY KEY,
+  name             TEXT NOT NULL,
+  relation_type    TEXT NOT NULL DEFAULT 'leads',  -- leads|users (for now leads)
+  template_name    TEXT NOT NULL,
+  template_language TEXT NOT NULL DEFAULT 'en_US',
+  variables_json   JSONB,                      -- [{var:'V1', value:'@{name}'}, ...]
+  image_url        TEXT,
+  filter_json      JSONB,                      -- {status_id, source, assigned_to, tag, ids[]}
+  scheduled_at     TIMESTAMPTZ,
+  send_now         INTEGER NOT NULL DEFAULT 0,
+  status           TEXT NOT NULL DEFAULT 'draft',  -- draft|queued|sending|paused|completed|failed
+  recipients_total INTEGER NOT NULL DEFAULT 0,
+  recipients_sent  INTEGER NOT NULL DEFAULT 0,
+  recipients_failed INTEGER NOT NULL DEFAULT 0,
+  recipients_delivered INTEGER NOT NULL DEFAULT 0,
+  recipients_read  INTEGER NOT NULL DEFAULT 0,
+  created_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  started_at       TIMESTAMPTZ,
+  completed_at     TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_wa_camp_status ON wa_campaigns(status);
+
+-- Per-recipient row of a campaign (so we can resume / track / show progress)
+CREATE TABLE IF NOT EXISTS wa_campaign_targets (
+  id            SERIAL PRIMARY KEY,
+  campaign_id   INTEGER NOT NULL REFERENCES wa_campaigns(id) ON DELETE CASCADE,
+  lead_id       INTEGER,
+  phone         TEXT NOT NULL,
+  name          TEXT,
+  rendered_message TEXT,
+  status        TEXT NOT NULL DEFAULT 'queued',  -- queued|sent|delivered|read|failed
+  wa_message_id TEXT,
+  error         TEXT,
+  sent_at       TIMESTAMPTZ,
+  delivered_at  TIMESTAMPTZ,
+  read_at       TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_camp_targets ON wa_campaign_targets(campaign_id, status);
+
+-- Message bots — when an incoming message matches `trigger`, send `reply_text`
+CREATE TABLE IF NOT EXISTS wa_message_bots (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  relation_type   TEXT NOT NULL DEFAULT 'leads',
+  reply_text      TEXT NOT NULL,
+  reply_type      TEXT NOT NULL DEFAULT 'contains',   -- exact | contains
+  trigger_text    TEXT NOT NULL,                       -- comma-separated keywords
+  header          TEXT,
+  footer          TEXT,
+  buttons_json    JSONB,                               -- option 1: reply buttons
+  cta_button_json JSONB,                               -- option 2: CTA button
+  image_url       TEXT,                                -- option 3: image
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Template bots — when an incoming message matches `trigger`, send a template
+CREATE TABLE IF NOT EXISTS wa_template_bots (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  relation_type   TEXT NOT NULL DEFAULT 'leads',
+  template_name   TEXT NOT NULL,
+  template_language TEXT NOT NULL DEFAULT 'en_US',
+  variables_json  JSONB,
+  reply_type      TEXT NOT NULL DEFAULT 'exact',
+  trigger_text    TEXT NOT NULL,
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Activity log — every Meta API request we make
+CREATE TABLE IF NOT EXISTS wa_activity_log (
+  id              SERIAL PRIMARY KEY,
+  category        TEXT NOT NULL,    -- campaign|template_bot|message_bot|chat|template_sync
+  name            TEXT,
+  template_name   TEXT,
+  response_code   INTEGER,
+  type            TEXT,             -- leads|users
+  request_json    JSONB,
+  response_json   JSONB,
+  recorded_on     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_act_cat ON wa_activity_log(category, recorded_on DESC);

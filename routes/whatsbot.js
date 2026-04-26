@@ -1,0 +1,814 @@
+/**
+ * routes/whatsbot.js — Full WhatsBot module.
+ *
+ * Replaces the minimal routes/whatsapp.js with a much wider feature set
+ * inspired by the Corbital WhatsBot module:
+ *   - Connect Account (set & verify WABA ID, access token, phone id)
+ *   - Templates (sync & list approved templates from Meta)
+ *   - Campaigns (broadcast a template to many leads, async send loop)
+ *   - Live Chat (per-contact threaded view + send text/image/document)
+ *   - Message Bot (keyword → text reply)
+ *   - Template Bot (keyword → template reply)
+ *   - Activity Log (every Meta API call we make)
+ *   - Webhook handler — separate Express route at /hook/whatsapp_webhook
+ *
+ * Functions exposed via the /api dispatcher are prefixed `api_wb_*`.
+ * Express routes are mounted in server.js using the exported handlers.
+ */
+const fetch = require('node-fetch');
+const db = require('../db/pg');
+const { authUser } = require('../utils/auth');
+
+const GRAPH = 'https://graph.facebook.com/v19.0';
+
+// ---------- shared helpers ----------------------------------------
+
+async function _cfg() {
+  const [wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn, autoLeadSource] = await Promise.all([
+    db.getConfig('WHATSAPP_BUSINESS_ACCOUNT_ID', process.env.WHATSAPP_BUSINESS_ACCOUNT_ID || ''),
+    db.getConfig('WHATSAPP_ACCESS_TOKEN',        process.env.WHATSAPP_ACCESS_TOKEN || ''),
+    db.getConfig('WHATSAPP_PHONE_NUMBER_ID',     process.env.WHATSAPP_PHONE_NUMBER_ID || ''),
+    db.getConfig('WB_DEFAULT_STATUS_ID', ''),
+    db.getConfig('WB_DEFAULT_USER_ID', ''),
+    db.getConfig('WB_AUTOLEAD_ON', '1'),
+    db.getConfig('WB_AUTOLEAD_SOURCE', 'WhatsApp')
+  ]);
+  return { wabaId, token, phoneId, defaultStatus, defaultUser, autoLeadOn: String(autoLeadOn) === '1', autoLeadSource };
+}
+
+async function _logActivity(payload) {
+  try {
+    await db.query(
+      `INSERT INTO wa_activity_log (category, name, template_name, response_code, type, request_json, response_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        String(payload.category || 'chat'),
+        String(payload.name || ''),
+        String(payload.template_name || ''),
+        Number(payload.response_code || 0) || null,
+        String(payload.type || 'leads'),
+        payload.request ? JSON.stringify(payload.request) : null,
+        payload.response ? JSON.stringify(payload.response) : null
+      ]
+    );
+  } catch (_) {}
+}
+
+/** Make an authenticated POST to the Meta Graph API. */
+async function _graphPost(path, body, cfg) {
+  const c = cfg || await _cfg();
+  if (!c.token || !c.phoneId) throw new Error('WhatsApp not configured (set Account ID, Access Token, Phone Number ID first)');
+  const r = await fetch(`${GRAPH}/${path}`, {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + c.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const j = await r.json();
+  return { status: r.status, body: j };
+}
+
+/** Fetch JSON from the Graph API with the WABA token. */
+async function _graphGet(path, cfg) {
+  const c = cfg || await _cfg();
+  if (!c.token) throw new Error('WhatsApp not configured');
+  const r = await fetch(`${GRAPH}/${path}${path.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(c.token)}`);
+  const j = await r.json();
+  return { status: r.status, body: j };
+}
+
+// ---------- Connect Account / Settings ----------------------------
+
+async function api_wb_settings_get(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const cfg = await _cfg();
+  const verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+  const baseUrl = (process.env.BASE_URL || '').replace(/\/+$/, '');
+  return {
+    waba_id: cfg.wabaId || '',
+    access_token_present: !!cfg.token,
+    phone_number_id: cfg.phoneId || '',
+    verify_token: verifyToken || '',
+    webhook_url: (baseUrl || '') + '/hook/whatsapp_webhook',
+    autolead_on: cfg.autoLeadOn,
+    autolead_source: cfg.autoLeadSource,
+    default_user_id: cfg.defaultUser,
+    default_status_id: cfg.defaultStatus
+  };
+}
+
+async function api_wb_settings_save(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  if ('waba_id' in p)             await db.setConfig('WHATSAPP_BUSINESS_ACCOUNT_ID', String(p.waba_id || '').trim());
+  if ('access_token' in p && p.access_token) await db.setConfig('WHATSAPP_ACCESS_TOKEN', String(p.access_token).trim());
+  if ('phone_number_id' in p)     await db.setConfig('WHATSAPP_PHONE_NUMBER_ID', String(p.phone_number_id || '').trim());
+  if ('verify_token' in p)        await db.setConfig('WHATSAPP_VERIFY_TOKEN', String(p.verify_token || '').trim());
+  if ('autolead_on' in p)         await db.setConfig('WB_AUTOLEAD_ON', p.autolead_on ? '1' : '0');
+  if ('autolead_source' in p)     await db.setConfig('WB_AUTOLEAD_SOURCE', String(p.autolead_source || 'WhatsApp'));
+  if ('default_user_id' in p)     await db.setConfig('WB_DEFAULT_USER_ID', String(p.default_user_id || ''));
+  if ('default_status_id' in p)   await db.setConfig('WB_DEFAULT_STATUS_ID', String(p.default_status_id || ''));
+  return { ok: true };
+}
+
+async function api_wb_connect_verify(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const cfg = await _cfg();
+  if (!cfg.wabaId || !cfg.token || !cfg.phoneId) throw new Error('Fill WABA ID, Access Token and Phone Number ID first.');
+  // Hit /<phone-id> to get display number + quality + status
+  const r = await _graphGet(`${cfg.phoneId}?fields=display_phone_number,verified_name,quality_rating,status,id`, cfg);
+  if (r.body && r.body.error) {
+    return { ok: false, error: r.body.error.message };
+  }
+  return {
+    ok: true,
+    display_phone_number: r.body.display_phone_number,
+    verified_name: r.body.verified_name,
+    quality_rating: r.body.quality_rating,
+    status: r.body.status,
+    phone_number_id: r.body.id
+  };
+}
+
+async function api_wb_disconnect(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  await db.setConfig('WHATSAPP_BUSINESS_ACCOUNT_ID', '');
+  await db.setConfig('WHATSAPP_ACCESS_TOKEN', '');
+  await db.setConfig('WHATSAPP_PHONE_NUMBER_ID', '');
+  return { ok: true };
+}
+
+// ---------- Templates ---------------------------------------------
+
+/** Pull approved templates from Meta and cache locally. */
+async function api_wb_templates_sync(token) {
+  await authUser(token);
+  const cfg = await _cfg();
+  if (!cfg.wabaId || !cfg.token) throw new Error('WhatsApp not configured');
+  const r = await _graphGet(`${cfg.wabaId}/message_templates?limit=100&fields=name,language,status,category,components`, cfg);
+  if (r.body && r.body.error) {
+    await _logActivity({ category: 'template_sync', response_code: r.status, request: { url: 'message_templates' }, response: r.body });
+    throw new Error(r.body.error.message);
+  }
+  const list = r.body.data || [];
+  // Replace the cache atomically
+  await db.query('DELETE FROM wa_templates');
+  for (const t of list) {
+    const bodyText = (t.components || []).find(c => c.type === 'BODY')?.text || '';
+    const params = (bodyText.match(/\{\{\d+\}\}/g) || []).length;
+    const headerType = (t.components || []).find(c => c.type === 'HEADER')?.format || null;
+    const hasBtn = !!(t.components || []).find(c => c.type === 'BUTTONS');
+    try {
+      await db.query(
+        `INSERT INTO wa_templates (name, language, status, category, body_text, components_json, body_params, header_type, has_buttons, refreshed_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, NOW())
+         ON CONFLICT (name, language) DO UPDATE
+         SET status = EXCLUDED.status, category = EXCLUDED.category,
+             body_text = EXCLUDED.body_text, components_json = EXCLUDED.components_json,
+             body_params = EXCLUDED.body_params, header_type = EXCLUDED.header_type,
+             has_buttons = EXCLUDED.has_buttons, refreshed_at = NOW()`,
+        [t.name, t.language, t.status, t.category, bodyText, JSON.stringify(t.components || []), params, headerType, hasBtn ? 1 : 0]
+      );
+    } catch (_) {}
+  }
+  await _logActivity({ category: 'template_sync', response_code: 200, request: { url: 'message_templates' }, response: { count: list.length } });
+  return { ok: true, count: list.length };
+}
+
+async function api_wb_templates_list(token) {
+  await authUser(token);
+  const rows = await db.getAll('wa_templates');
+  return rows
+    .map(r => ({
+      id: r.id, name: r.name, language: r.language, status: r.status,
+      category: r.category, body_text: r.body_text, body_params: r.body_params,
+      header_type: r.header_type, has_buttons: !!r.has_buttons,
+      components: typeof r.components_json === 'string' ? safeJson(r.components_json) : (r.components_json || []),
+      refreshed_at: r.refreshed_at
+    }))
+    .sort((a, b) => (a.status === 'APPROVED' ? -1 : 1) - (b.status === 'APPROVED' ? -1 : 1) || String(a.name).localeCompare(String(b.name)));
+}
+function safeJson(s) { try { return JSON.parse(s); } catch (_) { return []; } }
+
+// ---------- Send a single template (used by chat + bots + campaigns) ----
+
+async function _sendTemplate({ to, templateName, language, variables, imageUrl }, cfg) {
+  const c = cfg || await _cfg();
+  // Components: BODY variables + optional HEADER image
+  const components = [];
+  if (imageUrl) {
+    components.push({ type: 'header', parameters: [{ type: 'image', image: { link: imageUrl } }] });
+  }
+  if (Array.isArray(variables) && variables.length) {
+    components.push({
+      type: 'body',
+      parameters: variables.map(v => ({ type: 'text', text: String(v ?? '') }))
+    });
+  }
+  const body = {
+    messaging_product: 'whatsapp',
+    to: String(to).replace(/\D/g, ''),
+    type: 'template',
+    template: {
+      name: templateName,
+      language: { code: language || 'en_US' },
+      components
+    }
+  };
+  const r = await _graphPost(`${c.phoneId}/messages`, body, c);
+  const waMsgId = r.body?.messages?.[0]?.id || null;
+  // Persist outbound row
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type)
+       VALUES ($1, 'out', $2, $3, $4, $5, $6, 'template')`,
+      [null, c.phoneId, body.to, JSON.stringify({ template: templateName, variables }), waMsgId, r.body?.error ? 'failed' : 'sent']
+    );
+  } catch (_) {}
+  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+}
+
+async function _sendText({ to, text, replyTo }, cfg) {
+  const c = cfg || await _cfg();
+  const body = {
+    messaging_product: 'whatsapp',
+    to: String(to).replace(/\D/g, ''),
+    type: 'text',
+    text: { body: String(text || '') }
+  };
+  if (replyTo) body.context = { message_id: replyTo };
+  const r = await _graphPost(`${c.phoneId}/messages`, body, c);
+  const waMsgId = r.body?.messages?.[0]?.id || null;
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type, reply_to)
+       VALUES (NULL, 'out', $1, $2, $3, $4, $5, 'text', $6)`,
+      [c.phoneId, body.to, text, waMsgId, r.body?.error ? 'failed' : 'sent', replyTo || null]
+    );
+  } catch (_) {}
+  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+}
+
+async function _sendMedia({ to, mediaType, mediaUrl, caption }, cfg) {
+  const c = cfg || await _cfg();
+  const body = {
+    messaging_product: 'whatsapp',
+    to: String(to).replace(/\D/g, ''),
+    type: mediaType,
+    [mediaType]: { link: mediaUrl, caption: caption || undefined }
+  };
+  const r = await _graphPost(`${c.phoneId}/messages`, body, c);
+  const waMsgId = r.body?.messages?.[0]?.id || null;
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type, media_url)
+       VALUES (NULL, 'out', $1, $2, $3, $4, $5, $6, $7)`,
+      [c.phoneId, body.to, caption || '', waMsgId, r.body?.error ? 'failed' : 'sent', mediaType, mediaUrl]
+    );
+  } catch (_) {}
+  return { status: r.status, body: r.body, wa_message_id: waMsgId };
+}
+
+// ---------- Live Chat ---------------------------------------------
+
+/**
+ * Conversation list — group whatsapp_messages by the OTHER party's number.
+ * Returns one row per contact with last message preview, lead_id link,
+ * and unread count.
+ */
+async function api_wb_chat_threads(token) {
+  await authUser(token);
+  const cfg = await _cfg();
+  const myNum = String(cfg.phoneId || '');
+  // Pull last 1000 messages, group by counterpart
+  const { rows } = await db.query(
+    `SELECT id, lead_id, direction, from_number, to_number, body, message_type, status, read_at, created_at
+       FROM whatsapp_messages
+       ORDER BY created_at DESC
+       LIMIT 1000`
+  );
+  const threads = new Map();
+  rows.forEach(m => {
+    const counter = m.direction === 'in' ? m.from_number : m.to_number;
+    if (!counter) return;
+    const k = String(counter);
+    if (!threads.has(k)) {
+      threads.set(k, {
+        phone: k, lead_id: m.lead_id || null,
+        last_message: m.body || '',
+        last_message_type: m.message_type || 'text',
+        last_at: m.created_at,
+        unread: 0
+      });
+    }
+    const t = threads.get(k);
+    if (m.direction === 'in' && !m.read_at) t.unread++;
+    if (!t.lead_id && m.lead_id) t.lead_id = m.lead_id;
+  });
+  // Hydrate with lead names
+  const leadIds = [...new Set([...threads.values()].map(t => t.lead_id).filter(Boolean))];
+  let leadById = {};
+  if (leadIds.length) {
+    const ld = await db.query(`SELECT id, name FROM leads WHERE id = ANY($1::int[])`, [leadIds]);
+    ld.rows.forEach(l => { leadById[l.id] = l; });
+  }
+  const out = [...threads.values()].map(t => ({
+    ...t,
+    lead_name: t.lead_id ? (leadById[t.lead_id]?.name || '') : ''
+  }));
+  out.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)));
+  return out;
+}
+
+async function api_wb_chat_messages(token, phone) {
+  await authUser(token);
+  if (!phone) return [];
+  const p = String(phone).replace(/\D/g, '');
+  const { rows } = await db.query(
+    `SELECT id, direction, body, message_type, media_url, status, reply_to, created_at, read_at, delivered_at
+       FROM whatsapp_messages
+       WHERE from_number = $1 OR to_number = $1
+       ORDER BY created_at ASC
+       LIMIT 500`,
+    [p]
+  );
+  // Mark inbound messages as read
+  try {
+    await db.query(
+      `UPDATE whatsapp_messages SET read_at = NOW() WHERE direction = 'in' AND from_number = $1 AND read_at IS NULL`,
+      [p]
+    );
+  } catch (_) {}
+  return rows;
+}
+
+async function api_wb_chat_send(token, payload) {
+  await authUser(token);
+  const p = payload || {};
+  if (!p.phone) throw new Error('phone required');
+  if (!p.text && !p.media_url) throw new Error('Empty message');
+  const cfg = await _cfg();
+  let r;
+  if (p.media_url) {
+    r = await _sendMedia({ to: p.phone, mediaType: p.media_type || 'image', mediaUrl: p.media_url, caption: p.text }, cfg);
+  } else {
+    r = await _sendText({ to: p.phone, text: p.text, replyTo: p.reply_to }, cfg);
+  }
+  await _logActivity({ category: 'chat', response_code: r.status, request: { to: p.phone }, response: r.body });
+  if (r.body?.error) throw new Error(r.body.error.message);
+  return { ok: true, wa_message_id: r.wa_message_id };
+}
+
+// ---------- Message Bots ------------------------------------------
+
+async function api_wb_message_bots_list(token) {
+  await authUser(token);
+  return await db.getAll('wa_message_bots');
+}
+async function api_wb_message_bots_save(token, bot) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const b = bot || {};
+  if (!b.name || !b.trigger_text || !b.reply_text) throw new Error('name, trigger_text, reply_text required');
+  const payload = {
+    name: b.name, relation_type: b.relation_type || 'leads',
+    reply_text: b.reply_text, reply_type: b.reply_type || 'contains',
+    trigger_text: b.trigger_text, header: b.header || null, footer: b.footer || null,
+    buttons_json: b.buttons ? JSON.stringify(b.buttons) : null,
+    cta_button_json: b.cta_button ? JSON.stringify(b.cta_button) : null,
+    image_url: b.image_url || null,
+    is_active: b.is_active === 0 ? 0 : 1
+  };
+  if (b.id) { await db.update('wa_message_bots', b.id, payload); return { ok: true, id: Number(b.id) }; }
+  payload.created_at = db.nowIso();
+  const id = await db.insert('wa_message_bots', payload);
+  return { ok: true, id };
+}
+async function api_wb_message_bots_delete(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  await db.removeRow('wa_message_bots', id);
+  return { ok: true };
+}
+
+// ---------- Template Bots -----------------------------------------
+
+async function api_wb_template_bots_list(token) {
+  await authUser(token);
+  return await db.getAll('wa_template_bots');
+}
+async function api_wb_template_bots_save(token, bot) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const b = bot || {};
+  if (!b.name || !b.template_name || !b.trigger_text) throw new Error('name, template_name, trigger_text required');
+  const payload = {
+    name: b.name, relation_type: b.relation_type || 'leads',
+    template_name: b.template_name, template_language: b.template_language || 'en_US',
+    variables_json: b.variables ? JSON.stringify(b.variables) : null,
+    reply_type: b.reply_type || 'exact', trigger_text: b.trigger_text,
+    is_active: b.is_active === 0 ? 0 : 1
+  };
+  if (b.id) { await db.update('wa_template_bots', b.id, payload); return { ok: true, id: Number(b.id) }; }
+  payload.created_at = db.nowIso();
+  const id = await db.insert('wa_template_bots', payload);
+  return { ok: true, id };
+}
+async function api_wb_template_bots_delete(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  await db.removeRow('wa_template_bots', id);
+  return { ok: true };
+}
+
+// ---------- Campaigns ---------------------------------------------
+
+async function api_wb_campaigns_list(token) {
+  await authUser(token);
+  const rows = await db.getAll('wa_campaigns');
+  rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return rows.map(c => ({
+    ...c,
+    variables: typeof c.variables_json === 'string' ? safeJson(c.variables_json) : (c.variables_json || []),
+    filter:    typeof c.filter_json === 'string'    ? safeJsonObj(c.filter_json) : (c.filter_json || {}),
+  }));
+}
+function safeJsonObj(s) { try { return JSON.parse(s); } catch (_) { return {}; } }
+
+async function api_wb_campaigns_create(token, payload) {
+  const me = await authUser(token);
+  const p = payload || {};
+  if (!p.name || !p.template_name) throw new Error('name and template_name required');
+
+  // Resolve recipients NOW so we can compute total + queue them in wa_campaign_targets
+  const filter = p.filter || {};
+  let leads = [];
+  if (filter.lead_ids && filter.lead_ids.length) {
+    const ld = await db.query(`SELECT id, name, phone, source FROM leads WHERE id = ANY($1::int[])`, [filter.lead_ids.map(Number)]);
+    leads = ld.rows;
+  } else {
+    const all = await db.getAll('leads');
+    leads = all.filter(l => {
+      if (filter.status_id && Number(l.status_id) !== Number(filter.status_id)) return false;
+      if (filter.source && l.source !== filter.source) return false;
+      if (filter.assigned_to && Number(l.assigned_to) !== Number(filter.assigned_to)) return false;
+      if (filter.tag) {
+        const tags = String(l.tags || '').toLowerCase().split(',').map(s => s.trim());
+        if (!tags.includes(String(filter.tag).toLowerCase())) return false;
+      }
+      return !!l.phone;
+    });
+  }
+
+  const campaignPayload = {
+    name: p.name,
+    relation_type: p.relation_type || 'leads',
+    template_name: p.template_name,
+    template_language: p.template_language || 'en_US',
+    variables_json: JSON.stringify(p.variables || []),
+    image_url: p.image_url || null,
+    filter_json: JSON.stringify(filter),
+    scheduled_at: p.scheduled_at || null,
+    send_now: p.send_now ? 1 : 0,
+    status: p.send_now ? 'queued' : (p.scheduled_at ? 'queued' : 'draft'),
+    recipients_total: leads.length,
+    recipients_sent: 0, recipients_failed: 0,
+    recipients_delivered: 0, recipients_read: 0,
+    created_by: me.id,
+    created_at: db.nowIso()
+  };
+  const campaignId = await db.insert('wa_campaigns', campaignPayload);
+
+  // Materialise per-recipient rows
+  for (const l of leads) {
+    await db.insert('wa_campaign_targets', {
+      campaign_id: campaignId,
+      lead_id: l.id, phone: String(l.phone || '').replace(/\D/g, ''),
+      name: l.name || '',
+      status: 'queued', created_at: db.nowIso()
+    });
+  }
+
+  return { ok: true, id: campaignId, recipients: leads.length };
+}
+
+async function api_wb_campaigns_send_now(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin or Manager only');
+  const c = await db.findById('wa_campaigns', id);
+  if (!c) throw new Error('Campaign not found');
+  if (c.status === 'sending') return { ok: true, already: true };
+  await db.update('wa_campaigns', id, { status: 'queued', send_now: 1, scheduled_at: null });
+  // Trigger immediate worker tick (don't await)
+  setImmediate(() => _campaignTick().catch(e => console.warn('[wb] campaign tick failed:', e.message)));
+  return { ok: true };
+}
+
+async function api_wb_campaigns_pause(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin or Manager only');
+  await db.update('wa_campaigns', id, { status: 'paused' });
+  return { ok: true };
+}
+
+async function api_wb_campaigns_targets(token, id) {
+  await authUser(token);
+  const { rows } = await db.query(
+    `SELECT * FROM wa_campaign_targets WHERE campaign_id = $1 ORDER BY id ASC LIMIT 1000`,
+    [Number(id)]
+  );
+  return rows;
+}
+
+// ---------- Activity Log ------------------------------------------
+
+async function api_wb_activity_list(token, filters) {
+  await authUser(token);
+  filters = filters || {};
+  let { rows } = await db.query(
+    `SELECT id, category, name, template_name, response_code, type, recorded_on
+       FROM wa_activity_log ORDER BY recorded_on DESC LIMIT 500`
+  );
+  if (filters.category) rows = rows.filter(r => r.category === filters.category);
+  return rows;
+}
+
+async function api_wb_activity_clear(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  await db.query(`DELETE FROM wa_activity_log`);
+  return { ok: true };
+}
+
+// ---------- Campaign worker ---------------------------------------
+
+let _campaignWorkerStarted = false;
+function startCampaignWorker() {
+  if (_campaignWorkerStarted) return;
+  _campaignWorkerStarted = true;
+  const intervalMs = Number(process.env.WB_CAMPAIGN_TICK_MS || 30_000);
+  setInterval(() => { _campaignTick().catch(e => console.warn('[wb] campaign tick failed:', e.message)); }, intervalMs);
+  setTimeout(() => _campaignTick().catch(() => {}), 15_000);
+  console.log(`[wb] campaign worker started, interval ${intervalMs}ms`);
+}
+
+async function _campaignTick() {
+  // Find queued campaigns whose scheduled_at has passed (or send_now=1)
+  const { rows: due } = await db.query(
+    `SELECT * FROM wa_campaigns
+       WHERE status IN ('queued', 'sending')
+         AND (send_now = 1 OR scheduled_at IS NULL OR scheduled_at <= NOW())
+       ORDER BY id ASC`
+  );
+  if (!due.length) return;
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.phoneId) return; // not configured
+
+  for (const camp of due) {
+    if (camp.status !== 'sending') {
+      await db.update('wa_campaigns', camp.id, { status: 'sending', started_at: db.nowIso() });
+    }
+    const variables = typeof camp.variables_json === 'string' ? safeJson(camp.variables_json) : (camp.variables_json || []);
+    // Pull pending targets in batches of 25 to stay under Meta rate limits
+    const { rows: targets } = await db.query(
+      `SELECT * FROM wa_campaign_targets WHERE campaign_id = $1 AND status = 'queued' ORDER BY id ASC LIMIT 25`,
+      [camp.id]
+    );
+    if (!targets.length) {
+      await db.update('wa_campaigns', camp.id, { status: 'completed', completed_at: db.nowIso() });
+      continue;
+    }
+    for (const t of targets) {
+      try {
+        // Render variables — replace @{lead_field} placeholders with actual values
+        const lead = t.lead_id ? await db.findById('leads', t.lead_id) : null;
+        const renderedVars = (variables || []).map(v => _renderMerge(v.value || '', lead, t));
+        const r = await _sendTemplate({
+          to: t.phone, templateName: camp.template_name, language: camp.template_language,
+          variables: renderedVars, imageUrl: camp.image_url || null
+        }, cfg);
+        if (r.body?.error) {
+          await db.update('wa_campaign_targets', t.id, { status: 'failed', error: r.body.error.message, sent_at: db.nowIso() });
+          await db.update('wa_campaigns', camp.id, { recipients_failed: Number(camp.recipients_failed || 0) + 1 });
+          camp.recipients_failed = Number(camp.recipients_failed || 0) + 1;
+        } else {
+          await db.update('wa_campaign_targets', t.id, { status: 'sent', wa_message_id: r.wa_message_id, sent_at: db.nowIso() });
+          await db.update('wa_campaigns', camp.id, { recipients_sent: Number(camp.recipients_sent || 0) + 1 });
+          camp.recipients_sent = Number(camp.recipients_sent || 0) + 1;
+        }
+        await _logActivity({
+          category: 'campaign', name: camp.name, template_name: camp.template_name,
+          response_code: r.status, type: camp.relation_type,
+          request: { to: t.phone, vars: renderedVars }, response: r.body
+        });
+      } catch (e) {
+        await db.update('wa_campaign_targets', t.id, { status: 'failed', error: e.message, sent_at: db.nowIso() });
+        await db.update('wa_campaigns', camp.id, { recipients_failed: Number(camp.recipients_failed || 0) + 1 });
+        camp.recipients_failed = Number(camp.recipients_failed || 0) + 1;
+      }
+      // Tiny pause between sends — keeps us well under 80msg/sec
+      await new Promise(r => setTimeout(r, 100));
+    }
+    // Check if there are more queued targets
+    const { rows: rem } = await db.query(
+      `SELECT COUNT(*)::int AS c FROM wa_campaign_targets WHERE campaign_id = $1 AND status = 'queued'`,
+      [camp.id]
+    );
+    if (!rem[0]?.c) {
+      await db.update('wa_campaigns', camp.id, { status: 'completed', completed_at: db.nowIso() });
+    }
+  }
+}
+
+/** Render a campaign-variable merge field. Supports @{name}, @{phone}, @{email}, @{firstname}, etc. */
+function _renderMerge(template, lead, target) {
+  if (!template) return '';
+  const ctx = lead || {};
+  return String(template).replace(/@\{(\w+)\}/g, (_, key) => {
+    const k = key.toLowerCase();
+    if (k === 'firstname' || k === 'first_name') return String(ctx.name || target?.name || '').split(' ')[0] || '';
+    if (k === 'lastname' || k === 'last_name')   return String(ctx.name || target?.name || '').split(' ').slice(1).join(' ') || '';
+    if (k === 'name')   return String(ctx.name || target?.name || '');
+    if (k === 'phone')  return String(ctx.phone || target?.phone || '');
+    if (k === 'email')  return String(ctx.email || '');
+    if (k === 'source') return String(ctx.source || '');
+    if (ctx[k] !== undefined) return String(ctx[k]);
+    return '';
+  });
+}
+
+// ---------- Webhook (incoming message → bot fire / save / autolead) ------
+
+async function expressVerify(req, res) {
+  const verifyToken = await db.getConfig('WHATSAPP_VERIFY_TOKEN', '');
+  const mode = req.query['hub.mode'];
+  const tk = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (mode === 'subscribe' && tk && verifyToken && tk === verifyToken) {
+    return res.status(200).send(String(challenge));
+  }
+  return res.status(403).send('forbidden');
+}
+
+async function expressEvent(req, res) {
+  res.status(200).send('ok'); // Always 200 fast — process async
+  try {
+    const body = req.body || {};
+    if (body.object !== 'whatsapp_business_account') return;
+    for (const entry of body.entry || []) {
+      for (const change of entry.changes || []) {
+        const value = change.value || {};
+        // Status updates (delivered / read)
+        if (Array.isArray(value.statuses)) {
+          for (const s of value.statuses) {
+            const upd = {};
+            if (s.status === 'delivered') upd.delivered_at = db.nowIso();
+            if (s.status === 'read')      upd.read_at = db.nowIso();
+            if (s.status) upd.status = s.status;
+            if (s.id && Object.keys(upd).length) {
+              try {
+                await db.query(
+                  `UPDATE whatsapp_messages SET status = COALESCE($2, status), delivered_at = COALESCE($3, delivered_at), read_at = COALESCE($4, read_at)
+                     WHERE wa_message_id = $1`,
+                  [s.id, upd.status || null, upd.delivered_at || null, upd.read_at || null]
+                );
+                // Reflect into campaign_targets too
+                if (s.status === 'delivered' || s.status === 'read') {
+                  const col = s.status === 'read' ? 'read_at' : 'delivered_at';
+                  await db.query(
+                    `UPDATE wa_campaign_targets SET status = $2, ${col} = NOW() WHERE wa_message_id = $1 AND status NOT IN ('failed')`,
+                    [s.id, s.status]
+                  );
+                }
+              } catch (_) {}
+            }
+          }
+        }
+        // Inbound messages
+        if (Array.isArray(value.messages)) {
+          for (const m of value.messages) {
+            await _handleInbound(m, value);
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error('[wb] webhook event failed:', e.message);
+  }
+}
+
+async function _handleInbound(m, value) {
+  const cfg = await _cfg();
+  const from = String(m.from || '').replace(/\D/g, '');
+  const to = String(value?.metadata?.display_phone_number || cfg.phoneId || '');
+  let text = '';
+  let mtype = m.type || 'text';
+  let mediaId = null;
+  if (m.type === 'text') text = m.text?.body || '';
+  else if (m.type === 'interactive') {
+    text = m.interactive?.button_reply?.title || m.interactive?.list_reply?.title || JSON.stringify(m.interactive || {});
+  } else if (m.type === 'button') {
+    text = m.button?.text || '';
+  } else if (['image', 'audio', 'video', 'document'].includes(m.type)) {
+    text = m[m.type]?.caption || '';
+    mediaId = m[m.type]?.id || null;
+  }
+
+  // Look up or auto-create the lead
+  let leadId = null;
+  try {
+    const ld = await db.query(`SELECT id FROM leads WHERE regexp_replace(COALESCE(phone, ''), '\\D', '', 'g') = $1 OR regexp_replace(COALESCE(whatsapp, ''), '\\D', '', 'g') = $1 LIMIT 1`, [from]);
+    if (ld.rows.length) leadId = ld.rows[0].id;
+    else if (cfg.autoLeadOn) {
+      // Create a fresh lead for this inbound contact
+      const profileName = (value?.contacts || []).find(c => c.wa_id === m.from)?.profile?.name || from;
+      const newId = await db.insert('leads', {
+        name: profileName, phone: from, whatsapp: from,
+        source: cfg.autoLeadSource || 'WhatsApp',
+        status_id: cfg.defaultStatus || null,
+        assigned_to: cfg.defaultUser || null,
+        created_at: db.nowIso(), updated_at: db.nowIso()
+      });
+      leadId = newId;
+      try { require('./tat').logAction(newId, 'created', null, { source: 'whatsapp_inbound' }); } catch (_) {}
+    }
+  } catch (_) {}
+
+  // Save inbound row
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, direction, from_number, to_number, body, wa_message_id, status, message_type, media_id)
+       VALUES ($1, 'in', $2, $3, $4, $5, 'received', $6, $7)`,
+      [leadId, from, to, text, m.id || null, mtype, mediaId]
+    );
+  } catch (e) { console.warn('[wb] save inbound failed:', e.message); }
+
+  // Try matching a Message Bot or Template Bot by trigger
+  try {
+    const triggerLc = String(text || '').toLowerCase().trim();
+    if (!triggerLc) return;
+
+    const msgBots = await db.getAll('wa_message_bots');
+    for (const b of msgBots) {
+      if (Number(b.is_active) !== 1) continue;
+      const triggers = String(b.trigger_text || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+      const hit = (b.reply_type === 'exact')
+        ? triggers.includes(triggerLc)
+        : triggers.some(t => triggerLc.includes(t));
+      if (!hit) continue;
+      const replyText = [b.header, b.reply_text, b.footer].filter(Boolean).join('\n');
+      const r = await _sendText({ to: from, text: replyText }, cfg);
+      await _logActivity({
+        category: 'message_bot', name: b.name, response_code: r.status,
+        request: { to: from, trigger: triggerLc }, response: r.body
+      });
+      return; // first match wins
+    }
+
+    const tplBots = await db.getAll('wa_template_bots');
+    for (const b of tplBots) {
+      if (Number(b.is_active) !== 1) continue;
+      const triggers = String(b.trigger_text || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+      const hit = (b.reply_type === 'exact')
+        ? triggers.includes(triggerLc)
+        : triggers.some(t => triggerLc.includes(t));
+      if (!hit) continue;
+      const variables = typeof b.variables_json === 'string' ? safeJson(b.variables_json) : (b.variables_json || []);
+      const lead = leadId ? await db.findById('leads', leadId) : null;
+      const renderedVars = (variables || []).map(v => _renderMerge(v.value || v, lead, { phone: from }));
+      const r = await _sendTemplate({
+        to: from, templateName: b.template_name, language: b.template_language,
+        variables: renderedVars
+      }, cfg);
+      await _logActivity({
+        category: 'template_bot', name: b.name, template_name: b.template_name,
+        response_code: r.status, request: { to: from, trigger: triggerLc }, response: r.body
+      });
+      return;
+    }
+  } catch (e) { console.warn('[wb] bot dispatch failed:', e.message); }
+}
+
+module.exports = {
+  // Settings
+  api_wb_settings_get, api_wb_settings_save, api_wb_connect_verify, api_wb_disconnect,
+  // Templates
+  api_wb_templates_sync, api_wb_templates_list,
+  // Chat
+  api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send,
+  // Bots
+  api_wb_message_bots_list, api_wb_message_bots_save, api_wb_message_bots_delete,
+  api_wb_template_bots_list, api_wb_template_bots_save, api_wb_template_bots_delete,
+  // Campaigns
+  api_wb_campaigns_list, api_wb_campaigns_create, api_wb_campaigns_send_now,
+  api_wb_campaigns_pause, api_wb_campaigns_targets,
+  // Activity
+  api_wb_activity_list, api_wb_activity_clear,
+  // Express
+  expressVerify, expressEvent,
+  // Worker
+  startCampaignWorker
+};
