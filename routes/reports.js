@@ -42,6 +42,22 @@ async function api_reports_summary(token, filters) {
   rows.forEach(l => { bySource[l.source || '—'] = (bySource[l.source || '—'] || 0) + 1; });
   const bySourceArr = Object.keys(bySource).map(k => ({ source: k, c: bySource[k] }));
 
+  // Per-product breakdown — uses the products lookup so we show the human
+  // name instead of an opaque numeric product_id. Leads without a product
+  // bucket under "— None —" so they're still visible in the chart.
+  const products = await db.getAll('products');
+  const productById = {};
+  products.forEach(p => { productById[Number(p.id)] = p; });
+  const byProduct = {};
+  rows.forEach(l => {
+    const pid = Number(l.product_id) || 0;
+    const pname = productById[pid]?.name || '— None —';
+    byProduct[pname] = (byProduct[pname] || 0) + 1;
+  });
+  const byProductArr = Object.keys(byProduct)
+    .map(k => ({ product: k, c: byProduct[k] }))
+    .sort((a, b) => b.c - a.c);
+
   const won = rows.filter(l => {
     const s = statuses.find(x => Number(x.id) === Number(l.status_id));
     return s && s.name === 'Won';
@@ -78,7 +94,7 @@ async function api_reports_summary(token, filters) {
 
   return {
     totals: { total: rows.length, new_leads: newCount, won, lost },
-    by_status: byStatus, by_source: bySourceArr, by_user: byUser,
+    by_status: byStatus, by_source: bySourceArr, by_product: byProductArr, by_user: byUser,
     by_manager: byManager, by_team_leader: byTeamLeader,
     scope_options
   };
@@ -100,6 +116,15 @@ async function _applyReportFilters(rows, filters, users) {
   }
   if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
   if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
+  if (filters.status_id)  rows = rows.filter(l => Number(l.status_id) === Number(filters.status_id));
+  // Qualified filter — lead-level boolean. '1' = qualified only, '0' = not
+  // qualified. Empty/undefined = no filter (so the default behaviour is the
+  // same as before this filter existed).
+  if (filters.qualified === '1' || filters.qualified === 1) {
+    rows = rows.filter(l => Number(l.qualified) === 1);
+  } else if (filters.qualified === '0' || filters.qualified === 0) {
+    rows = rows.filter(l => Number(l.qualified) !== 1);
+  }
   if (filters.tag) {
     const t = String(filters.tag).toLowerCase();
     rows = rows.filter(l => String(l.tags || '').toLowerCase().split(',').map(s => s.trim()).includes(t));
@@ -190,4 +215,80 @@ async function api_reports_daily(token, filters) {
   return out;
 }
 
-module.exports = { api_reports_summary, api_reports_funnel, api_reports_daily };
+/**
+ * Returns the full list of leads matching the current report filters, with
+ * lookups already resolved (status name, product name, owner name, etc.) so
+ * the frontend can hand the rows directly to SheetJS / CSV with no extra API
+ * calls.
+ *
+ * Why a dedicated endpoint instead of reusing api_leads_list?
+ *   - The reports filters (role, scope_user_id, qualified, tag, custom_*)
+ *     don't exist on api_leads_list and we want export+chart to agree exactly.
+ *   - We want to return ALL matches (no pagination) — capped at a sane upper
+ *     bound so a runaway date range can't OOM the page.
+ *   - We want a fixed, export-friendly column shape (assigned_name,
+ *     status_name, product_name) so the spreadsheet is readable without the
+ *     user joining IDs by hand.
+ */
+async function api_reports_exportLeads(token, filters) {
+  const me = await authUser(token);
+  let rows = await _visibleLeads(me);
+  const users = await db.getAll('users');
+  rows = await _applyReportFilters(rows, filters, users);
+
+  const [statuses, products] = await Promise.all([
+    db.getAll('statuses'), db.getAll('products')
+  ]);
+  const usersById = {}, statusesById = {}, productsById = {};
+  users.forEach(u => { usersById[Number(u.id)] = u; });
+  statuses.forEach(s => { statusesById[Number(s.id)] = s; });
+  products.forEach(p => { productsById[Number(p.id)] = p; });
+
+  // Newest first — same default the leads view uses.
+  rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+  // Hard cap to avoid pulling the entire DB if someone forgets a date range.
+  // 10k leads is plenty for a quarterly export and well under the browser's
+  // ability to render an XLSX in memory.
+  const MAX = 10000;
+  const truncated = rows.length > MAX;
+  if (truncated) rows = rows.slice(0, MAX);
+
+  const out = rows.map(l => {
+    const u = usersById[Number(l.assigned_to)];
+    const s = statusesById[Number(l.status_id)];
+    const p = productsById[Number(l.product_id)];
+    let extra = {};
+    try {
+      extra = typeof l.extra_json === 'string' ? JSON.parse(l.extra_json || '{}') : (l.extra_json || {});
+    } catch (_) { extra = {}; }
+    return {
+      id: l.id,
+      name: l.name || '',
+      phone: l.phone || '',
+      whatsapp: l.whatsapp || '',
+      email: l.email || '',
+      city: l.city || '',
+      source: l.source || '',
+      status_name: s ? s.name : '',
+      product_name: p ? p.name : '',
+      assigned_name: u ? u.name : '',
+      qualified: Number(l.qualified) === 1 ? 'Yes' : 'No',
+      tags: l.tags || '',
+      gclid: l.gclid || '',
+      utm_source: l.utm_source || '',
+      utm_medium: l.utm_medium || '',
+      utm_campaign: l.utm_campaign || '',
+      utm_term: l.utm_term || '',
+      utm_content: l.utm_content || '',
+      next_followup_at: l.next_followup_at || '',
+      created_at: l.created_at || '',
+      notes: l.notes || '',
+      extra
+    };
+  });
+
+  return { leads: out, total: out.length, truncated, max: MAX };
+}
+
+module.exports = { api_reports_summary, api_reports_funnel, api_reports_daily, api_reports_exportLeads };

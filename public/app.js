@@ -4431,7 +4431,7 @@ VIEWS.tatreport = async (view) => {
 VIEWS.reports = async (view) => {
   await ensureChartJs();
   view.innerHTML = '';
-  const { users = [], products = [], sources = [] } = CRM.cache;
+  const { users = [], products = [], sources = [], statuses = [] } = CRM.cache;
   const filterBar = h('div', { class: 'toolbar' },
     h('input', { type: 'date', id: 'rep-from' }),
     h('span', {}, 'to'),
@@ -4444,19 +4444,32 @@ VIEWS.reports = async (view) => {
       h('option', { value: 'team_leader' }, 'Team leader'),
       h('option', { value: 'sales' }, 'Tele-caller / Sales')
     ),
+    // ---- Lead-field filters ------------------------------------
+    h('select', { id: 'rep-status' },
+      h('option', { value: '' }, 'Any status'),
+      ...statuses.map(s => h('option', { value: s.id }, s.name))
+    ),
     h('select', { id: 'rep-product' },
       h('option', { value: '' }, 'Any product'),
       ...products.map(p => h('option', { value: p.id }, p.name))
     ),
     selectOpts('rep-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))]),
+    h('select', { id: 'rep-qualified' },
+      h('option', { value: '' }, 'Any qualified'),
+      h('option', { value: '1' }, 'Qualified only'),
+      h('option', { value: '0' }, 'Not qualified')
+    ),
     h('input', { id: 'rep-tag', placeholder: 'Tag (e.g. vip)', style: { maxWidth: '130px' } }),
-    h('button', { class: 'btn primary', onclick: loadReports }, '🔎 Apply')
+    h('button', { class: 'btn primary', onclick: loadReports }, '🔎 Apply'),
+    h('button', { class: 'btn', onclick: downloadReportExcel, title: 'Export filtered leads as Excel (XLSX)' }, '📊 Export Excel'),
+    h('button', { class: 'btn', onclick: downloadReportCsv, title: 'Export filtered leads as CSV' }, '⬇️ CSV')
   );
   view.appendChild(filterBar);
   view.appendChild(h('div', { id: 'rep-cards', class: 'cards' }));
   view.appendChild(h('div', { class: 'chart-grid' },
     h('div', { class: 'card' }, h('h3', {}, 'By status'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-status' }))),
     h('div', { class: 'card' }, h('h3', {}, 'By source'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-source' }))),
+    h('div', { class: 'card' }, h('h3', {}, 'By product'), h('div', { class: 'chart-wrap' }, h('canvas', { id: 'chart-product' }))),
     h('div', { class: 'card card-wide' }, h('h3', {}, 'Lead funnel'), h('div', { id: 'chart-funnel-wrap', class: 'rfun-wrap' })),
     h('div', { class: 'card card-wide' },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem', flexWrap: 'wrap', gap: '.5rem' } },
@@ -4471,16 +4484,27 @@ VIEWS.reports = async (view) => {
   await loadReports();
 };
 
-async function loadReports() {
+/**
+ * Read the current report filter bar into a plain object. Centralised so the
+ * Apply button, the Excel export, and the CSV export all agree on what
+ * "current filters" means — otherwise the export could silently disagree with
+ * the on-screen charts (a classic source of "but the numbers don't match!").
+ */
+function _currentReportFilters() {
   const from = $('#rep-from')?.value || undefined;
   const to   = $('#rep-to')?.value || undefined;
   const user = $('#rep-user')?.value || undefined;
   const role = $('#rep-role')?.value || undefined;
+  const status_id = $('#rep-status')?.value || undefined;
   const product_id = $('#rep-product')?.value || undefined;
   const source = $('#rep-source')?.value || undefined;
+  const qualified = $('#rep-qualified')?.value || undefined;
   const tag = $('#rep-tag')?.value || undefined;
-  // Pass the SAME filter object to every endpoint so charts and tables agree.
-  const filters = { from, to, scope_user_id: user, role, product_id, source, tag };
+  return { from, to, scope_user_id: user, role, status_id, product_id, source, qualified, tag };
+}
+
+async function loadReports() {
+  const filters = _currentReportFilters();
   const [summary, funnel, daily] = await Promise.all([
     api('api_reports_summary', filters),
     api('api_reports_funnel',  filters),
@@ -4503,6 +4527,11 @@ async function loadReports() {
   makeChart('chart-source', 'bar',
     (summary.by_source || []).map(x => x.source),
     (summary.by_source || []).map(x => x.c));
+  // "By product" — same bar style. Backend already sorts DESC so the biggest
+  // product reads first. Drives top-of-mind for "what are we actually selling".
+  makeChart('chart-product', 'bar',
+    (summary.by_product || []).map(x => x.product),
+    (summary.by_product || []).map(x => x.c));
   // Funnel: replaced the horizontal-bar chart with a true funnel visual
   // (decreasing-width rows showing both count and conversion-from-top %).
   renderFunnel('chart-funnel-wrap', funnel);
@@ -4521,6 +4550,156 @@ async function loadReports() {
       h('td', { class: 'cell-ok' }, u.won), h('td', { class: 'cell-err' }, u.lost)
     )))
   )));
+}
+
+/* --------------------------------------------------------------------
+ * Reports section — Excel / CSV export of the filtered leads
+ *
+ * Both buttons hit `api_reports_exportLeads` with the SAME filter object
+ * loadReports() uses, so what you see in the charts is exactly what you
+ * download. The Excel path lazy-loads SheetJS (already shipped for the CSV
+ * import flow) so the 800kb library only downloads when the user actually
+ * clicks the button.
+ * -------------------------------------------------------------------- */
+
+// Column definition is shared by both exports so adding a new column shows
+// up in CSV and XLSX simultaneously. Order matters — that's the column order
+// in the resulting file.
+const REPORT_EXPORT_COLUMNS = [
+  ['id',               'Lead ID'],
+  ['name',             'Name'],
+  ['phone',            'Phone'],
+  ['whatsapp',         'WhatsApp'],
+  ['email',            'Email'],
+  ['city',             'City'],
+  ['source',           'Source'],
+  ['status_name',      'Status'],
+  ['product_name',     'Product'],
+  ['assigned_name',    'Assigned to'],
+  ['qualified',        'Qualified'],
+  ['tags',             'Tags'],
+  ['gclid',            'GCLID'],
+  ['utm_source',       'UTM Source'],
+  ['utm_medium',       'UTM Medium'],
+  ['utm_campaign',     'UTM Campaign'],
+  ['utm_term',         'UTM Term'],
+  ['utm_content',      'UTM Content'],
+  ['next_followup_at', 'Next Follow-up'],
+  ['created_at',       'Created'],
+  ['notes',            'Notes']
+];
+
+function _buildExportRow(lead) {
+  const row = {};
+  REPORT_EXPORT_COLUMNS.forEach(([key, header]) => {
+    let v = lead[key];
+    if (v == null) v = '';
+    // Created/follow-up dates: format as IST yyyy-mm-dd hh:mm so Excel
+    // doesn't show ugly ISO strings.
+    if (key === 'created_at' || key === 'next_followup_at') {
+      if (v) {
+        try {
+          const d = new Date(v);
+          if (!isNaN(d)) v = d.toLocaleString('en-IN', { hour12: false });
+        } catch (_) {}
+      }
+    }
+    row[header] = v;
+  });
+  // Flatten interesting custom fields so a "Budget" or "Project type" extra
+  // becomes its own column. Prefix with "extra_" to avoid collisions.
+  if (lead.extra && typeof lead.extra === 'object') {
+    Object.keys(lead.extra).forEach(k => {
+      const ek = 'Extra · ' + k;
+      if (!(ek in row)) row[ek] = lead.extra[k];
+    });
+  }
+  return row;
+}
+
+function _exportFilenameStem(filters) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const range = (filters.from || filters.to)
+    ? '_' + (filters.from || 'start') + '_to_' + (filters.to || stamp)
+    : '_' + stamp;
+  return 'lead-report' + range;
+}
+
+async function _fetchReportLeads() {
+  const filters = _currentReportFilters();
+  let resp;
+  try {
+    resp = await api('api_reports_exportLeads', filters);
+  } catch (e) {
+    alert('Could not load leads for export: ' + (e.message || e));
+    return null;
+  }
+  if (!resp || !Array.isArray(resp.leads) || resp.leads.length === 0) {
+    alert('No leads match the current report filters — nothing to export.');
+    return null;
+  }
+  if (resp.truncated) {
+    alert('Export truncated to the first ' + resp.max + ' leads. Narrow the date range or filters to get the full list.');
+  }
+  return { filters, leads: resp.leads };
+}
+
+async function downloadReportExcel() {
+  const ctx = await _fetchReportLeads();
+  if (!ctx) return;
+  let XLSX;
+  try {
+    XLSX = await ensureXLSX();
+  } catch (e) {
+    alert('Could not load the Excel library — try the CSV button instead.');
+    return;
+  }
+  const rows = ctx.leads.map(_buildExportRow);
+  const ws = XLSX.utils.json_to_sheet(rows);
+  // Auto-size columns based on the longest cell — keeps Phone/Email readable
+  // without manual fiddling in Excel.
+  const colWidths = [];
+  if (rows.length) {
+    Object.keys(rows[0]).forEach((header, i) => {
+      let max = String(header).length;
+      rows.forEach(r => {
+        const v = r[header] == null ? '' : String(r[header]);
+        if (v.length > max) max = v.length;
+      });
+      colWidths[i] = { wch: Math.min(Math.max(max + 2, 10), 50) };
+    });
+  }
+  ws['!cols'] = colWidths;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Leads');
+  XLSX.writeFile(wb, _exportFilenameStem(ctx.filters) + '.xlsx');
+}
+
+async function downloadReportCsv() {
+  const ctx = await _fetchReportLeads();
+  if (!ctx) return;
+  const rows = ctx.leads.map(_buildExportRow);
+  // Union of all keys so custom-field columns aren't dropped if the first
+  // lead happens to have no extras.
+  const headerSet = [];
+  rows.forEach(r => Object.keys(r).forEach(k => { if (!headerSet.includes(k)) headerSet.push(k); }));
+  const escape = (v) => {
+    if (v == null) return '';
+    const s = String(v);
+    if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  };
+  const lines = [headerSet.map(escape).join(',')];
+  rows.forEach(r => lines.push(headerSet.map(k => escape(r[k])).join(',')));
+  // Lead with a UTF-8 BOM so Excel opens the file with the right encoding
+  // (otherwise Indian names with diacritics show up as gibberish).
+  const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = _exportFilenameStem(ctx.filters) + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
