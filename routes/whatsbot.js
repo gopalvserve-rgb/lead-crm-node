@@ -817,12 +817,40 @@ async function api_wb_campaigns_targets(token, id) {
 async function api_wb_activity_list(token, filters) {
   await authUser(token);
   filters = filters || {};
+  const cat = filters.category;
+  const search = String(filters.q || '').trim();
   let { rows } = await db.query(
     `SELECT id, category, name, template_name, response_code, type, recorded_on
-       FROM wa_activity_log ORDER BY recorded_on DESC LIMIT 500`
+       FROM wa_activity_log
+       ORDER BY recorded_on DESC LIMIT 500`
   );
-  if (filters.category) rows = rows.filter(r => r.category === filters.category);
+  if (cat)    rows = rows.filter(r => r.category === cat);
+  if (search) {
+    const s = search.toLowerCase();
+    rows = rows.filter(r =>
+      String(r.name || '').toLowerCase().includes(s) ||
+      String(r.template_name || '').toLowerCase().includes(s) ||
+      String(r.category || '').toLowerCase().includes(s)
+    );
+  }
   return rows;
+}
+
+/**
+ * Full payload for a single activity log row — request + response JSON.
+ * Used by the "View" button on each Activity Log row to reveal the full
+ * Meta API exchange.
+ */
+async function api_wb_activity_get(token, id) {
+  await authUser(token);
+  const r = await db.findById('wa_activity_log', id);
+  if (!r) throw new Error('Not found');
+  return {
+    id: r.id, category: r.category, name: r.name, template_name: r.template_name,
+    response_code: r.response_code, type: r.type, recorded_on: r.recorded_on,
+    request: typeof r.request_json === 'string' ? safeJsonObj(r.request_json) : (r.request_json || {}),
+    response: typeof r.response_json === 'string' ? safeJsonObj(r.response_json) : (r.response_json || {})
+  };
 }
 
 async function api_wb_activity_clear(token) {
@@ -946,6 +974,15 @@ async function expressEvent(req, res) {
   res.status(200).send('ok'); // Always 200 fast — process async
   try {
     const body = req.body || {};
+    // Always log the raw inbound payload so the user can review every webhook
+    // hit Meta sends us, regardless of whether we end up acting on it.
+    try {
+      await _logActivity({
+        category: 'webhook_in', name: body.object || 'unknown',
+        response_code: 200, request: { headers: { 'user-agent': req.get('user-agent') } },
+        response: body
+      });
+    } catch (_) {}
     if (body.object !== 'whatsapp_business_account') return;
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
@@ -955,6 +992,15 @@ async function expressEvent(req, res) {
         // capture the first one in error_text so the chat UI can display it.
         if (Array.isArray(value.statuses)) {
           for (const s of value.statuses) {
+            // Per-status pretty log entry
+            try {
+              await _logActivity({
+                category: 'webhook_status', name: s.status || 'unknown',
+                response_code: 200,
+                request: { wa_message_id: s.id, recipient: s.recipient_id, conversation: s.conversation?.id, pricing: s.pricing },
+                response: s
+              });
+            } catch (_) {}
             const upd = {};
             if (s.status === 'delivered') upd.delivered_at = db.nowIso();
             if (s.status === 'read')      upd.read_at = db.nowIso();
@@ -1005,6 +1051,15 @@ async function _handleInbound(m, value) {
   const cfg = await _cfg();
   const from = String(m.from || '').replace(/\D/g, '');
   const to = String(value?.metadata?.display_phone_number || cfg.phoneId || '');
+  // Log the inbound message so admins see it in Activity Log
+  try {
+    await _logActivity({
+      category: 'webhook_message', name: m.type || 'text',
+      response_code: 200,
+      request: { from, to },
+      response: m
+    });
+  } catch (_) {}
   let text = '';
   let mtype = m.type || 'text';
   let mediaId = null;
@@ -1109,7 +1164,7 @@ module.exports = {
   api_wb_campaigns_list, api_wb_campaigns_create, api_wb_campaigns_send_now,
   api_wb_campaigns_pause, api_wb_campaigns_targets,
   // Activity
-  api_wb_activity_list, api_wb_activity_clear,
+  api_wb_activity_list, api_wb_activity_get, api_wb_activity_clear,
   // Express
   expressVerify, expressEvent,
   // Worker

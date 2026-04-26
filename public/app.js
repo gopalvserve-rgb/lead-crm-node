@@ -3919,28 +3919,129 @@ async function wbChat() {
 // ---------- Activity Log ----------
 async function wbActivity() {
   const wrap = h('div', {});
-  const rows = await api('api_wb_activity_list', {}).catch(() => []);
+
+  // Toolbar with category filter + search + auto-refresh + clear
+  const catSel = h('select', { id: 'wb-act-cat' },
+    h('option', { value: '' }, 'All categories'),
+    h('option', { value: 'chat' }, '💬 Chat (outbound)'),
+    h('option', { value: 'campaign' }, '📣 Campaigns'),
+    h('option', { value: 'message_bot' }, '🤖 Message bots'),
+    h('option', { value: 'template_bot' }, '🤖 Template bots'),
+    h('option', { value: 'template_sync' }, '📋 Template sync'),
+    h('option', { value: 'webhook_in' }, '📥 Webhook (raw)'),
+    h('option', { value: 'webhook_status' }, '✅ Status updates'),
+    h('option', { value: 'webhook_message' }, '📩 Inbound messages')
+  );
+  const searchInp = h('input', { id: 'wb-act-q', placeholder: 'Search name / template…', style: { flex: 1 } });
+  const tbody = h('tbody', {});
+  const reload = async () => {
+    const data = await api('api_wb_activity_list', { category: catSel.value || undefined, q: searchInp.value || undefined }).catch(() => []);
+    tbody.innerHTML = '';
+    if (!data.length) {
+      tbody.appendChild(h('tr', {}, h('td', { colspan: 8, class: 'muted', style: { textAlign: 'center', padding: '1.5rem' } }, 'No activity matching this filter.')));
+      return;
+    }
+    data.forEach(r => {
+      const codeColor = r.response_code === 200 ? '#10b981' : (r.response_code ? '#ef4444' : '#94a3b8');
+      const catColor = {
+        chat: '#3b82f6', campaign: '#8b5cf6',
+        message_bot: '#06b6d4', template_bot: '#06b6d4',
+        template_sync: '#64748b',
+        webhook_in: '#fbbf24', webhook_status: '#10b981', webhook_message: '#14b8a6'
+      }[r.category] || '#64748b';
+      tbody.appendChild(h('tr', {},
+        h('td', {}, r.id),
+        h('td', {}, h('span', { class: 'tag', style: { background: catColor, color: '#fff', fontSize: '.7rem' } }, r.category)),
+        h('td', {}, r.name || '—'),
+        h('td', {}, r.template_name ? h('code', {}, r.template_name) : '—'),
+        h('td', {}, h('span', { class: 'tag', style: { background: codeColor, color: '#fff' } }, r.response_code || '—')),
+        h('td', { class: 'muted' }, r.type || '—'),
+        h('td', { class: 'muted', style: { whiteSpace: 'nowrap' } }, fmtDate(r.recorded_on, 'relative')),
+        h('td', {}, h('button', { class: 'btn sm', onclick: () => openWbActivityDetailModal(r.id) }, '🔍 View'))
+      ));
+    });
+  };
+  catSel.onchange = reload;
+  let _searchTimer = null;
+  searchInp.oninput = () => { clearTimeout(_searchTimer); _searchTimer = setTimeout(reload, 300); };
+
   wrap.appendChild(h('div', { class: 'toolbar' },
-    h('h3', { style: { margin: 0, flex: 1 } }, '📑 Activity log (' + rows.length + ')'),
+    h('h3', { style: { margin: 0 } }, '📑 Activity log'),
+    catSel,
+    searchInp,
+    h('button', { class: 'btn', onclick: reload, title: 'Refresh' }, '🔄'),
     h('button', { class: 'btn ghost danger', onclick: async () => {
       if (!await confirmDialog('Clear all activity log entries?')) return;
       await api('api_wb_activity_clear'); toast('Cleared'); showWbTab('activity');
     } }, '🗑️ Clear log')
   ));
-  if (!rows.length) { wrap.appendChild(h('p', { class: 'muted' }, 'No activity yet.')); return wrap; }
+
+  wrap.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+    'Every send to Meta and every webhook from Meta is logged here. ',
+    'Click 🔍 View on any row to see the full request/response JSON. ',
+    'Webhook URL: ', h('code', {}, location.origin + '/hook/whatsapp_webhook')
+  ));
+
   wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
-    h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Category'), h('th', {}, 'Name'), h('th', {}, 'Template'), h('th', {}, 'Code'), h('th', {}, 'Type'), h('th', {}, 'Recorded on'))),
-    h('tbody', {}, ...rows.map(r => h('tr', {},
-      h('td', {}, r.id),
-      h('td', {}, r.category),
-      h('td', {}, r.name || '—'),
-      h('td', {}, r.template_name ? h('code', {}, r.template_name) : '—'),
-      h('td', {}, h('span', { class: 'tag', style: { background: r.response_code === 200 ? '#10b981' : '#ef4444', color: '#fff' } }, r.response_code || 'err')),
-      h('td', {}, r.type || '—'),
-      h('td', { class: 'muted' }, fmtDate(r.recorded_on, 'relative'))
-    )))
+    h('thead', {}, h('tr', {},
+      h('th', {}, '#'), h('th', {}, 'Category'), h('th', {}, 'Name'),
+      h('th', {}, 'Template'), h('th', {}, 'Code'), h('th', {}, 'Type'),
+      h('th', {}, 'Recorded on'), h('th', {}, '')
+    )),
+    tbody
   )));
+  await reload();
   return wrap;
+}
+
+/**
+ * Detail modal — shows the full request and response JSON for a single
+ * activity log row. Two-column layout (request / response) with clean
+ * pretty-printing so the user can read what we sent to Meta and what
+ * Meta sent back.
+ */
+async function openWbActivityDetailModal(id) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '📑 Activity #' + id),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const content = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+  body.appendChild(content);
+  m.appendChild(body);
+  document.body.appendChild(m);
+
+  try {
+    const r = await api('api_wb_activity_get', id);
+    content.innerHTML = '';
+    // Header row
+    content.appendChild(h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginBottom: '1rem' } },
+      h('span', { class: 'tag', style: { background: '#3b82f6', color: '#fff' } }, r.category || ''),
+      r.name ? h('span', { class: 'tag', style: { background: '#64748b', color: '#fff' } }, r.name) : null,
+      r.template_name ? h('span', { class: 'tag', style: { background: '#10b981', color: '#fff' } }, r.template_name) : null,
+      r.response_code ? h('span', { class: 'tag', style: { background: r.response_code === 200 ? '#10b981' : '#ef4444', color: '#fff' } }, 'HTTP ' + r.response_code) : null,
+      h('span', { class: 'muted' }, fmtDate(r.recorded_on))
+    ));
+    // Two-column request/response viewer
+    const grid = h('div', { class: 'wb-act-grid' });
+    grid.appendChild(h('div', { class: 'card' },
+      h('h4', { style: { marginTop: 0 } }, '📤 Request (we sent)'),
+      h('pre', { class: 'wb-json' }, JSON.stringify(r.request || {}, null, 2))
+    ));
+    grid.appendChild(h('div', { class: 'card' },
+      h('h4', { style: { marginTop: 0 } }, '📥 Response (Meta returned)'),
+      h('pre', { class: 'wb-json' }, JSON.stringify(r.response || {}, null, 2))
+    ));
+    content.appendChild(grid);
+    // Copy buttons
+    content.appendChild(h('div', { style: { marginTop: '1rem' } },
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(JSON.stringify(r, null, 2)); toast('Copied full JSON'); } }, '📋 Copy full JSON')
+    ));
+  } catch (e) {
+    content.innerHTML = '';
+    content.appendChild(h('div', { class: 'error-box' }, 'Could not load: ' + e.message));
+  }
 }
 
 /**

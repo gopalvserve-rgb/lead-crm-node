@@ -247,6 +247,22 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .btn-fb-meta.disabled, .btn-fb-meta:disabled { background: #94a3b8; cursor: not-allowed; box-shadow: none; }
 .btn-fb-meta .fb-icon { background: #fff; color: #2563eb; padding: 0 .35rem; border-radius: 4px; font-weight: 800; }
 
+/* WhatsBot Activity Log — two-column JSON viewer */
+.wb-act-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;
+}
+@media (max-width: 780px) {
+  .wb-act-grid { grid-template-columns: 1fr; }
+}
+.wb-json {
+  background: #0f172a; color: #e2e8f0;
+  padding: 1rem; border-radius: 6px;
+  font-size: .75rem; line-height: 1.45;
+  overflow-x: auto; max-height: 480px;
+  white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, Consolas, Menlo, monospace;
+}
+
 /* Green WhatsApp button (leads list) */
 .wa-cloud-btn {
   background: #25d366 !important;
