@@ -2616,35 +2616,48 @@ VIEWS.pipeline = async (view) => {
   const total = summary.totals.total || 1;
   view.innerHTML = '';
 
-  // Funnel summary card
+  // Funnel summary card — waterfall view: biggest stage on top,
+  // narrower as we go down. Hides empty stages so the visual stays clean.
+  // Sort by count DESC and use the top stage as the conversion baseline.
+  const funnelSorted = [...funnel]
+    .map(s => ({ ...s, _c: Number(s.count) || 0 }))
+    .filter(s => s._c > 0)
+    .sort((a, b) => b._c - a._c);
+  const topCount = funnelSorted[0]?._c || total;
   view.appendChild(h('div', { class: 'card' },
     h('h3', {}, 'Sales funnel'),
     h('div', { class: 'funnel' },
-      ...funnel.map((s, i) => {
-        const pct = Math.round((s.count / total) * 100);
-        const width = Math.max(20, pct);
-        const prev = i > 0 ? funnel[i - 1].count : total;
-        const conv = prev > 0 ? Math.round((s.count / prev) * 100) : 0;
+      ...funnelSorted.map((s, i) => {
+        const pct = Math.round((s._c / total) * 100);
+        const width = topCount > 0 ? Math.max(20, Math.round((s._c / topCount) * 100)) : 20;
+        const prev = i > 0 ? funnelSorted[i - 1]._c : topCount;
+        const conv = prev > 0 ? Math.round((s._c / prev) * 100) : 0;
         return h('div', { class: 'funnel-row' },
           h('div', { class: 'funnel-label' }, s.name),
           h('div', { class: 'funnel-bar-wrap' },
             h('div', { class: 'funnel-bar', style: { width: width + '%', background: s.color } },
-              h('span', { class: 'funnel-count' }, s.count),
+              h('span', { class: 'funnel-count' }, s._c),
               h('span', { class: 'funnel-pct' }, pct + '%')
             )
           ),
-          h('div', { class: 'funnel-conv' }, i === 0 ? '—' : conv + '% conv')
+          h('div', { class: 'funnel-conv' }, i === 0 ? '—' : conv + '% vs prev')
         );
       })
     )
   ));
 
-  // Leads per stage (expandable sections)
+  // Leads per stage (expandable sections) — also rendered in waterfall
+  // order so the biggest bucket is at the top, matching the funnel above.
+  // Includes empty stages too so the user can still see them and add
+  // leads if needed.
   view.appendChild(h('h3', { style: { marginTop: '1.25rem' } }, 'Leads by stage'));
   const wrap = h('div', { class: 'pipeline-stages' });
   view.appendChild(wrap);
 
-  funnel.forEach(s => {
+  const funnelByCount = [...funnel]
+    .map(s => ({ ...s, _c: Number(s.count) || 0 }))
+    .sort((a, b) => b._c - a._c);
+  funnelByCount.forEach(s => {
     const entry = pipeline.find(p => Number(p.id) === Number(s.id));
     const leads = entry?.leads || [];
     const details = h('details', { class: 'pipeline-stage-card', style: { borderTopColor: s.color } },
