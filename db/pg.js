@@ -189,6 +189,44 @@ const SCHEMA = {
     columns: ['user_id', 'fingerprint', 'user_agent', 'ip',
               'first_seen_at', 'last_seen_at'],
     json: []
+  },
+  // v9: Web Push subscriptions (browser/PWA)
+  push_subscriptions: {
+    columns: ['user_id', 'endpoint', 'p256dh', 'auth', 'ua', 'created_at'],
+    json: []
+  },
+  // v9: FCM tokens for the Android Capacitor app
+  fcm_tokens: {
+    columns: ['user_id', 'token', 'platform', 'ua', 'created_at'],
+    json: []
+  },
+  // v10: admin-managed tag library
+  tag_library: {
+    columns: ['name', 'color', 'is_active', 'created_at'],
+    json: []
+  },
+  // v11: TAT — stage transitions log
+  lead_stage_log: {
+    columns: ['lead_id', 'from_status_id', 'to_status_id', 'user_id',
+              'duration_s', 'created_at'],
+    json: []
+  },
+  // v11: TAT — every action timeline event per lead
+  lead_actions: {
+    columns: ['lead_id', 'action_type', 'user_id', 'meta_json', 'created_at'],
+    json: ['meta_json']
+  },
+  // v11: TAT — admin per-stage thresholds
+  tat_thresholds: {
+    columns: ['status_id', 'threshold_minutes', 'is_active', 'updated_at'],
+    json: []
+  },
+  // v11: TAT — open/closed violation rows
+  tat_violations: {
+    columns: ['lead_id', 'status_id', 'user_id', 'threshold_minutes',
+              'triggered_at', 'resolved_at', 'escalation_level',
+              'last_escalated_at', 'notes'],
+    json: []
   }
 };
 
