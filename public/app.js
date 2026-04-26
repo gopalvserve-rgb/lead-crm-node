@@ -5013,17 +5013,23 @@ function openAutomationModal(existing) {
           h('input', { name: 'subject', value: a.subject || '', placeholder: 'New lead: {{lead.name}}' })
         ),
         h('div', { class: 'f-row full', id: 'auto-wa-template-row', hidden: true },
-          h('label', {}, 'WhatsApp template (from Meta)'),
+          h('label', {}, 'WhatsApp template (from Meta) *'),
           h('div', { class: 'toolbar' },
             h('select', { id: 'wa-template-select', style: { flex: 1 } },
-              h('option', { value: '' }, '— free-form text (session message, 24h window) —')
+              h('option', { value: '' }, '— pick an APPROVED template —')
             ),
             h('button', { type: 'button', class: 'btn', onclick: loadWATemplates }, '🔄 Refresh')
           ),
-          h('small', { class: 'muted' }, 'Pick an APPROVED template to send outside the 24h window. For a template with {{1}}, {{2}} body params, list them pipe-separated in the Template field below, e.g. "{{lead.name}}|{{lead.phone}}".')
+          h('small', { class: 'muted' }, 'Only APPROVED Meta templates can be sent. The message goes exactly as Meta approved it — variables below are filled per recipient at send time.')
         ),
-        h('div', { class: 'f-row full' },
-          h('label', {}, 'Template / body (supports {{lead.name}}, {{lead.phone}}, {{lead.status_name}}, {{user.name}}, {{new_status.name}}, {{date}})'),
+        // Variables panel — auto-renders one input per body param of the
+        // selected WhatsApp template, with sensible defaults.
+        h('div', { class: 'f-row full', id: 'auto-wa-vars-row', hidden: true },
+          h('label', {}, 'Template variables'),
+          h('div', { id: 'auto-wa-vars-container' })
+        ),
+        h('div', { class: 'f-row full', id: 'auto-template-row' },
+          h('label', {}, 'Template / body (email channel) — supports {{lead.name}}, {{lead.phone}}, {{lead.status_name}}, {{user.name}}, {{new_status.name}}, {{date}}'),
           h('textarea', { name: 'template', rows: 5, placeholder: 'Hi {{lead.name}}, your status is now {{new_status.name}}. We\'ll get back to you shortly.' }, a.template || '')
         )
       ),
@@ -5031,30 +5037,39 @@ function openAutomationModal(existing) {
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
           const f = $('#auto-form');
-          // Use FormData — reading f.name etc. directly clashes with built-in
-          // HTMLFormElement properties (.name, .action, .method, .elements,
-          // .submit) and can return the form's attribute instead of the
-          // named input. FormData uses the internal named-element collection
-          // which is reliable.
           const fd = new FormData(f);
           const name      = String(fd.get('name')      || '').trim();
           const eventKey  = String(fd.get('event')     || '').trim();
           const channel   = String(fd.get('channel')   || '').trim();
           const recipient = String(fd.get('recipient') || 'lead');
           const condition = String(fd.get('condition') || '');
-          const template  = String(fd.get('template')  || '').trim();
+          let template    = String(fd.get('template')  || '').trim();
           let subject     = String(fd.get('subject')   || '');
           const waSel = $('#wa-template-select');
-          if (channel === 'whatsapp' && waSel && waSel.value) {
+          if (channel === 'whatsapp') {
+            // For WhatsApp channel, the template comes from the APPROVED
+            // template list — no free-form body text. We store the template
+            // name in `subject` (template:<name>:<lang>) and the variables
+            // pipe-separated in `template`. The runtime sender pulls them
+            // both apart and calls Meta's API with the correct components.
+            if (!waSel || !waSel.value) { toast('Pick an APPROVED WhatsApp template', 'err'); return; }
             const opt = waSel.options[waSel.selectedIndex];
             subject = 'template:' + waSel.value + ':' + (opt.dataset.lang || 'en_US');
+            // Collect variables (one input per {{N}} in the template body)
+            const varInputs = [...document.querySelectorAll('#auto-wa-vars-container input.wa-var')];
+            template = varInputs.map(i => String(i.value || '').trim()).join('|');
+            // Empty variables are fine — Meta accepts blank substitutions.
+            // But to satisfy the server's "template required" check, set a
+            // placeholder if there are zero body params.
+            if (!template) template = '_';
           }
-          // Friendlier client-side validation — tells you exactly what's missing
+          // Friendlier client-side validation
           const missing = [];
-          if (!name) missing.push('Name');
+          if (!name)     missing.push('Name');
           if (!eventKey) missing.push('Event');
-          if (!channel) missing.push('Channel');
-          if (!template) missing.push('Template / body');
+          if (!channel)  missing.push('Channel');
+          if (channel === 'email' && !template) missing.push('Email body');
+          if (channel === 'whatsapp' && !subject.startsWith('template:')) missing.push('WhatsApp template');
           if (missing.length) { toast('Fill in: ' + missing.join(', '), 'err'); return; }
           const payload = { id: a.id, name, event: eventKey, channel,
             recipient, condition, subject, template, is_active: 1 };
@@ -5069,22 +5084,83 @@ function openAutomationModal(existing) {
   const chSel = modal.querySelector('select[name="channel"]');
   if (chSel) chSel.addEventListener('change', () => toggleChannelUI(chSel.value));
   toggleChannelUI(a.channel);
-  // Pre-fill WA template dropdown on edit
+  // Wire template-select change so variable inputs render when the user
+  // picks a different template.
+  setTimeout(() => {
+    const waSel = $('#wa-template-select');
+    if (waSel) waSel.addEventListener('change', renderWaVarsForSelected);
+  }, 100);
+  // Pre-fill WA template dropdown on edit + render its variables
   if (a.channel === 'whatsapp' && String(a.subject || '').startsWith('template:')) {
     loadWATemplates().then(() => {
       const parts = a.subject.split(':');
       const sel = $('#wa-template-select');
-      if (sel) sel.value = parts[1] || '';
+      if (sel) {
+        sel.value = parts[1] || '';
+        sel.addEventListener('change', renderWaVarsForSelected);
+        renderWaVarsForSelected();
+      }
     });
   }
 }
 
 function toggleChannelUI(channel) {
-  const sub = $('#auto-subject-row');
-  const wa  = $('#auto-wa-template-row');
-  if (sub) sub.hidden = channel !== 'email';
-  if (wa)  wa.hidden  = channel !== 'whatsapp';
-  if (channel === 'whatsapp') loadWATemplates();
+  const sub      = $('#auto-subject-row');
+  const wa       = $('#auto-wa-template-row');
+  const waVars   = $('#auto-wa-vars-row');
+  const tplBody  = $('#auto-template-row');
+  if (sub)     sub.hidden     = channel !== 'email';
+  if (wa)      wa.hidden      = channel !== 'whatsapp';
+  if (waVars)  waVars.hidden  = channel !== 'whatsapp';
+  // Email channel uses the free-form body textarea; WhatsApp doesn't
+  if (tplBody) tplBody.hidden = channel === 'whatsapp';
+  if (channel === 'whatsapp') loadWATemplates().then(() => renderWaVarsForSelected());
+}
+
+/**
+ * Read the currently-selected WA template, look up its body_params count,
+ * and render that many variable inputs in #auto-wa-vars-container.
+ *
+ * Pre-fills sensible defaults for new automations:
+ *   var1 → {{lead.name}}, var2 → {{lead.phone}}, var3 → {{lead.email}}
+ * For EDIT, parses the existing pipe-separated value out of the textarea
+ * (which is the persisted format).
+ */
+function renderWaVarsForSelected() {
+  const sel  = $('#wa-template-select');
+  const cont = $('#auto-wa-vars-container');
+  if (!sel || !cont) return;
+  // Pull the selected template's option label, which contains "(N params)"
+  const opt = sel.options[sel.selectedIndex];
+  const label = opt ? opt.textContent : '';
+  const m = label.match(/(\d+)\s*params/);
+  const paramCount = m ? Number(m[1]) : 0;
+  cont.innerHTML = '';
+  if (!sel.value) {
+    cont.appendChild(h('p', { class: 'muted', style: { fontSize: '.8rem', margin: 0 } },
+      'Pick a template first.'));
+    return;
+  }
+  if (paramCount === 0) {
+    cont.appendChild(h('p', { class: 'muted', style: { fontSize: '.8rem', margin: 0 } },
+      '✓ This template has no variables — it sends as-is.'));
+    return;
+  }
+  // Existing values from the persisted textarea (pipe-separated)
+  const existing = String($('#auto-form')?.elements?.template?.value || '').split('|');
+  const defaults = ['{{lead.name}}', '{{lead.phone}}', '{{lead.email}}', '{{lead.source}}', '{{lead.status_name}}'];
+  for (let i = 0; i < paramCount; i++) {
+    cont.appendChild(h('div', { style: { marginBottom: '.4rem' } },
+      h('label', { class: 'muted', style: { fontSize: '.75rem' } }, 'Variable {{' + (i + 1) + '}}'),
+      h('input', {
+        class: 'wa-var',
+        value: (existing[i] && existing[i] !== '_') ? existing[i] : (defaults[i] || ''),
+        placeholder: defaults[i] || 'value or {{lead.field}}'
+      })
+    ));
+  }
+  cont.appendChild(h('p', { class: 'muted', style: { fontSize: '.75rem', marginTop: '.4rem' } },
+    'Use {{lead.name}}, {{lead.phone}}, {{lead.email}}, {{lead.status_name}}, {{user.name}}, {{date}} or any other lead field as variables. They\'re resolved per recipient at send time.'));
 }
 
 async function loadWATemplates() {
