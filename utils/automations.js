@@ -148,11 +148,75 @@ async function _sendWhatsApp(to, body, ctx, automation) {
       const parts = subj.split(':');
       const name = parts[1];
       const lang = parts[2] || 'en_US';
-      const paramsText = _render(body || '', ctx).split('|').map(s => s.trim()).filter(Boolean);
-      const components = paramsText.length > 0 ? [{
-        type: 'body',
-        parameters: paramsText.map(text => ({ type: 'text', text }))
-      }] : [];
+
+      // Look up the template metadata so we know how many body params Meta
+      // actually expects. The cached row was populated by api_wb_templates_sync
+      // and stores `body_params` (count of {{N}} placeholders in the body) +
+      // `header_type` ('TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | null). This is
+      // the source of truth — without it we were sending whatever the user
+      // pipe-typed, which produced (#132000) "Number of parameters does not
+      // match the expected number" whenever a lead was missing a field.
+      let expectedBodyParams = null;
+      let headerType = null;
+      let headerHasVar = false;
+      try {
+        const tpl = await db.findOneBy('wa_templates', 'name', name);
+        if (tpl) {
+          expectedBodyParams = Number(tpl.body_params) || 0;
+          headerType = tpl.header_type || null;
+          // If the header is TEXT and contains a {{N}} placeholder, we need a
+          // header component too (otherwise Meta also returns 132000).
+          try {
+            const comps = typeof tpl.components_json === 'string'
+              ? JSON.parse(tpl.components_json) : (tpl.components_json || []);
+            const head = (comps || []).find(c => String(c.type).toUpperCase() === 'HEADER');
+            if (head && head.format === 'TEXT' && /\{\{\d+\}\}/.test(head.text || '')) {
+              headerHasVar = true;
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
+
+      // Render the pipe-separated body params. Crucially we DO NOT filter out
+      // empty strings — empties get replaced with a single em-dash so Meta still
+      // sees a non-empty param at the expected position. Then we pad/truncate
+      // to match the template's actual `body_params` count.
+      const FALLBACK = '—';
+      const splitParams = String(_render(body || '', ctx)).split('|').map(s => {
+        const v = (s || '').trim();
+        return v === '' ? FALLBACK : v;
+      });
+      let bodyParams = splitParams;
+      if (expectedBodyParams !== null) {
+        if (bodyParams.length < expectedBodyParams) {
+          // Pad with em-dash so we always send the right count.
+          while (bodyParams.length < expectedBodyParams) bodyParams.push(FALLBACK);
+        } else if (bodyParams.length > expectedBodyParams) {
+          bodyParams = bodyParams.slice(0, expectedBodyParams);
+        }
+      }
+
+      const components = [];
+      // Header component — required only when the header has a TEXT variable.
+      // For IMAGE/VIDEO/DOCUMENT headers the automation flow doesn't yet
+      // support attaching media, so we surface a clearer error than Meta's.
+      if (headerHasVar) {
+        components.push({
+          type: 'header',
+          parameters: [{ type: 'text', text: bodyParams[0] || FALLBACK }]
+        });
+      } else if (headerType && headerType !== 'TEXT') {
+        return {
+          ok: false,
+          error: `Template "${name}" has a ${headerType} header — automations don't support media headers yet. Use a template with a TEXT or no header.`
+        };
+      }
+      if (bodyParams.length > 0) {
+        components.push({
+          type: 'body',
+          parameters: bodyParams.map(text => ({ type: 'text', text }))
+        });
+      }
       payload = {
         messaging_product: 'whatsapp', to: phone, type: 'template',
         template: { name, language: { code: lang }, components }
@@ -169,7 +233,17 @@ async function _sendWhatsApp(to, body, ctx, automation) {
       body: JSON.stringify(payload)
     });
     const j = await r.json();
-    if (j.error) return { ok: false, error: j.error.message };
+    if (j.error) {
+      // Friendlier error for 132000 — the most common automation failure.
+      if (Number(j.error.code) === 132000) {
+        const tplName = (subj.startsWith('template:') && subj.split(':')[1]) || 'unknown';
+        return {
+          ok: false,
+          error: `Template "${tplName}" param count mismatch. Re-sync templates and re-check the pipe-separated values in the automation. (${j.error.message})`
+        };
+      }
+      return { ok: false, error: j.error.message };
+    }
     return { ok: true, detail: 'wa_message_id=' + (j.messages?.[0]?.id || '?') };
   } catch (e) { return { ok: false, error: e.message }; }
 }
