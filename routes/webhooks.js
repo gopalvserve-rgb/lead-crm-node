@@ -150,8 +150,31 @@ async function whatsappEvent(req, res) {
 }
 
 // -------------------- Website hook -------------------------------
+
+/**
+ * Read the inbound API key from any of the conventional places. Lots of
+ * connector tools (Pabbly, Zapier, Make, n8n, Facebook Lead Ads bridges) only
+ * expose certain auth styles in their UI, so we accept all of:
+ *   - `x-api-key: <key>`              (canonical)
+ *   - `Authorization: Bearer <key>`   (most common default in HTTP clients)
+ *   - `api_key` body field            (form-encoded webhooks)
+ *   - `?api_key=<key>` query param    (last-resort for tools that only let
+ *                                       you append URL params)
+ * The rest of the validation is unchanged — must equal WEBSITE_API_KEY.
+ */
+function _extractApiKey(req) {
+  const xkey = req.header('x-api-key');
+  if (xkey) return String(xkey).trim();
+  const auth = req.header('authorization') || '';
+  const bearer = /^bearer\s+(.+)$/i.exec(auth);
+  if (bearer) return String(bearer[1]).trim();
+  if (req.body && req.body.api_key) return String(req.body.api_key).trim();
+  if (req.query && req.query.api_key) return String(req.query.api_key).trim();
+  return '';
+}
+
 async function websiteHook(req, res) {
-  const key = req.header('x-api-key') || (req.body && req.body.api_key) || '';
+  const key = _extractApiKey(req);
   if (!process.env.WEBSITE_API_KEY || key !== process.env.WEBSITE_API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
   }
@@ -252,7 +275,7 @@ async function websiteHook(req, res) {
 }
 
 async function otherHook(req, res) {
-  const key = req.header('x-api-key') || (req.body && req.body.api_key) || '';
+  const key = _extractApiKey(req);
   if (!process.env.WEBSITE_API_KEY || key !== process.env.WEBSITE_API_KEY) {
     return res.status(401).json({ error: 'Invalid API key' });
   }
