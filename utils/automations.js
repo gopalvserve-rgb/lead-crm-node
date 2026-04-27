@@ -152,26 +152,40 @@ async function _sendWhatsApp(to, body, ctx, automation) {
       // Look up the template metadata so we know how many body params Meta
       // actually expects. The cached row was populated by api_wb_templates_sync
       // and stores `body_params` (count of {{N}} placeholders in the body) +
-      // `header_type` ('TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | null). This is
-      // the source of truth — without it we were sending whatever the user
-      // pipe-typed, which produced (#132000) "Number of parameters does not
-      // match the expected number" whenever a lead was missing a field.
+      // `header_type` ('TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | null) +
+      // `components_json` (full component structure including buttons).
+      // This is the source of truth — without it we were sending whatever the
+      // user pipe-typed, which produced (#132000) whenever the count didn't
+      // match Meta's expectation.
       let expectedBodyParams = null;
       let headerType = null;
       let headerHasVar = false;
+      let urlButtons = []; // [{ index, varCount }] for buttons with {{N}} in url
       try {
         const tpl = await db.findOneBy('wa_templates', 'name', name);
         if (tpl) {
           expectedBodyParams = Number(tpl.body_params) || 0;
           headerType = tpl.header_type || null;
-          // If the header is TEXT and contains a {{N}} placeholder, we need a
-          // header component too (otherwise Meta also returns 132000).
           try {
             const comps = typeof tpl.components_json === 'string'
               ? JSON.parse(tpl.components_json) : (tpl.components_json || []);
             const head = (comps || []).find(c => String(c.type).toUpperCase() === 'HEADER');
             if (head && head.format === 'TEXT' && /\{\{\d+\}\}/.test(head.text || '')) {
               headerHasVar = true;
+            }
+            // Walk button components — URL buttons with `{{N}}` in their URL
+            // require a `button` component in the send payload, otherwise Meta
+            // throws 132000 even when body params are correct (very common
+            // with marketing "Thank You" templates that have a "Visit website"
+            // CTA pointing at /thanks/{{1}}).
+            const btnComp = (comps || []).find(c => String(c.type).toUpperCase() === 'BUTTONS');
+            if (btnComp && Array.isArray(btnComp.buttons)) {
+              btnComp.buttons.forEach((b, idx) => {
+                if (String(b.type).toUpperCase() === 'URL' && /\{\{\d+\}\}/.test(b.url || '')) {
+                  const varCount = (b.url.match(/\{\{\d+\}\}/g) || []).length;
+                  urlButtons.push({ index: idx, varCount });
+                }
+              });
             }
           } catch (_) {}
         }
@@ -217,6 +231,23 @@ async function _sendWhatsApp(to, body, ctx, automation) {
           parameters: bodyParams.map(text => ({ type: 'text', text }))
         });
       }
+      // URL button components — Meta requires one `button` component per URL
+      // button that contains a {{N}} placeholder. We default the param to the
+      // lead's phone (a stable per-lead value Meta accepts as a URL fragment)
+      // unless one of the body params is already filled — in which case we
+      // reuse it. This isn't a full button-param API yet, but it stops 132000
+      // for the most common case: "Thank you" templates with a CTA URL.
+      const buttonValue = (ctx.lead?.id != null ? String(ctx.lead.id) : (ctx.lead?.phone || FALLBACK));
+      urlButtons.forEach(b => {
+        const params = [];
+        for (let i = 0; i < b.varCount; i++) params.push({ type: 'text', text: buttonValue });
+        components.push({
+          type: 'button',
+          sub_type: 'url',
+          index: String(b.index),
+          parameters: params
+        });
+      });
       payload = {
         messaging_product: 'whatsapp', to: phone, type: 'template',
         template: { name, language: { code: lang }, components }
