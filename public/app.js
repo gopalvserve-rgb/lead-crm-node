@@ -7290,16 +7290,144 @@ function _collectDevice() {
 }
 
 VIEWS.leaves = async (view) => {
-  const rows = await api('api_leaves_mine');
   view.innerHTML = '';
-  view.append(
-    h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', onclick: openLeaveModal }, '+ Apply')),
-    h('div', { class: 'table-wrap' }, h('table', {},
-      h('thead', {}, h('tr', {}, h('th', {}, 'From'), h('th', {}, 'To'), h('th', {}, 'Reason'), h('th', {}, 'Status'))),
-      h('tbody', {}, ...rows.map(l => h('tr', {}, h('td', {}, l.from_date), h('td', {}, l.to_date), h('td', {}, l.reason || ''), h('td', {}, l.status))))
-    ))
+  const isApprover = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const isAdmin = CRM.user.role === 'admin';
+
+  // Tabs: My leaves (everyone), Pending approvals (managers+), All leaves (admin only)
+  const tabs = [{ id: 'mine', label: 'My leaves' }];
+  if (isApprover) tabs.push({ id: 'pending', label: '⏳ Pending approvals' });
+  if (isAdmin)    tabs.push({ id: 'all',     label: 'All leaves' });
+
+  const subtabs = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'mine' ? ' active' : ''), 'data-leavetab': t.id,
+      onclick: ev => showLeaveTab(ev, t.id) }, t.label))
   );
+  view.append(subtabs, h('div', { id: 'leave-body' }));
+  await showLeaveTab(null, 'mine');
 };
+
+async function showLeaveTab(ev, id) {
+  if (ev) {
+    document.querySelectorAll('.subtab').forEach(b => b.classList.remove('active'));
+    ev.target.classList.add('active');
+  }
+  const body = document.getElementById('leave-body');
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  if (id === 'mine')    body.replaceChildren(await renderMyLeaves());
+  if (id === 'pending') body.replaceChildren(await renderPendingLeaves());
+  if (id === 'all')     body.replaceChildren(await renderAllLeaves());
+}
+
+async function renderMyLeaves() {
+  const rows = await api('api_leaves_mine').catch(() => []);
+  const wrap = h('div', {});
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('button', { class: 'btn primary', onclick: openLeaveModal }, '+ Apply for leave')
+  ));
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No leave applications yet. Click "+ Apply for leave" to submit one.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'From'), h('th', {}, 'To'), h('th', {}, 'Reason'),
+      h('th', {}, 'Status'), h('th', {}, 'Decided by')
+    )),
+    h('tbody', {}, ...rows.map(l => h('tr', {},
+      h('td', {}, l.from_date),
+      h('td', {}, l.to_date),
+      h('td', {}, l.reason || '—'),
+      h('td', {}, leaveStatusPill(l.status)),
+      h('td', { class: 'muted' }, l.approver_name || '—')
+    )))
+  )));
+  return wrap;
+}
+
+async function renderPendingLeaves() {
+  const rows = await api('api_leaves_pending').catch(() => []);
+  const wrap = h('div', {});
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No leave requests waiting on you. 🎉'));
+    return wrap;
+  }
+  wrap.appendChild(h('p', { class: 'muted', style: { marginBottom: '.75rem' } },
+    rows.length + ' request' + (rows.length === 1 ? '' : 's') + ' waiting for your decision'));
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Employee'), h('th', {}, 'From'), h('th', {}, 'To'),
+      h('th', {}, 'Reason'), h('th', {}, 'Applied'), h('th', {}, 'Decision')
+    )),
+    h('tbody', {}, ...rows.map(l => h('tr', {},
+      h('td', {}, h('b', {}, l.user_name || ('User #' + l.user_id))),
+      h('td', {}, l.from_date),
+      h('td', {}, l.to_date),
+      h('td', {}, l.reason || '—'),
+      h('td', { class: 'muted' }, fmtDate(l.created_at, 'relative')),
+      h('td', {},
+        h('button', { class: 'btn sm', style: { background: '#10b981', color: '#fff', marginRight: '.25rem' },
+          onclick: () => decideLeave(l.id, 'approved') }, '✓ Approve'),
+        h('button', { class: 'btn sm', style: { background: '#ef4444', color: '#fff' },
+          onclick: () => decideLeave(l.id, 'rejected') }, '✕ Reject')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+async function renderAllLeaves() {
+  const rows = await api('api_leaves_all').catch(() => []);
+  const wrap = h('div', {});
+  wrap.appendChild(h('p', { class: 'muted', style: { marginBottom: '.75rem' } },
+    'Admin view — every leave application across the org, including ones outside your direct hierarchy.'));
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No leave applications yet.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Employee'), h('th', {}, 'From'), h('th', {}, 'To'),
+      h('th', {}, 'Reason'), h('th', {}, 'Status'),
+      h('th', {}, 'Decided by'), h('th', {}, 'Applied'), h('th', {}, '')
+    )),
+    h('tbody', {}, ...rows.map(l => h('tr', {},
+      h('td', {}, l.user_name || ('User #' + l.user_id)),
+      h('td', {}, l.from_date),
+      h('td', {}, l.to_date),
+      h('td', {}, l.reason || '—'),
+      h('td', {}, leaveStatusPill(l.status)),
+      h('td', { class: 'muted' }, l.approver_name || '—'),
+      h('td', { class: 'muted' }, fmtDate(l.created_at, 'relative')),
+      h('td', {}, l.status === 'pending'
+        ? h('span', {},
+            h('button', { class: 'btn sm', style: { background: '#10b981', color: '#fff', marginRight: '.25rem' },
+              onclick: () => decideLeave(l.id, 'approved') }, '✓'),
+            h('button', { class: 'btn sm', style: { background: '#ef4444', color: '#fff' },
+              onclick: () => decideLeave(l.id, 'rejected') }, '✕')
+          )
+        : '—')
+    )))
+  )));
+  return wrap;
+}
+
+function leaveStatusPill(status) {
+  const map = { pending: '#f59e0b', approved: '#10b981', rejected: '#ef4444' };
+  const c = map[String(status)] || '#94a3b8';
+  return h('span', { class: 'tag', style: { background: c, color: '#fff' } }, status);
+}
+
+async function decideLeave(id, decision) {
+  if (!confirm(`Are you sure you want to mark this leave as "${decision}"?`)) return;
+  try {
+    await api('api_leaves_decide', id, decision);
+    toast('Leave ' + decision);
+    // Re-render whichever tab is currently active
+    const active = document.querySelector('.subtab.active')?.dataset?.leavetab || 'mine';
+    showLeaveTab(null, active);
+  } catch (e) { toast(e.message, 'err'); }
+}
 function openLeaveModal() {
   const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
     h('div', { class: 'modal-head' }, h('h3', {}, 'Apply leave'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),

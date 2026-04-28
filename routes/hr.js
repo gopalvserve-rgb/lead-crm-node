@@ -170,11 +170,57 @@ async function api_attendance_team(token, from, to, userId) {
 
 // ---- Leaves ---------------------------------------------------------
 
+/**
+ * Resolve the chain of approvers for a given user:
+ *   - their immediate parent (direct supervisor — could be team_leader/manager/admin)
+ *   - everyone above them in the parent_id chain (so a team_leader's leave still
+ *     reaches the manager and admin even if the team_leader's direct supervisor
+ *     is a manager)
+ *   - plus all active admins as a safety net (so requests never get stuck if
+ *     parent_id was set incorrectly when the user was created)
+ *
+ * Dedup'd, excludes the applicant themselves. This is the "supervisor list" we
+ * fan notifications out to whenever a leave is applied or decided.
+ */
+async function _leaveApprovers(applicantId) {
+  const users = await db.getAll('users');
+  const byId = {}; users.forEach(u => { byId[Number(u.id)] = u; });
+  const approvers = new Set();
+
+  // Walk up the parent_id chain
+  const visited = new Set([Number(applicantId)]);
+  let cursor = byId[Number(applicantId)];
+  let safety = 10;
+  while (cursor && cursor.parent_id && !visited.has(Number(cursor.parent_id)) && safety-- > 0) {
+    visited.add(Number(cursor.parent_id));
+    const parent = byId[Number(cursor.parent_id)];
+    if (!parent || Number(parent.is_active) === 0) break;
+    if (['admin', 'manager', 'team_leader'].includes(parent.role)) {
+      approvers.add(Number(parent.id));
+    }
+    cursor = parent;
+  }
+
+  // Always include all active admins so a request never gets stuck
+  users.forEach(u => {
+    if (u.role === 'admin' && Number(u.is_active) === 1 && Number(u.id) !== Number(applicantId)) {
+      approvers.add(Number(u.id));
+    }
+  });
+
+  return [...approvers].map(id => byId[id]).filter(Boolean);
+}
+
 async function api_leaves_mine(token) {
   const me = await authUser(token);
+  const users = await db.getAll('users');
+  const byId = {}; users.forEach(u => { byId[Number(u.id)] = u; });
   const rows = (await db.getAll('leaves'))
     .filter(l => Number(l.user_id) === Number(me.id))
-    .sort((a, b) => String(b.from_date).localeCompare(String(a.from_date)));
+    .sort((a, b) => String(b.from_date).localeCompare(String(a.from_date)))
+    .map(l => Object.assign({}, l, {
+      approver_name: byId[Number(l.approved_by)]?.name || ''
+    }));
   return rows;
 }
 
@@ -189,6 +235,33 @@ async function api_leaves_apply(token, leave) {
     status: 'pending',
     created_at: db.nowIso()
   });
+
+  // Notify every supervisor in the chain (and all admins as safety net).
+  // In-app notification + Web Push so the supervisor's phone pings even if
+  // they're not in the CRM at the moment.
+  try {
+    const approvers = await _leaveApprovers(me.id);
+    const title = '🏖️ Leave request from ' + (me.name || 'Employee');
+    const body  = `${leave.from_date} → ${leave.to_date}` + (leave.reason ? ` · ${leave.reason}` : '');
+    const link  = '#/leaves';
+    for (const a of approvers) {
+      try {
+        await db.insert('notifications', {
+          user_id: a.id,
+          type: 'leave_request',
+          title, body, link,
+          is_read: 0,
+          created_at: db.nowIso()
+        });
+      } catch (_) {}
+      try {
+        const push = require('./push');
+        await push.sendPushToUser(a.id, { title, body, url: '/#/leaves', tag: 'leave-' + id, sticky: true });
+      } catch (_) {}
+    }
+  } catch (e) {
+    console.warn('[leaves] supervisor notify failed:', e.message);
+  }
   return { id };
 }
 
@@ -205,11 +278,52 @@ async function api_leaves_pending(token) {
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 }
 
+/**
+ * Admin-only: every leave in the system, regardless of hierarchy.
+ * Safety net for when an employee's parent_id wasn't set correctly so their
+ * application doesn't show up under any manager.
+ */
+async function api_leaves_all(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admins only');
+  const users = await db.getAll('users');
+  const byId = {}; users.forEach(u => { byId[Number(u.id)] = u; });
+  return (await db.getAll('leaves'))
+    .map(l => Object.assign({}, l, {
+      user_name: byId[Number(l.user_id)]?.name || '',
+      approver_name: byId[Number(l.approved_by)]?.name || ''
+    }))
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+}
+
 async function api_leaves_decide(token, id, decision) {
   const me = await authUser(token);
   if (!['admin', 'manager', 'team_leader'].includes(me.role)) throw new Error('Forbidden');
   if (!['approved', 'rejected'].includes(decision)) throw new Error('Bad decision');
+  const leave = await db.findById('leaves', id);
+  if (!leave) throw new Error('Leave not found');
   await db.update('leaves', id, { status: decision, approved_by: me.id });
+
+  // Notify the applicant of the decision so they don't have to keep checking
+  // the leaves page. Push + in-app banner mirror the apply flow.
+  try {
+    const emoji = decision === 'approved' ? '✅' : '❌';
+    const title = `${emoji} Leave ${decision} by ${me.name || 'Manager'}`;
+    const body  = `${leave.from_date} → ${leave.to_date}`;
+    await db.insert('notifications', {
+      user_id: leave.user_id,
+      type: 'leave_decision',
+      title, body, link: '#/leaves',
+      is_read: 0,
+      created_at: db.nowIso()
+    });
+    try {
+      const push = require('./push');
+      await push.sendPushToUser(leave.user_id, { title, body, url: '/#/leaves', tag: 'leave-decision-' + id });
+    } catch (_) {}
+  } catch (e) {
+    console.warn('[leaves] applicant notify failed:', e.message);
+  }
   return { ok: true };
 }
 
@@ -514,7 +628,7 @@ async function api_bank_list(token) {
 module.exports = {
   api_attendance_checkIn, api_attendance_checkOut,
   api_attendance_mine, api_attendance_team, api_attendance_report,
-  api_leaves_mine, api_leaves_apply, api_leaves_pending, api_leaves_decide,
+  api_leaves_mine, api_leaves_apply, api_leaves_pending, api_leaves_decide, api_leaves_all,
   api_tasks_list, api_tasks_save, api_tasks_complete, api_tasks_doneToday,
   api_salary_mine, api_salary_list, api_salary_save,
   api_salary_bulkSave, api_salary_report, api_salary_payslip,
