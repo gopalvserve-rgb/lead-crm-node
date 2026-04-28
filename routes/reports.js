@@ -482,9 +482,10 @@ async function api_reports_followupsByUser(token) {
     if (kind) bump(ownerId, kind);
   });
 
-  // Build the result — one row per visible active user, even if zero counts,
-  // so the team table renders consistently and managers spot reps with 0
-  // pending follow-ups (could be a problem the other way too).
+  // Build the result — one row per visible active user with at least one
+  // open follow-up. Users with zero counts are omitted to keep the team
+  // table focused on people who actually have work to do; managers asked
+  // for this so the dashboard doesn't read as a wall of zeros.
   const rows = users
     .filter(u => Number(u.is_active) === 1)
     .filter(u => me.role === 'admin' || visible.includes(Number(u.id)))
@@ -496,6 +497,7 @@ async function api_reports_followupsByUser(token) {
         total_open: b.due_today + b.overdue + b.upcoming
       };
     })
+    .filter(r => r.total_open > 0)
     .sort((a, b) => (b.overdue - a.overdue) || (b.due_today - a.due_today) || (b.total_open - a.total_open));
 
   return rows;
