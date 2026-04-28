@@ -318,7 +318,10 @@ async function api_chat_send(token, payload) {
         await push.sendPushToUser(other.user_id, {
           title: '💬 ' + (me.name || 'Teammate'),
           body: String(p.body).slice(0, 160),
-          url: '/#/teamchat',
+          // Deep-link straight to this conversation. The chat tab parses the
+          // ?room= param and auto-opens the matching room so the recipient
+          // lands inside the DM with one tap.
+          url: '/#/teamchat?room=' + roomId,
           tag: 'chat-' + roomId
         });
       }

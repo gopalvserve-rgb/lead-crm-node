@@ -3410,6 +3410,17 @@ async function openKbEditModal(id, onSave) {
  * predictable. Stops polling when the user navigates to a different tab.
  * ------------------------------------------------------------------ */
 
+/**
+ * Pull a query-string-style param out of the location hash.
+ * `#/teamchat?room=42&foo=bar` → parseHashParams().room === '42'
+ */
+function parseHashParams() {
+  const hash = String(location.hash || '');
+  const i = hash.indexOf('?');
+  if (i < 0) return {};
+  return Object.fromEntries(new URLSearchParams(hash.slice(i + 1)));
+}
+
 VIEWS.teamchat = async (view) => {
   // Kill any previous timers if the tab is reopened
   if (window._tcTimers) {
@@ -3417,6 +3428,14 @@ VIEWS.teamchat = async (view) => {
     clearInterval(window._tcTimers.thread);
   }
   window._tcTimers = { list: null, thread: null };
+
+  // Top-level guard — surface any unexpected failure as a readable card
+  // instead of a raw stack trace. Common cause: the boot didn't finish
+  // resolving CRM.user / CRM.access before a deep-link tried to open chat.
+  if (!CRM.user || !CRM.user.id) {
+    view.innerHTML = '<div class="error-box">Session not ready — please refresh and try again.</div>';
+    return;
+  }
 
   view.innerHTML = '';
   const wrap = h('div', { class: 'wb-chat' });
@@ -3619,6 +3638,29 @@ VIEWS.teamchat = async (view) => {
   }
 
   await renderThreadList();
+
+  // Deep-link from a notification — if the URL hash includes ?room=N,
+  // auto-open that conversation so the user lands inside the DM with one
+  // tap, not on the room list.
+  try {
+    const params = parseHashParams();
+    if (params.room) {
+      const targetId = Number(params.room);
+      // Look up label + type from the rooms list we just rendered
+      const allRooms = await api('api_chat_rooms_list').catch(() => []);
+      const room = allRooms.find(r => Number(r.id) === targetId);
+      if (room) {
+        await openRoom(room.id, room.label, room.type);
+      } else {
+        // Room exists but not in our list (e.g. brand-new DM the server
+        // hasn't surfaced yet) — fetch messages directly to bootstrap it
+        await openRoom(targetId, 'Conversation', 'dm');
+      }
+    }
+  } catch (e) {
+    console.warn('[teamchat] deep-link failed:', e.message);
+  }
+
   window._tcTimers.list = setInterval(() => {
     if (document.visibilityState === 'hidden') return;
     renderThreadList().catch(() => {});
