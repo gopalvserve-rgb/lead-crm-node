@@ -275,7 +275,76 @@ async function _sendWhatsApp(to, body, ctx, automation) {
       }
       return { ok: false, error: j.error.message };
     }
-    return { ok: true, detail: 'wa_message_id=' + (j.messages?.[0]?.id || '?') };
+    const waMsgId = j.messages?.[0]?.id || null;
+
+    // Persist the outbound message into whatsapp_messages so it shows up in
+    // the WhatsBot → Chat tab thread for the lead. Without this, automation
+    // sends were happening (Meta returned a wamid) but nobody could see them
+    // in the CRM's chat — a silent disconnect between "Sent" in Recent log and
+    // the actual conversation thread the team works from.
+    try {
+      let msgType = 'text';
+      let preview = String(body || '');
+      let templateName = null;
+      if (subj.startsWith('template:')) {
+        msgType = 'template';
+        const parts = subj.split(':');
+        templateName = parts[1];
+        // Render the template body_text with the actual params we just sent
+        // so the chat shows the customer-visible message, not the raw
+        // pipe-separated form.
+        try {
+          const tpl = await db.findOneBy('wa_templates', 'name', templateName);
+          if (tpl && tpl.bodyText) preview = String(tpl.bodyText);
+          else if (tpl && tpl.body_text) preview = String(tpl.body_text);
+        } catch (_) {}
+        // Substitute {{1}}, {{2}}, ... with the rendered body params we sent.
+        try {
+          const rendered = String(_render(body || '', ctx))
+            .split('|')
+            .map(s => (s || '').trim())
+            .map(s => s === '' ? '—' : s);
+          preview = String(preview).replace(/\{\{(\d+)\}\}/g, (_, n) => {
+            const idx = Number(n) - 1;
+            return rendered[idx] != null ? rendered[idx] : ('{{' + n + '}}');
+          });
+        } catch (_) {}
+      }
+
+      await db.query(
+        `INSERT INTO whatsapp_messages
+           (lead_id, user_id, direction, from_number, to_number, body,
+            wa_message_id, status, message_type, template_name, error_text)
+         VALUES ($1, $2, 'out', $3, $4, $5, $6, 'sent', $7, $8, NULL)`,
+        [
+          ctx.lead?.id || null,
+          null,                 // automation has no acting user
+          String(phoneId),
+          phone,
+          preview,
+          waMsgId,
+          msgType,
+          templateName
+        ]
+      );
+
+      // Lead activity timeline so the lead modal shows "automation sent
+      // WhatsApp template" in the activity log too.
+      if (ctx.lead?.id) {
+        try {
+          require('../routes/tat').logAction(ctx.lead.id, 'whatsapp_out', null, {
+            preview: String(preview).slice(0, 200),
+            template: templateName,
+            type: msgType,
+            via: 'automation'
+          });
+        } catch (_) {}
+      }
+    } catch (e) {
+      console.warn('[automations] save-to-chat failed:', e.message);
+    }
+
+    return { ok: true, detail: 'wa_message_id=' + (waMsgId || '?') };
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
