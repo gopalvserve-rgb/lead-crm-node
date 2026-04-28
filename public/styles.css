@@ -631,9 +631,11 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
   scrollbar-width: thin;
   scrollbar-color: #cbd5e1 transparent;
 }
-.subtabs::-webkit-scrollbar { height: 6px; }
-.subtabs::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
-.subtabs::-webkit-scrollbar-track { background: transparent; }
+/* Bigger, higher-contrast scrollbar so users see the row IS scrollable */
+.subtabs::-webkit-scrollbar { height: 8px; }
+.subtabs::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 4px; }
+.subtabs::-webkit-scrollbar-thumb:hover { background: #64748b; }
+.subtabs::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
 .subtab { background: transparent; border: none; padding: .55rem 1rem; cursor: pointer; color: var(--text-soft); font-weight: 500; font-size: .88rem; border-bottom: 2px solid transparent; transition: color .1s, border-color .1s; white-space: nowrap; flex-shrink: 0; }
 .subtab:hover { color: var(--text); }
 .subtab.active { color: var(--brand); border-bottom-color: var(--brand); }
