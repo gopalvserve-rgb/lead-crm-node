@@ -385,6 +385,28 @@ async function api_call_via_mobile(token, leadId, phone, leadName) {
   if (!target) throw new Error('phone required');
   const name = String(leadName || ('Lead #' + (leadId || ''))).slice(0, 60);
   const url = '/#/dial?phone=' + encodeURIComponent(target) + (leadId ? '&lead=' + Number(leadId) : '');
+
+  // Log a call_events row immediately so the downstream recording sync
+  // has a reference point to match against (api_call_hasRecentEvent).
+  // Without this, "dial from desktop" calls produced no event until the
+  // native broadcast receiver fired on the phone — and on phones where
+  // the receiver doesn't fire, the recording would never get attached
+  // to the lead.
+  try {
+    await db.insert('call_events', {
+      lead_id: leadId || null,
+      user_id: me.id,
+      phone: target,
+      direction: 'out',
+      event: 'dial_requested',
+      duration_s: 0,
+      recording_id: null,
+      created_at: db.nowIso()
+    });
+  } catch (e) {
+    console.warn('[push] dial_requested event insert failed:', e.message);
+  }
+
   const r = await sendPushToUser(me.id, {
     title: '📞 Tap to call ' + name,
     body:  target,

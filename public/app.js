@@ -482,6 +482,14 @@ function navigateTo(id) {
     window._tcTimers = null;
   }
 
+  // Catch the "user just made a call from CRM and came back to the app"
+  // case — _resumePendingCall is idempotent and bails when not relevant,
+  // so safe to call on every navigation. Belt-and-braces in addition to
+  // the visibilitychange / focus / pageshow listeners.
+  if (typeof _resumePendingCall === 'function') {
+    setTimeout(() => _resumePendingCall('navigate').catch?.(() => {}), 100);
+  }
+
   // Routes that exist as VIEWS but aren't in the sidebar NAV (e.g. /dial,
   // /newleads, /overdue) should still render — don't fall back to NAV[0]
   // when a valid VIEW exists. Falling back was redirecting the call-from-
@@ -1077,6 +1085,19 @@ function callLead(lead) {
       );
     } catch (e) { console.warn('[leadcrm] registerOutgoingCall:', e); }
   }
+
+  // Log a server-side call_events row so the recording sync gate
+  // (api_call_hasRecentEvent) has a reference point even on phones where
+  // the native broadcast receiver isn't firing reliably. Best-effort —
+  // doesn't block the dial.
+  try {
+    api('api_call_logEvent', {
+      phone: lead.phone || '',
+      direction: 'out',
+      event: 'dial_requested',
+      duration_s: 0
+    }).catch(() => {});
+  } catch (_) {}
 
   const hasPlus = raw.trim().startsWith('+');
   const telTarget = (hasPlus ? '+' : '') + digits;
@@ -9162,8 +9183,15 @@ async function syncRecordings(opts) {
     return setupRecordingFolder();
   }
 
-  const sinceMs = Number(localStorage.getItem('rec_last_sync') || 0);
-  const filesJson = LeadCRMNative.listRecordings(opts.full ? 0 : sinceMs);
+  const stored = Number(localStorage.getItem('rec_last_sync') || 0);
+  // Hard floor: never look at files older than 30 minutes from now, even
+  // if the stored watermark is from months ago. This prevents a stale
+  // watermark (e.g. user picked the folder a year ago) from re-pulling
+  // every recording on the device. The gate-by-call-event logic below
+  // is the backup; this is the front-line filter.
+  const minWatermark = Date.now() - 30 * 60_000;
+  const sinceMs = opts.full ? 0 : Math.max(stored, minWatermark);
+  const filesJson = LeadCRMNative.listRecordings(sinceMs);
   let files = [];
   try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
 
