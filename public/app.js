@@ -471,13 +471,14 @@ const VIEWS = {};
 VIEWS.dashboard = async (view) => {
   await ensureChartJs();
   // Team follow-ups card — admin/manager/team_leader see how each rep is
-  // doing on overdue + due-today. Sales/employee don't (it's just their
-  // own numbers, already shown in the KPI cards above).
+  // doing on overdue + due-today + TAT violations. Sales/employee don't
+  // (it's just their own numbers, already shown in the KPI cards above).
   const showTeam = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
-  const [summary, due, teamFu] = await Promise.all([
+  const [summary, due, teamFu, teamTat] = await Promise.all([
     api('api_reports_summary', {}),
     api('api_notifications_mine'),
-    showTeam ? api('api_reports_followupsByUser').catch(() => []) : Promise.resolve([])
+    showTeam ? api('api_reports_followupsByUser').catch(() => [])      : Promise.resolve([]),
+    showTeam ? api('api_reports_tatViolationsByUser').catch(() => [])  : Promise.resolve([])
   ]);
   view.innerHTML = '';
 
@@ -585,6 +586,36 @@ VIEWS.dashboard = async (view) => {
       )));
     }
     grid.appendChild(teamCard);
+
+    // Team TAT violations by caller — same intent: who's accumulating
+    // escalations? Hidden if there are no open violations org-wide.
+    const tatRows = teamTat || [];
+    if (tatRows.length) {
+      const tatCard = h('div', { class: 'card card-wide' },
+        h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+          h('h3', { style: { margin: 0 } }, '🚨 TAT violations by caller'),
+          h('a', { href: '#/tatreport', class: 'btn sm ghost' }, 'See full TAT report →')
+        ),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+          h('thead', {}, h('tr', {},
+            h('th', {}, 'Caller'), h('th', {}, 'Role'),
+            h('th', { style: { textAlign: 'right' }, title: 'L3 — escalated to admin' }, '🚨 L3'),
+            h('th', { style: { textAlign: 'right' }, title: 'L2 — escalated to manager' }, '⚠️ L2'),
+            h('th', { style: { textAlign: 'right' }, title: 'L1 — employee reminder' }, '⏱️ L1'),
+            h('th', { style: { textAlign: 'right' } }, 'Total open')
+          )),
+          h('tbody', {}, ...tatRows.map(r => h('tr', {},
+            h('td', {}, r.name || '—'),
+            h('td', { class: 'muted' }, r.role || ''),
+            h('td', { class: r.l3 > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.l3 > 0 ? 700 : 400 } }, r.l3),
+            h('td', { class: r.l2 > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.l2 > 0 ? 700 : 400 } }, r.l2),
+            h('td', { class: 'muted', style: { textAlign: 'right' } }, r.l1),
+            h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total)
+          )))
+        ))
+      );
+      grid.appendChild(tatCard);
+    }
   }
 
   // By source bar chart
@@ -4674,14 +4705,16 @@ function _currentReportFilters() {
 
 async function loadReports() {
   const filters = _currentReportFilters();
-  // Caller-wise follow-up table is intentionally NOT date-filtered — "overdue"
-  // and "due today" are NOW concepts, not historical. So it ignores the date
-  // range filter and shows live counts for every visible rep.
-  const [summary, funnel, daily, teamFu] = await Promise.all([
+  // Caller-wise follow-up + TAT-violation tables are intentionally NOT
+  // date-filtered — "overdue" / "due today" / "open violation" are NOW
+  // concepts, not historical. So they ignore the date range filter and
+  // always show live counts for every visible rep.
+  const [summary, funnel, daily, teamFu, teamTat] = await Promise.all([
     api('api_reports_summary', filters),
     api('api_reports_funnel',  filters),
     api('api_reports_daily',   filters),
-    api('api_reports_followupsByUser').catch(() => [])
+    api('api_reports_followupsByUser').catch(() => []),
+    api('api_reports_tatViolationsByUser').catch(() => [])
   ]);
 
   $('#rep-cards').innerHTML = '';
@@ -4749,6 +4782,37 @@ async function loadReports() {
           h('td', { class: r.due_today > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.due_today > 0 ? 700 : 400 } }, r.due_today),
           h('td', { class: 'muted', style: { textAlign: 'right' } }, r.upcoming),
           h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total_open)
+        )))
+      ))
+    );
+    byUserEl.parentElement.appendChild(card);
+  }
+
+  // Caller-wise TAT violations — live, ignoring date filter, same as
+  // follow-ups. Splits by escalation level so a manager spots reps with
+  // L3 escalations (admin-paged, the most urgent) at the top of the list.
+  const tatRows = teamTat || [];
+  if (tatRows.length) {
+    const card = h('div', { class: 'card card-wide', style: { marginTop: '1rem' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+        h('h3', { style: { margin: 0 } }, '🚨 TAT violations by caller — live'),
+        h('a', { href: '#/tatreport', class: 'btn sm ghost' }, 'See full TAT report →')
+      ),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Caller'), h('th', {}, 'Role'),
+          h('th', { style: { textAlign: 'right' }, title: 'L3 — escalated to admin' }, '🚨 L3'),
+          h('th', { style: { textAlign: 'right' }, title: 'L2 — escalated to manager' }, '⚠️ L2'),
+          h('th', { style: { textAlign: 'right' }, title: 'L1 — employee reminder' }, '⏱️ L1'),
+          h('th', { style: { textAlign: 'right' } }, 'Total open')
+        )),
+        h('tbody', {}, ...tatRows.map(r => h('tr', {},
+          h('td', {}, r.name || '—'),
+          h('td', { class: 'muted' }, r.role || ''),
+          h('td', { class: r.l3 > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.l3 > 0 ? 700 : 400 } }, r.l3),
+          h('td', { class: r.l2 > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.l2 > 0 ? 700 : 400 } }, r.l2),
+          h('td', { class: 'muted', style: { textAlign: 'right' } }, r.l1),
+          h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total)
         )))
       ))
     );

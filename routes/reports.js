@@ -503,7 +503,68 @@ async function api_reports_followupsByUser(token) {
   return rows;
 }
 
+/**
+ * Caller-wise OPEN TAT violations (resolved_at IS NULL) grouped by the
+ * lead's assignee. Splits by escalation level (1=L1 employee reminder,
+ * 2=L2 manager, 3=L3 admin) so a manager scanning the dashboard knows
+ * which reps have escalations brewing.
+ *
+ * Visibility: admin sees everyone; manager/team_leader sees their tree;
+ * sales/employee sees only themselves. Returns one row per visible user
+ * who has at least one open violation — zero-count users are filtered
+ * out (same UX rule as followupsByUser).
+ *
+ * Each row: { user_id, name, role, l1, l2, l3, total }
+ */
+async function api_reports_tatViolationsByUser(token) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+
+  const [users, leads, violations] = await Promise.all([
+    db.getAll('users'),
+    db.getAll('leads'),
+    db.query(`SELECT * FROM tat_violations WHERE resolved_at IS NULL`).then(r => r.rows)
+  ]);
+  const leadsById = {};
+  leads.forEach(l => { leadsById[Number(l.id)] = l; });
+  const usersById = {};
+  users.forEach(u => { usersById[Number(u.id)] = u; });
+
+  const buckets = {}; // user_id -> { l1, l2, l3 }
+  violations.forEach(v => {
+    const lead = leadsById[Number(v.lead_id)];
+    if (!lead) return;
+    const ownerId = Number(lead.assigned_to) || 0;
+    if (!ownerId) return;
+    if (me.role !== 'admin' && !visible.includes(ownerId)) return;
+    if (!buckets[ownerId]) buckets[ownerId] = { l1: 0, l2: 0, l3: 0 };
+    const lvl = Number(v.escalation_level) || 1;
+    if (lvl >= 3)      buckets[ownerId].l3++;
+    else if (lvl === 2) buckets[ownerId].l2++;
+    else                buckets[ownerId].l1++;
+  });
+
+  const rows = Object.keys(buckets).map(uid => {
+    const u = usersById[Number(uid)];
+    const b = buckets[uid];
+    const total = b.l1 + b.l2 + b.l3;
+    return {
+      user_id: Number(uid),
+      name: u?.name || ('User #' + uid),
+      role: u?.role || '',
+      l1: b.l1, l2: b.l2, l3: b.l3,
+      total
+    };
+  })
+  .filter(r => r.total > 0)
+  // Sort by L3 first (most escalated), then L2, then L1, then total
+  .sort((a, b) => (b.l3 - a.l3) || (b.l2 - a.l2) || (b.l1 - a.l1) || (b.total - a.total));
+
+  return rows;
+}
+
 module.exports = {
   api_reports_summary, api_reports_funnel, api_reports_daily,
-  api_reports_exportLeads, api_reports_groupBy, api_reports_followupsByUser
+  api_reports_exportLeads, api_reports_groupBy,
+  api_reports_followupsByUser, api_reports_tatViolationsByUser
 };
