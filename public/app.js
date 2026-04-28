@@ -3486,9 +3486,12 @@ VIEWS.teamchat = async (view) => {
     // server creates the room.
     const u = (CRM.cache.users || []).find(x => Number(x.id) === Number(userId));
     openRoomId = 'pending:' + userId;
+    wrap.classList.add('thread-open');
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
     right.innerHTML = '';
-    right.appendChild(h('div', { class: 'wb-chat-head' }, h('b', {}, u?.name || 'New DM')));
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center' } },
+      h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+      h('b', {}, u?.name || 'New DM')));
     const log = h('div', { class: 'wb-chat-log' });
     log.appendChild(h('p', { class: 'muted', style: { padding: '1.5rem', textAlign: 'center' } },
       'Type a message to start a DM with ' + (u?.name || 'this user')));
@@ -3540,15 +3543,27 @@ VIEWS.teamchat = async (view) => {
     return h('div', { class: 'wb-chat-compose' }, input);
   }
 
+  function backToList() {
+    openRoomId = null;
+    openMsgFingerprint = '';
+    wrap.classList.remove('thread-open');
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a channel or DM').outerHTML;
+  }
+
   async function openRoom(roomId, label, type) {
     openRoomId = roomId;
     openMsgFingerprint = '';
+    wrap.classList.add('thread-open');  // mobile: hide list, show thread
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
 
     right.innerHTML = '';
-    right.appendChild(h('div', { class: 'wb-chat-head' },
-      h('b', {}, type === 'channel' ? '# ' + label : label),
-      h('button', { class: 'btn sm ghost', style: { float: 'right' }, title: 'Refresh',
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+      h('div', { style: { display: 'flex', alignItems: 'center' } },
+        h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+        h('b', {}, type === 'channel' ? '# ' + label : label)
+      ),
+      h('button', { class: 'btn sm ghost', title: 'Refresh',
         onclick: () => renderActiveThread(true) }, '↻')
     ));
     const log = h('div', { class: 'wb-chat-log' });
@@ -4912,16 +4927,28 @@ async function wbChat() {
     if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
   }
 
+  function backToList() {
+    openPhone = null;
+    openFingerprint = '';
+    wrap.classList.remove('thread-open');
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact').outerHTML;
+  }
+
   async function openThread(phone) {
     openPhone = phone;
     openFingerprint = ''; // Force a render
+    wrap.classList.add('thread-open');  // mobile: hide list, show thread
     // Mark thread row active
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
 
     right.innerHTML = '';
-    right.appendChild(h('div', { class: 'wb-chat-head' },
-      h('b', {}, phone),
-      h('button', { class: 'btn sm ghost', style: { float: 'right' }, title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+      h('div', { style: { display: 'flex', alignItems: 'center' } },
+        h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+        h('b', {}, phone)
+      ),
+      h('button', { class: 'btn sm ghost', title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
     ));
     const log = h('div', { class: 'wb-chat-log' });
     log.innerHTML = '<div class="loading">Loading…</div>';
