@@ -9215,6 +9215,21 @@ async function syncRecordings(opts) {
       String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
     ) : null;
     const leadId = lead ? String(lead.id) : '';
+
+    // Stricter filter: only upload if there was a CRM-logged call event
+    // for this phone in the last 30 minutes. Stops the sync from grabbing
+    // recordings of personal calls to customers (calls outside the CRM
+    // context). Skipped silently if includeUnmatched is on.
+    if (!includeUnmatched && digits) {
+      try {
+        const hr = await api('api_call_hasRecentEvent', meta.phone, 30);
+        if (!hr || !hr.matched) {
+          skippedNoMatch++;
+          continue;
+        }
+      } catch (_) { /* on API error fall through to upload — better
+                       too-permissive than silently dropping */ }
+    }
     // Rough duration: ~12 KB/sec for AAC m4a, ~8 KB/sec for amr, ~16 KB/sec for mp3
     const bytesPerSec = /\.(mp3|wav)$/i.test(f.name) ? 16000 : /\.(amr|3gp)$/i.test(f.name) ? 8000 : 12000;
     const durationGuess = Math.max(0, Math.round((Number(f.size) || 0) / bytesPerSec));
@@ -9272,9 +9287,11 @@ function setupRecordingFolder() {
         h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
       ),
       h('p', { class: 'muted' },
-        'Pick the folder where your phone (or call recorder app) saves call recordings. ' +
-        'The CRM will read each file, match it to the right lead by phone number, and ' +
-        'upload it. Common locations:'
+        'Pick the folder where your phone (or call recorder app) saves call recordings. ',
+        'From the moment you connect the folder, ',
+        h('b', {}, 'only NEW recordings'),
+        ' (calls made after this point) will be uploaded to the CRM and attached to the matching lead. ',
+        'Old / personal recordings already in the folder are ignored. Common locations:'
       ),
       h('ul', { class: 'rec-folder-tips' },
         h('li', {}, h('b', {}, 'Stock Android: '), 'Internal storage › Recordings › Call'),
@@ -9295,8 +9312,15 @@ function setupRecordingFolder() {
               toast('📁 Folder connected: ' + name);
               modal.remove();
               if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
-              // Run an initial full sync so existing recordings show up
-              setTimeout(() => syncRecordings({ full: true }), 600);
+              // IMPORTANT: set the sync watermark to NOW so we DON'T pull
+              // every existing recording in the folder. Old call recordings
+              // (personal calls, recordings from before CRM was installed,
+              // etc.) shouldn't dump into the CRM. From this point onward,
+              // ONLY new recordings (made for calls dialed from the CRM,
+              // or calls to known leads) will be synced.
+              localStorage.setItem('rec_last_sync', String(Date.now()));
+              localStorage.setItem('rec_uploaded', '{}');
+              if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
             } else {
               toast('Folder selection cancelled', 'warn');
             }

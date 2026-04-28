@@ -107,8 +107,39 @@ async function api_recordings_delete(token, recId) {
   return { ok: true };
 }
 
+/**
+ * Was there a CRM-tracked call event for the given phone within the last
+ * N minutes? Used by the recording sync to filter out files that aren't
+ * tied to a real CRM call. Without this gate, the sync would happily
+ * upload any recording that happened to match a lead's phone (e.g. a
+ * personal call to an existing customer for a different reason).
+ *
+ * Returns { matched: bool, recent_event_id: id | null } so the client
+ * can pass the event id to uploadRecording for tighter linking.
+ */
+async function api_call_hasRecentEvent(token, phone, withinMinutes) {
+  const me = await authUser(token);
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return { matched: false };
+  const tail = digits.slice(-10);
+  const win = Math.max(1, Math.min(Number(withinMinutes) || 30, 60 * 24));
+  const since = new Date(Date.now() - win * 60_000).toISOString();
+  const { rows } = await db.query(
+    `SELECT id, lead_id, created_at FROM call_events
+       WHERE user_id = $1
+         AND created_at >= $2
+         AND regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE $3
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    [me.id, since, '%' + tail]
+  );
+  if (!rows.length) return { matched: false };
+  return { matched: true, recent_event_id: rows[0].id, lead_id: rows[0].lead_id };
+}
+
 module.exports = {
   api_call_logEvent,
+  api_call_hasRecentEvent,
   api_leads_recordings,
   api_call_history,
   api_my_recordings,
