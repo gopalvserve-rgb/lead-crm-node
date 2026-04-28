@@ -47,7 +47,9 @@ const routes = {
   permissions: require('./routes/permissions'),
   recordings:  require('./routes/recordings'),
   push:        require('./routes/push'),
-  knowledge:   require('./routes/knowledgeBase')
+  knowledge:   require('./routes/knowledgeBase'),
+  announcements: require('./routes/announcements'),
+  chat:        require('./routes/chat')
 };
 const webhooks = require('./routes/webhooks');
 

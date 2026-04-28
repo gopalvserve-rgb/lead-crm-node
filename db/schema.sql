@@ -623,3 +623,58 @@ CREATE TABLE IF NOT EXISTS knowledge_base (
 );
 CREATE INDEX IF NOT EXISTS idx_kb_active_pinned ON knowledge_base(is_active, is_pinned DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
+
+-- ---- v16: Announcements --------------------------------------
+-- Top-of-screen banner posted by admin, visible to everyone until they
+-- dismiss (per-user) or admin deactivates / it expires.
+CREATE TABLE IF NOT EXISTS announcements (
+  id              SERIAL PRIMARY KEY,
+  title           TEXT NOT NULL,
+  body            TEXT,
+  severity        TEXT NOT NULL DEFAULT 'info', -- info | success | warning | danger
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  is_dismissible  INTEGER NOT NULL DEFAULT 1,
+  expires_at      TIMESTAMPTZ,
+  created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS announcement_dismissals (
+  id              SERIAL PRIMARY KEY,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+  dismissed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, announcement_id)
+);
+
+-- ---- v17: Internal team chat ---------------------------------
+-- Two flavours of room:
+--   channel — public, everyone implicitly a member (the org-wide "team" room)
+--   dm      — direct message, exactly two members
+CREATE TABLE IF NOT EXISTS chat_rooms (
+  id          SERIAL PRIMARY KEY,
+  type        TEXT NOT NULL,      -- channel | dm
+  name        TEXT,               -- for channels e.g. 'team'; null for DMs
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS chat_room_members (
+  id            SERIAL PRIMARY KEY,
+  room_id       INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_at  TIMESTAMPTZ,
+  joined_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (room_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id          SERIAL PRIMARY KEY,
+  room_id     INTEGER NOT NULL REFERENCES chat_rooms(id) ON DELETE CASCADE,
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  body        TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_chat_msg_room ON chat_messages(room_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chat_member_user ON chat_room_members(user_id);
+
+-- Seed the org-wide "team" channel so every CRM has one out of the box
+INSERT INTO chat_rooms (type, name)
+SELECT 'channel', 'team'
+WHERE NOT EXISTS (SELECT 1 FROM chat_rooms WHERE type = 'channel' AND name = 'team');

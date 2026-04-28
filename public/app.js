@@ -80,6 +80,11 @@ async function apiRaw(fn, ...args) {
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
       refreshNotifs();
+      // Load + render any active announcement banners. Polls every 60s so a
+      // freshly-posted admin announcement appears for already-logged-in users
+      // without them needing to refresh.
+      refreshAnnouncements();
+      setInterval(() => refreshAnnouncements().catch(() => {}), 60_000);
       // Register Web Push so the user's phone gets SMS-style banners even
       // when the CRM tab / installed PWA is closed. Runs after a short delay
       // so it doesn't block initial render. Silently skips on browsers that
@@ -288,6 +293,7 @@ const NAV = [
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
+  { id: 'teamchat',   label: 'Team chat',    icon: '👥' },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
   { id: 'attendance', label: 'Attendance',   icon: '🕒' },
   { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
@@ -319,6 +325,7 @@ function renderShell() {
         </div>
       </aside>
       <main class="main">
+        <div id="announce-bar"></div>
         <header class="topbar">
           <button class="btn icon topbar-mobile-menu" id="btn-more" title="Menu">☰</button>
           <h2 id="page-title">Dashboard</h2>
@@ -445,6 +452,11 @@ function navigateTo(id) {
     clearInterval(window._wbChatTimers.threadList);
     clearInterval(window._wbChatTimers.activeThread);
     window._wbChatTimers = null;
+  }
+  if (id !== 'teamchat' && window._tcTimers) {
+    clearInterval(window._tcTimers.list);
+    clearInterval(window._tcTimers.thread);
+    window._tcTimers = null;
   }
 
   // Routes that exist as VIEWS but aren't in the sidebar NAV (e.g. /dial,
@@ -3373,6 +3385,202 @@ async function openKbEditModal(id, onSave) {
   document.body.appendChild(m);
 }
 
+/* ---------------- Team Chat (internal) -----------------------------
+ * Single team channel + 1-on-1 DMs to any user. Polling-based: thread
+ * list refreshes every 10s, active conversation every 4s while open.
+ * Reuses the WhatsBot chat polling pattern so the network footprint is
+ * predictable. Stops polling when the user navigates to a different tab.
+ * ------------------------------------------------------------------ */
+
+VIEWS.teamchat = async (view) => {
+  // Kill any previous timers if the tab is reopened
+  if (window._tcTimers) {
+    clearInterval(window._tcTimers.list);
+    clearInterval(window._tcTimers.thread);
+  }
+  window._tcTimers = { list: null, thread: null };
+
+  view.innerHTML = '';
+  const wrap = h('div', { class: 'wb-chat' });
+  const left = h('div', { class: 'wb-chat-list' });
+  const right = h('div', { class: 'wb-chat-thread' },
+    h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a channel or DM'));
+  wrap.appendChild(left); wrap.appendChild(right);
+  view.appendChild(wrap);
+
+  let openRoomId = null;
+  let openMsgFingerprint = '';
+  let lastListFingerprint = '';
+
+  function listFp(rooms) {
+    return rooms.map(r => `${r.id}|${r.last_at}|${r.unread}`).join(';');
+  }
+  function msgFp(msgs) {
+    return msgs.map(m => m.id).join(';');
+  }
+
+  async function renderThreadList() {
+    let rooms;
+    try { rooms = await api('api_chat_rooms_list'); }
+    catch (_) { rooms = []; }
+
+    // Also include every other active user as a potential DM target —
+    // even if no DM thread exists yet — so the user can start one.
+    const usersInList = new Set(rooms.filter(r => r.type === 'dm').map(r => r.counterpart_id));
+    const otherUsers = (CRM.cache.users || [])
+      .filter(u => Number(u.is_active) === 1 && Number(u.id) !== Number(CRM.user.id))
+      .filter(u => !usersInList.has(Number(u.id)));
+
+    const fp = listFp(rooms) + '|users:' + otherUsers.length;
+    if (fp === lastListFingerprint) return;
+    lastListFingerprint = fp;
+
+    left.innerHTML = '';
+    left.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '👥 Team chat'),
+      h('button', { class: 'btn sm ghost', title: 'Refresh now',
+        onclick: () => { lastListFingerprint = ''; renderThreadList(); if (openRoomId) renderActiveThread(true); }
+      }, '↻')
+    ));
+
+    // Channel(s) first
+    rooms.filter(r => r.type === 'channel').forEach(r => left.appendChild(renderRoomRow(r)));
+    // DM rooms with existing messages
+    const dmRooms = rooms.filter(r => r.type === 'dm');
+    if (dmRooms.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Direct messages'));
+      dmRooms.forEach(r => left.appendChild(renderRoomRow(r)));
+    }
+    // Users who don't yet have a DM thread — so you can start one
+    if (otherUsers.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Start a DM'));
+      otherUsers.forEach(u => {
+        left.appendChild(h('div', { class: 'wb-chat-row', onclick: () => startDmWith(u.id) },
+          h('div', {}, h('b', {}, u.name)),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' } }, u.role || '')
+        ));
+      });
+    }
+  }
+
+  function renderRoomRow(r) {
+    return h('div', { class: 'wb-chat-row' + (r.id === openRoomId ? ' active' : ''),
+      onclick: () => openRoom(r.id, r.label, r.type)
+    },
+      h('div', {},
+        r.type === 'channel' ? h('span', {}, '# ') : null,
+        h('b', {}, r.label || ('Room #' + r.id)),
+        r.unread ? h('span', { class: 'wb-unread' }, r.unread) : null
+      ),
+      h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        r.last_message_user ? r.last_message_user + ': ' : '',
+        r.last_message || ''),
+      h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(r.last_at, 'relative'))
+    );
+  }
+
+  async function startDmWith(userId) {
+    // Send a "blank" message? No — just open the DM by fetching messages
+    // for the soon-to-exist room. Send the first message via send.
+    // Simpler: open a temporary right-pane with input. On first send the
+    // server creates the room.
+    const u = (CRM.cache.users || []).find(x => Number(x.id) === Number(userId));
+    openRoomId = 'pending:' + userId;
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head' }, h('b', {}, u?.name || 'New DM')));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.appendChild(h('p', { class: 'muted', style: { padding: '1.5rem', textAlign: 'center' } },
+      'Type a message to start a DM with ' + (u?.name || 'this user')));
+    right.appendChild(log);
+    const input = makeChatInput(async (text) => {
+      try {
+        const r = await api('api_chat_send', { user_id: userId, body: text });
+        openRoomId = r.room_id;
+        lastListFingerprint = ''; await renderThreadList();
+        // Switch to the now-real room
+        await openRoom(r.room_id, u?.name || 'DM', 'dm');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    right.appendChild(input);
+  }
+
+  async function renderActiveThread(force) {
+    if (!openRoomId || String(openRoomId).startsWith('pending:')) return;
+    let msgs;
+    try { msgs = await api('api_chat_messages_list', openRoomId); }
+    catch (_) { msgs = []; }
+    const fp = msgFp(msgs);
+    if (!force && fp === openMsgFingerprint) return;
+    openMsgFingerprint = fp;
+    const log = right.querySelector('.wb-chat-log');
+    if (!log) return;
+    const wasNearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 80;
+    log.innerHTML = '';
+    msgs.forEach(m => {
+      log.appendChild(h('div', { class: 'wb-msg ' + (m.is_mine ? 'out' : 'in') },
+        h('div', { class: 'wb-msg-meta muted' }, m.user_name + ' · ' + fmtDate(m.created_at, 'relative')),
+        h('div', { class: 'wb-msg-body' }, m.body || '')
+      ));
+    });
+    if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+  }
+
+  function makeChatInput(onSend) {
+    const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
+    input.addEventListener('keydown', async ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        const text = input.value.trim(); if (!text) return;
+        input.disabled = true;
+        try { await onSend(text); input.value = ''; }
+        finally { input.disabled = false; input.focus(); }
+      }
+    });
+    return h('div', { class: 'wb-chat-compose' }, input);
+  }
+
+  async function openRoom(roomId, label, type) {
+    openRoomId = roomId;
+    openMsgFingerprint = '';
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head' },
+      h('b', {}, type === 'channel' ? '# ' + label : label),
+      h('button', { class: 'btn sm ghost', style: { float: 'right' }, title: 'Refresh',
+        onclick: () => renderActiveThread(true) }, '↻')
+    ));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.innerHTML = '<div class="loading">Loading…</div>';
+    right.appendChild(log);
+
+    const input = makeChatInput(async (text) => {
+      try {
+        await api('api_chat_send', { room_id: roomId, body: text });
+        renderActiveThread(true);
+        lastListFingerprint = ''; renderThreadList();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    right.appendChild(input);
+
+    await renderActiveThread(true);
+    lastListFingerprint = ''; await renderThreadList();
+  }
+
+  await renderThreadList();
+  window._tcTimers.list = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    renderThreadList().catch(() => {});
+  }, 10_000);
+  window._tcTimers.thread = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    if (openRoomId && !String(openRoomId).startsWith('pending:')) {
+      renderActiveThread(false).catch(() => {});
+    }
+  }, 4_000);
+};
+
 /* ---------------- Reports with charts ---------------- */
 async function ensureChartJs() {
   if (!window.Chart) {
@@ -5942,7 +6150,8 @@ VIEWS.admin = async (view) => {
     { id: 'rules',        label: 'Auto-assign Rules' },
     { id: 'permissions',  label: '🔐 Permissions' },
     { id: 'duplicates',   label: 'Duplicates' },
-    { id: 'smtp',         label: 'SMTP' }
+    { id: 'smtp',         label: 'SMTP' },
+    { id: 'announce',     label: '📢 Announcements' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -5971,7 +6180,131 @@ async function showAdminTab(id) {
     if (id === 'permissions') body.replaceChildren(await adminPermissions());
     if (id === 'duplicates') body.replaceChildren(await adminDuplicates());
     if (id === 'smtp')     body.replaceChildren(await adminSmtp());
+    if (id === 'announce') body.replaceChildren(await adminAnnouncements());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+/* ---------------- Settings → Announcements ----------------------- */
+async function adminAnnouncements() {
+  const wrap = h('div', {});
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h4', { style: { margin: 0 } }, '📢 Announcements'),
+    h('button', { class: 'btn primary', onclick: () => openAnnounceModal(null, () => showAdminTab('announce')) }, '+ New announcement')
+  ));
+  wrap.appendChild(h('p', { class: 'muted', style: { marginTop: '.25rem' } },
+    'Banners shown at the top of every page. Choose a severity colour, optionally set an expiry, and pick whether users can dismiss. Dismissed announcements stay hidden per-user — use the "Reset" button to make everyone see it again.'));
+
+  const rows = await api('api_announcements_list').catch(() => []);
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No announcements yet.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Title'), h('th', {}, 'Severity'), h('th', {}, 'Active'),
+      h('th', {}, 'Dismissible'), h('th', {}, 'Expires'),
+      h('th', {}, 'Created'), h('th', {}, '')
+    )),
+    h('tbody', {}, ...rows.map(r => h('tr', {},
+      h('td', {}, h('b', {}, r.title)),
+      h('td', {}, h('span', { class: 'tag', style: { background: ANNOUNCE_COLORS[r.severity] || '#94a3b8', color: '#fff' } }, r.severity)),
+      h('td', {}, r.is_active ? '✓' : '—'),
+      h('td', {}, r.is_dismissible ? '✓' : '🔒 sticky'),
+      h('td', { class: 'muted' }, r.expires_at ? fmtDate(r.expires_at, 'relative') : '—'),
+      h('td', { class: 'muted' }, fmtDate(r.created_at, 'relative')),
+      h('td', { style: { whiteSpace: 'nowrap' } },
+        h('button', { class: 'btn sm', onclick: () => openAnnounceModal(r, () => showAdminTab('announce')) }, '✎'),
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' },
+          onclick: async () => {
+            if (!confirm('Reset dismissals — every user will see this banner again?')) return;
+            try { const x = await api('api_announcements_resetDismissals', r.id); toast('Reset for ' + x.cleared + ' users'); }
+            catch (e) { toast(e.message, 'err'); }
+          },
+          title: 'Reset dismissals — show to all users again'
+        }, '↻'),
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' },
+          onclick: async () => {
+            if (!confirm('Permanently delete this announcement?')) return;
+            try { await api('api_announcements_delete', r.id); toast('Deleted'); showAdminTab('announce'); }
+            catch (e) { toast(e.message, 'err'); }
+          }
+        }, '🗑')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+const ANNOUNCE_COLORS = {
+  info:    '#3b82f6',
+  success: '#10b981',
+  warning: '#f59e0b',
+  danger:  '#ef4444'
+};
+
+function openAnnounceModal(initial, onSave) {
+  const a = initial || { title: '', body: '', severity: 'info', is_active: 1, is_dismissible: 1, expires_at: '' };
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, initial ? 'Edit announcement' : 'New announcement'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { id: 'an-form', class: 'form-grid' });
+  form.append(
+    field('title', 'Title *', a.title, { required: true, full: true }),
+    field('body', 'Message body', a.body, { type: 'textarea', full: true }),
+    selectField('severity', 'Severity', a.severity, [
+      { value: 'info',    label: '🔵 Info' },
+      { value: 'success', label: '🟢 Success' },
+      { value: 'warning', label: '🟡 Warning' },
+      { value: 'danger',  label: '🔴 Danger' }
+    ]),
+    field('expires_at', 'Auto-expire at (optional)', isoToLocalDtInput(a.expires_at), { type: 'datetime-local' }),
+    h('div', { class: 'f-row' },
+      h('label', {}, 'Active'),
+      h('label', { class: 'qual-toggle' },
+        h('input', { type: 'checkbox', name: 'is_active', checked: Number(a.is_active) !== 0 ? 'checked' : null }),
+        ' Show on top of every screen'
+      )
+    ),
+    h('div', { class: 'f-row' },
+      h('label', {}, 'Dismissible'),
+      h('label', { class: 'qual-toggle' },
+        h('input', { type: 'checkbox', name: 'is_dismissible', checked: Number(a.is_dismissible) !== 0 ? 'checked' : null }),
+        ' Allow users to close (uncheck for sticky / mandatory notice)'
+      )
+    )
+  );
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'an-form', class: 'btn primary' }, initial ? 'Save changes' : 'Post announcement')
+  ));
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const fd = new FormData(form);
+    const payload = {
+      id: initial?.id || undefined,
+      title: form.title.value.trim(),
+      body: form.body.value,
+      severity: form.severity.value,
+      expires_at: form.expires_at.value ? new Date(form.expires_at.value).toISOString() : null,
+      is_active: fd.get('is_active') ? 1 : 0,
+      is_dismissible: fd.get('is_dismissible') ? 1 : 0
+    };
+    if (!payload.title) { toast('Title is required', 'err'); return; }
+    try {
+      await api('api_announcements_save', payload);
+      toast(initial ? 'Saved' : 'Posted');
+      m.remove();
+      // Refresh the banner immediately so admin sees the result
+      refreshAnnouncements();
+      if (typeof onSave === 'function') onSave();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.body.appendChild(m);
 }
 
 async function adminCompany() {
@@ -9235,6 +9568,38 @@ function popupNewLeads(leads) {
     audio.volume = 0.3; audio.play().catch(() => {});
   } catch (_) {}
 }
+/**
+ * Refresh the top-of-screen announcement banner. Renders one banner card
+ * per active, non-dismissed, non-expired announcement. Called at boot and
+ * every 60 seconds so a freshly-posted admin announcement appears for
+ * already-logged-in users without them needing to reload.
+ */
+async function refreshAnnouncements() {
+  const bar = document.getElementById('announce-bar');
+  if (!bar) return;
+  let rows;
+  try { rows = await api('api_announcements_active'); }
+  catch (_) { return; }
+  bar.innerHTML = '';
+  (rows || []).forEach(a => {
+    const card = h('div', { class: 'announce-card sev-' + a.severity },
+      h('div', { class: 'announce-text' },
+        h('b', {}, a.title || ''),
+        a.body ? h('span', { class: 'announce-body' }, ' — ' + a.body) : null
+      ),
+      a.is_dismissible ? h('button', {
+        class: 'announce-close',
+        title: 'Dismiss',
+        onclick: async () => {
+          try { await api('api_announcements_dismiss', a.id); card.remove(); }
+          catch (e) { toast(e.message, 'err'); }
+        }
+      }, '✕') : null
+    );
+    bar.appendChild(card);
+  });
+}
+
 async function refreshNotifs() {
   try {
     const d = await api('api_notifications_mine');

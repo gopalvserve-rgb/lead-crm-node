@@ -288,6 +288,29 @@ const SCHEMA = {
     columns: ['title', 'category', 'body', 'url', 'tags', 'product_id',
               'is_pinned', 'is_active', 'created_by', 'created_at', 'updated_at'],
     json: []
+  },
+  // v16: Announcements — top-of-screen banner posted by admin
+  announcements: {
+    columns: ['title', 'body', 'severity', 'is_active', 'is_dismissible',
+              'expires_at', 'created_by', 'created_at'],
+    json: []
+  },
+  announcement_dismissals: {
+    columns: ['user_id', 'announcement_id', 'dismissed_at'],
+    json: []
+  },
+  // v17: Internal team chat
+  chat_rooms: {
+    columns: ['type', 'name', 'created_at'],
+    json: []
+  },
+  chat_room_members: {
+    columns: ['room_id', 'user_id', 'last_read_at', 'joined_at'],
+    json: []
+  },
+  chat_messages: {
+    columns: ['room_id', 'user_id', 'body', 'created_at'],
+    json: []
   }
 };
 

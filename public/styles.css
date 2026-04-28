@@ -479,6 +479,26 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
 .cell-err { color: var(--err); font-weight: 500; }
 .cell-warn { color: #f59e0b; font-weight: 500; }
 
+/* Announcement banner — top of every screen, one card per active item */
+#announce-bar { display: flex; flex-direction: column; gap: 4px; }
+.announce-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .55rem 1rem; color: #fff; font-size: .9rem;
+  border-bottom: 1px solid rgba(255,255,255,.18);
+}
+.announce-card.sev-info    { background: linear-gradient(90deg, #2563eb, #3b82f6); }
+.announce-card.sev-success { background: linear-gradient(90deg, #047857, #10b981); }
+.announce-card.sev-warning { background: linear-gradient(90deg, #b45309, #f59e0b); color: #1f2937; }
+.announce-card.sev-danger  { background: linear-gradient(90deg, #b91c1c, #ef4444); }
+.announce-text b { font-weight: 700; }
+.announce-text .announce-body { opacity: .9; }
+.announce-close {
+  background: rgba(255,255,255,.18); border: 0; color: inherit;
+  width: 26px; height: 26px; border-radius: 50%;
+  cursor: pointer; font-size: .85rem; flex-shrink: 0; margin-left: 1rem;
+}
+.announce-close:hover { background: rgba(255,255,255,.32); }
+
 /* Knowledge Base — sidebar + cards layout */
 .kb-wrap { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; }
 @media (max-width: 700px) { .kb-wrap { grid-template-columns: 1fr; } }
