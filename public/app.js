@@ -3492,15 +3492,27 @@ VIEWS.teamchat = async (view) => {
     lastListFingerprint = fp;
 
     left.innerHTML = '';
+    const isAdmin = CRM.user.role === 'admin';
     left.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
       h('h4', { style: { margin: 0 } }, '👥 Team chat'),
-      h('button', { class: 'btn sm ghost', title: 'Refresh now',
-        onclick: () => { lastListFingerprint = ''; renderThreadList(); if (openRoomId) renderActiveThread(true); }
-      }, '↻')
+      h('div', {},
+        isAdmin ? h('button', { class: 'btn sm ghost', title: 'Create a new group',
+          onclick: () => openCreateGroupModal(chatUsers, () => { lastListFingerprint = ''; renderThreadList(); })
+        }, '+ Group') : null,
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' }, title: 'Refresh now',
+          onclick: () => { lastListFingerprint = ''; renderThreadList(); if (openRoomId) renderActiveThread(true); }
+        }, '↻')
+      )
     ));
 
-    // Channel(s) first
-    rooms.filter(r => r.type === 'channel').forEach(r => left.appendChild(renderRoomRow(r)));
+    // Org-wide team channel first
+    rooms.filter(r => r.type === 'channel' && r.label === 'team').forEach(r => left.appendChild(renderRoomRow(r)));
+    // Custom groups next, with their own section header
+    const groupRooms = rooms.filter(r => r.type === 'channel' && r.label !== 'team');
+    if (groupRooms.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Groups'));
+      groupRooms.forEach(r => left.appendChild(renderRoomRow(r)));
+    }
     // DM rooms with existing messages
     const dmRooms = rooms.filter(r => r.type === 'dm');
     if (dmRooms.length) {
@@ -3611,14 +3623,24 @@ VIEWS.teamchat = async (view) => {
     wrap.classList.add('thread-open');  // mobile: hide list, show thread
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
 
+    const isAdmin = CRM.user.role === 'admin';
+    // Manage button only for admin AND only on custom groups (not the
+    // org-wide 'team' channel and not DMs).
+    const canManage = isAdmin && type === 'channel' && label !== 'team';
+
     right.innerHTML = '';
     right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
       h('div', { style: { display: 'flex', alignItems: 'center' } },
         h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
         h('b', {}, type === 'channel' ? '# ' + label : label)
       ),
-      h('button', { class: 'btn sm ghost', title: 'Refresh',
-        onclick: () => renderActiveThread(true) }, '↻')
+      h('div', {},
+        canManage ? h('button', { class: 'btn sm ghost', title: 'Manage members / rename / delete',
+          onclick: () => openManageGroupModal(roomId, label, chatUsers, () => { lastListFingerprint = ''; renderThreadList(); })
+        }, '⚙') : null,
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' }, title: 'Refresh',
+          onclick: () => renderActiveThread(true) }, '↻')
+      )
     ));
     const log = h('div', { class: 'wb-chat-log' });
     log.innerHTML = '<div class="loading">Loading…</div>';
@@ -3672,6 +3694,134 @@ VIEWS.teamchat = async (view) => {
     }
   }, 4_000);
 };
+
+/**
+ * Modal: admin creates a new chat group with a name + member checkboxes.
+ * The creator is auto-included server-side.
+ */
+function openCreateGroupModal(allUsers, onSaved) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '➕ New chat group'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { id: 'gc-form' });
+  form.appendChild(h('p', { class: 'muted', style: { marginTop: 0 } },
+    'Pick a name and the members. Only the people you tick can see the group and post in it.'));
+  form.appendChild(h('input', { name: 'name', placeholder: 'Group name (e.g. Sales — North zone)',
+    style: { width: '100%', padding: '.6rem .75rem', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '.75rem' },
+    required: true, maxlength: 80
+  }));
+  const memberBox = h('div', { class: 'card', style: { padding: '.75rem', maxHeight: '320px', overflowY: 'auto' } });
+  (allUsers || []).filter(u => Number(u.id) !== Number(CRM.user.id)).forEach(u => {
+    memberBox.appendChild(h('label', {
+      style: { display: 'flex', alignItems: 'center', padding: '.3rem 0', cursor: 'pointer' }
+    },
+      h('input', { type: 'checkbox', name: 'mem_' + u.id, style: { marginRight: '.5rem' } }),
+      h('span', { style: { fontWeight: 500 } }, u.name),
+      h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' · ' + (u.role || ''))
+    ));
+  });
+  form.appendChild(memberBox);
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'gc-form', class: 'btn primary' }, 'Create group')
+  ));
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const name = form.name.value.trim();
+    if (!name) { toast('Group name required', 'err'); return; }
+    const memberIds = [...form.querySelectorAll('input[type="checkbox"]:checked')]
+      .map(c => Number(c.name.replace(/^mem_/, '')));
+    try {
+      await api('api_chat_groups_create', { name, member_ids: memberIds });
+      toast('Group created');
+      m.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.body.appendChild(m);
+}
+
+/**
+ * Modal: admin renames / re-sets members / deletes an existing group.
+ * Pre-fills with current members.
+ */
+async function openManageGroupModal(roomId, currentName, allUsers, onSaved) {
+  let currentMembers = [];
+  try { currentMembers = await api('api_chat_groups_members', roomId); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const memberIds = new Set(currentMembers.map(m => Number(m.user_id)));
+
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '⚙ Manage group'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+
+  const form = h('form', { id: 'gm-form' });
+  form.appendChild(h('label', { class: 'muted', style: { fontSize: '.8rem' } }, 'Group name'));
+  form.appendChild(h('input', { name: 'name', value: currentName,
+    style: { width: '100%', padding: '.6rem .75rem', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '.75rem' },
+    required: true, maxlength: 80
+  }));
+  form.appendChild(h('label', { class: 'muted', style: { fontSize: '.8rem' } },
+    'Members — tick to include. Removing yourself is blocked (server force-includes admin).'));
+  const memberBox = h('div', { class: 'card', style: { padding: '.75rem', maxHeight: '320px', overflowY: 'auto' } });
+  (allUsers || []).forEach(u => {
+    memberBox.appendChild(h('label', {
+      style: { display: 'flex', alignItems: 'center', padding: '.3rem 0', cursor: 'pointer' }
+    },
+      h('input', {
+        type: 'checkbox', name: 'mem_' + u.id,
+        checked: memberIds.has(Number(u.id)) ? 'checked' : null,
+        style: { marginRight: '.5rem' }
+      }),
+      h('span', { style: { fontWeight: 500 } }, u.name),
+      h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' · ' + (u.role || ''))
+    ));
+  });
+  form.appendChild(memberBox);
+  body.appendChild(form);
+
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', style: { background: '#ef4444', color: '#fff' },
+      onclick: async () => {
+        if (!confirm('Permanently delete this group and all its messages?')) return;
+        try {
+          await api('api_chat_groups_delete', roomId);
+          toast('Deleted');
+          m.remove();
+          if (typeof onSaved === 'function') onSaved();
+        } catch (e) { toast(e.message, 'err'); }
+      }
+    }, '🗑 Delete'),
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'gm-form', class: 'btn primary' }, 'Save changes')
+  ));
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const newName = form.name.value.trim();
+    if (!newName) { toast('Group name required', 'err'); return; }
+    const newIds = [...form.querySelectorAll('input[type="checkbox"]:checked')]
+      .map(c => Number(c.name.replace(/^mem_/, '')));
+    try {
+      await api('api_chat_groups_update', {
+        id: roomId, name: newName, member_ids: newIds
+      });
+      toast('Saved');
+      m.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.body.appendChild(m);
+}
 
 /* ---------------- Reports with charts ---------------- */
 async function ensureChartJs() {

@@ -177,11 +177,18 @@ async function api_chat_rooms_list(token) {
   const out = [];
   for (const r of rooms) {
     if (r.type === 'channel') {
-      // Auto-join the org-wide channel if the user isn't a member yet
-      if (!myRoomIds.has(Number(r.id))) {
-        await _ensureChannelMember(r.id, me.id);
-        myRoomIds.add(Number(r.id));
-        lastReadByRoom[Number(r.id)] = '1970-01-01T00:00:00Z';
+      // The org-wide 'team' channel auto-joins every user. Custom groups
+      // (any other channel name) only show to explicit members — admin
+      // adds people via the Manage Members UI.
+      if (r.name === 'team') {
+        if (!myRoomIds.has(Number(r.id))) {
+          await _ensureChannelMember(r.id, me.id);
+          myRoomIds.add(Number(r.id));
+          lastReadByRoom[Number(r.id)] = '1970-01-01T00:00:00Z';
+        }
+      } else {
+        // Non-default channel — must be a member
+        if (!myRoomIds.has(Number(r.id))) continue;
       }
     } else if (r.type === 'dm') {
       if (!myRoomIds.has(Number(r.id))) continue;
@@ -233,13 +240,15 @@ async function api_chat_messages_list(token, roomId) {
   const me = await authUser(token);
   await _ensureCanChat(me);
   if (!roomId) throw new Error('roomId required');
-  // Membership check — channels everyone, DMs only members
+  // Membership check — DMs and custom groups require explicit membership;
+  // only the special 'team' channel is open to everyone.
   const room = await db.findById('chat_rooms', roomId);
   if (!room) throw new Error('Room not found');
   const memberRow = (await db.getAll('chat_room_members'))
     .find(m => Number(m.room_id) === Number(roomId) &&
                Number(m.user_id) === Number(me.id));
-  if (!memberRow && room.type !== 'channel') throw new Error('Forbidden');
+  const isOpenChannel = room.type === 'channel' && room.name === 'team';
+  if (!memberRow && !isOpenChannel) throw new Error('Forbidden');
 
   const usersById = await _userMap();
   const all = await db.getAll('chat_messages');
@@ -296,7 +305,16 @@ async function api_chat_send(token, payload) {
                  Number(x.user_id) === Number(me.id));
     if (!m) throw new Error('Forbidden');
   } else if (room.type === 'channel') {
-    await _ensureChannelMember(roomId, me.id);
+    if (room.name === 'team') {
+      // Open channel — auto-join on first send
+      await _ensureChannelMember(roomId, me.id);
+    } else {
+      // Custom group — must already be a member
+      const m = (await db.getAll('chat_room_members'))
+        .find(x => Number(x.room_id) === Number(roomId) &&
+                   Number(x.user_id) === Number(me.id));
+      if (!m) throw new Error('You are not a member of this group');
+    }
   }
 
   const id = await db.insert('chat_messages', {
@@ -374,9 +392,125 @@ async function api_chat_unreadCount(token) {
   return { unread: total };
 }
 
+/* ---------------- Group / channel management (admin only) -------- */
+
+/**
+ * Create a new chat group with a name and a list of members. The creator
+ * (admin) is auto-added so they can manage the group from inside it.
+ *
+ * Names are not unique — admin can create two "Sales" groups if they
+ * really want — but we trim & cap at 80 chars so the sidebar doesn't
+ * blow out. Reserved name 'team' is rejected; that's the org-wide
+ * channel and shouldn't be duplicated.
+ */
+async function api_chat_groups_create(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  const name = String(p.name || '').trim().slice(0, 80);
+  if (!name) throw new Error('Group name required');
+  if (name.toLowerCase() === 'team') throw new Error("'team' is reserved for the org-wide channel");
+  const memberIds = Array.isArray(p.member_ids) ? p.member_ids.map(n => Number(n)).filter(Boolean) : [];
+
+  const id = await db.insert('chat_rooms', {
+    type: 'channel', name, created_at: db.nowIso()
+  });
+  // Always include the creator in the member list
+  const ids = new Set([Number(me.id), ...memberIds]);
+  for (const uid of ids) {
+    try {
+      await db.insert('chat_room_members', {
+        room_id: id, user_id: uid, joined_at: db.nowIso()
+      });
+    } catch (_) { /* ignore dup-key on (room_id, user_id) */ }
+  }
+  return { id, ok: true };
+}
+
+async function api_chat_groups_update(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  if (!p.id) throw new Error('Group id required');
+  const room = await db.findById('chat_rooms', p.id);
+  if (!room) throw new Error('Group not found');
+  if (room.type !== 'channel' || room.name === 'team') {
+    throw new Error('Cannot edit this room');
+  }
+
+  // Rename if a new name was supplied
+  if (p.name !== undefined) {
+    const name = String(p.name || '').trim().slice(0, 80);
+    if (!name) throw new Error('Group name required');
+    if (name.toLowerCase() === 'team') throw new Error("'team' is reserved");
+    await db.update('chat_rooms', p.id, { name });
+  }
+
+  // Reconcile member list if supplied — atomic add/remove
+  if (Array.isArray(p.member_ids)) {
+    const wantIds = new Set(p.member_ids.map(n => Number(n)).filter(Boolean));
+    // Always keep at least the admin in there so the group stays manageable
+    wantIds.add(Number(me.id));
+    const allMembers = await db.getAll('chat_room_members');
+    const existing = allMembers.filter(m => Number(m.room_id) === Number(p.id));
+    const haveIds = new Set(existing.map(m => Number(m.user_id)));
+    // Add new ones
+    for (const uid of wantIds) {
+      if (!haveIds.has(uid)) {
+        try {
+          await db.insert('chat_room_members', {
+            room_id: p.id, user_id: uid, joined_at: db.nowIso()
+          });
+        } catch (_) {}
+      }
+    }
+    // Remove people who are no longer wanted
+    for (const m of existing) {
+      if (!wantIds.has(Number(m.user_id))) {
+        try { await db.removeRow('chat_room_members', m.id); } catch (_) {}
+      }
+    }
+  }
+  return { ok: true };
+}
+
+async function api_chat_groups_delete(token, id) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const room = await db.findById('chat_rooms', id);
+  if (!room) throw new Error('Group not found');
+  if (room.type !== 'channel' || room.name === 'team') {
+    throw new Error('Cannot delete this room');
+  }
+  // Cascade-delete members + messages via FK ON DELETE CASCADE in schema
+  await db.removeRow('chat_rooms', id);
+  return { ok: true };
+}
+
+/**
+ * Members of a group — used by the Manage Members modal so admin sees
+ * who's currently in. Each row is hydrated with name + role.
+ */
+async function api_chat_groups_members(token, roomId) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const usersById = await _userMap();
+  const all = await db.getAll('chat_room_members');
+  return all
+    .filter(m => Number(m.room_id) === Number(roomId))
+    .map(m => ({
+      user_id: m.user_id,
+      name: usersById[Number(m.user_id)]?.name || ('User #' + m.user_id),
+      role: usersById[Number(m.user_id)]?.role || ''
+    }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
 module.exports = {
   api_chat_rooms_list, api_chat_messages_list, api_chat_send,
   api_chat_markRead, api_chat_unreadCount,
   api_chat_visibleUsers, api_chat_myAccess,
-  api_chat_settings_get, api_chat_settings_save
+  api_chat_settings_get, api_chat_settings_save,
+  api_chat_groups_create, api_chat_groups_update,
+  api_chat_groups_delete, api_chat_groups_members
 };
