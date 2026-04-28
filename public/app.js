@@ -9950,39 +9950,77 @@ async function refreshAnnouncements() {
  * Suppressed when the user is on /#/teamchat AND has THAT specific room
  * already open — no point flashing a popup for the conversation you're
  * actively reading.
+ *
+ * Strategy: watermark by created_at timestamp instead of message-id Set.
+ * Reason: on login the seed used to add EVERY existing-unread message to
+ * a "seen" set; if the seed and a real new message raced (both included
+ * in the first poll response), the new message also got marked as seen
+ * and never toasted. Watermark is unambiguous — anything newer than the
+ * last-seen timestamp is fresh.
  * -------------------------------------------------------------------- */
 
-const _chatToastShown = new Set();    // message ids we've already popped
+let _lastSeenChatAt = '0';   // ISO timestamp of the newest message we've toasted
 let _chatPollTimer = null;
 
 function startChatNotificationPolling() {
   if (_chatPollTimer) clearInterval(_chatPollTimer);
-  // First poll seeds the "already seen" set so refreshing the page or
-  // logging in doesn't immediately spam toasts for old unread messages.
+  console.log('[chat-popup] polling started');
+
+  // Seed — set the watermark to the newest existing unread so we don't
+  // immediately toast every old unread on login. Uses .catch so a failed
+  // seed doesn't disable polling; if seed fails, watermark stays '0' and
+  // the first poll will emit every unread (loud failure > silent failure).
   api('api_chat_recent_unread').then(rows => {
-    (rows || []).forEach(r => _chatToastShown.add(Number(r.id)));
-  }).catch(() => {});
+    if (rows && rows.length) {
+      _lastSeenChatAt = String(rows[0].created_at);
+      console.log('[chat-popup] seeded watermark at', _lastSeenChatAt, '· existing unread:', rows.length);
+    } else {
+      console.log('[chat-popup] no existing unread on seed');
+    }
+  }).catch(e => {
+    console.warn('[chat-popup] seed failed:', e.message);
+  });
 
   _chatPollTimer = setInterval(async () => {
-    if (document.visibilityState === 'hidden') return;  // pause when tab hidden
+    if (document.visibilityState === 'hidden') return;
     let rows;
     try { rows = await api('api_chat_recent_unread'); }
-    catch (_) { return; }
+    catch (e) { return; }
     if (!rows || !rows.length) return;
-    // Show the OLDEST first so the newest ends up on top of the stack
-    [...rows].reverse().forEach(r => {
-      if (_chatToastShown.has(Number(r.id))) return;
-      _chatToastShown.add(Number(r.id));
 
-      // Suppress if user is on chat tab AND has this exact room open
+    // Anything newer than the watermark is fresh
+    const fresh = rows.filter(r => String(r.created_at) > _lastSeenChatAt);
+    if (!fresh.length) return;
+
+    // Advance watermark to the newest in this batch
+    _lastSeenChatAt = String(fresh[0].created_at);
+
+    // Show oldest first so the newest ends up at the top of the stack
+    [...fresh].reverse().forEach(r => {
       const onChatTab = parseHashView() === 'teamchat';
       const openRoomMatches = window._tcOpenRoomId === r.room_id;
       if (onChatTab && openRoomMatches) return;
-
+      console.log('[chat-popup] new message →', r.user_name, ':', String(r.body || '').slice(0, 60));
       showChatToast(r);
     });
-  }, 15_000);
+  }, 10_000);
 }
+
+// Manual test hook — paste `testChatToast()` in the browser console to
+// verify the toast UI renders correctly. Useful when "popup not coming"
+// could be a UI bug vs a polling/data bug.
+window.testChatToast = function () {
+  showChatToast({
+    id: Date.now(),
+    room_id: 1,
+    room_label: '#team',
+    room_type: 'channel',
+    user_id: 0,
+    user_name: 'Test User',
+    body: 'This is a test in-app chat notification. If you see this, the popup UI works.',
+    created_at: new Date().toISOString()
+  });
+};
 
 function showChatToast(msg) {
   let layer = document.getElementById('chat-toast-layer');
