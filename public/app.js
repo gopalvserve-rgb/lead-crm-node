@@ -96,12 +96,11 @@ async function apiRaw(fn, ...args) {
       // without them needing to refresh.
       refreshAnnouncements();
       setInterval(() => refreshAnnouncements().catch(() => {}), 60_000);
-      // In-app chat notification popup — polls every 15s while the user is
-      // anywhere in the CRM. Skips when the chat tab is open with that
-      // exact room visible (no point popping up your own active conversation).
-      if (CRM.access && CRM.access.can_chat !== false) {
-        startChatNotificationPolling();
-      }
+      // In-app chat notification popup — polls every 10s while the user is
+      // anywhere in the CRM. Always starts (the backend endpoint silently
+      // refuses for users with chat disabled). Skips popping when the chat
+      // tab is open with that exact room visible.
+      startChatNotificationPolling();
       // Register Web Push so the user's phone gets SMS-style banners even
       // when the CRM tab / installed PWA is closed. Runs after a short delay
       // so it doesn't block initial render. Silently skips on browsers that
@@ -9962,14 +9961,61 @@ async function refreshAnnouncements() {
 let _lastSeenChatAt = '0';   // ISO timestamp of the newest message we've toasted
 let _chatPollTimer = null;
 
+async function _chatPollOnce() {
+  if (document.visibilityState === 'hidden') return;
+  let rows;
+  try { rows = await api('api_chat_recent_unread'); }
+  catch (e) {
+    // The backend rejects with "not enabled" if the role isn't in the
+    // allowed_roles config. That's not an error worth toasting; just be
+    // quiet about it (still log to console).
+    if (!String(e.message || '').includes('not enabled')) {
+      console.warn('[chat-popup] poll failed:', e.message);
+    }
+    return;
+  }
+  if (!rows || !rows.length) return;
+
+  const fresh = rows.filter(r => String(r.created_at) > _lastSeenChatAt);
+  if (!fresh.length) return;
+  _lastSeenChatAt = String(fresh[0].created_at);
+
+  [...fresh].reverse().forEach(r => {
+    const onChatTab = parseHashView() === 'teamchat';
+    const openRoomMatches = window._tcOpenRoomId === r.room_id;
+    if (onChatTab && openRoomMatches) return;
+    console.log('[chat-popup] new message →', r.user_name, ':', String(r.body || '').slice(0, 60));
+    showChatToast(r);
+    // Belt-and-braces — also fire a native browser Notification if we have
+    // permission. So even if the in-app toast is hidden behind something
+    // (or CSS fails for some reason), the user still sees an OS-level
+    // banner. Skips silently if permission is denied/default.
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        const n = new Notification('💬 ' + (r.user_name || 'Teammate'), {
+          body: String(r.body || '').slice(0, 200),
+          tag: 'chat-' + r.room_id,
+          icon: '/icon-192.png'
+        });
+        n.onclick = () => {
+          window.focus();
+          location.hash = '#/teamchat?room=' + r.room_id;
+          n.close();
+        };
+      }
+    } catch (_) {}
+  });
+}
+
 function startChatNotificationPolling() {
   if (_chatPollTimer) clearInterval(_chatPollTimer);
   console.log('[chat-popup] polling started');
 
   // Seed — set the watermark to the newest existing unread so we don't
-  // immediately toast every old unread on login. Uses .catch so a failed
-  // seed doesn't disable polling; if seed fails, watermark stays '0' and
-  // the first poll will emit every unread (loud failure > silent failure).
+  // immediately toast every old unread on login. After the seed completes,
+  // immediately fire the first real poll (rather than waiting 10s) so a
+  // message that arrived in the gap between seed and first interval
+  // doesn't have to wait the full poll cycle to surface.
   api('api_chat_recent_unread').then(rows => {
     if (rows && rows.length) {
       _lastSeenChatAt = String(rows[0].created_at);
@@ -9978,32 +10024,20 @@ function startChatNotificationPolling() {
       console.log('[chat-popup] no existing unread on seed');
     }
   }).catch(e => {
-    console.warn('[chat-popup] seed failed:', e.message);
+    if (!String(e.message || '').includes('not enabled')) {
+      console.warn('[chat-popup] seed failed:', e.message);
+    }
   });
 
-  _chatPollTimer = setInterval(async () => {
-    if (document.visibilityState === 'hidden') return;
-    let rows;
-    try { rows = await api('api_chat_recent_unread'); }
-    catch (e) { return; }
-    if (!rows || !rows.length) return;
+  // Poll every 10s (was 15s — tightened for snappier in-app feedback)
+  _chatPollTimer = setInterval(_chatPollOnce, 10_000);
 
-    // Anything newer than the watermark is fresh
-    const fresh = rows.filter(r => String(r.created_at) > _lastSeenChatAt);
-    if (!fresh.length) return;
-
-    // Advance watermark to the newest in this batch
-    _lastSeenChatAt = String(fresh[0].created_at);
-
-    // Show oldest first so the newest ends up at the top of the stack
-    [...fresh].reverse().forEach(r => {
-      const onChatTab = parseHashView() === 'teamchat';
-      const openRoomMatches = window._tcOpenRoomId === r.room_id;
-      if (onChatTab && openRoomMatches) return;
-      console.log('[chat-popup] new message →', r.user_name, ':', String(r.body || '').slice(0, 60));
-      showChatToast(r);
-    });
-  }, 10_000);
+  // ALSO fire whenever the tab regains focus — covers the case where the
+  // user came back from another tab / app and we want to immediately show
+  // anything that arrived while polling was paused.
+  window.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _chatPollOnce();
+  });
 }
 
 // Manual test hook — paste `testChatToast()` in the browser console to
