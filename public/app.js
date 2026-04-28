@@ -7353,6 +7353,7 @@ async function renderAttendanceDetailed() {
           h('th', {}, 'Check-in'),
           h('th', {}, 'Check-out'),
           h('th', {}, 'Hours'),
+          h('th', {}, 'Location'),
           h('th', {}, 'Map'),
           h('th', {}, 'Device')
         )),
@@ -7362,6 +7363,7 @@ async function renderAttendanceDetailed() {
           const hrs  = (r.check_in && r.check_out) ? ((new Date(r.check_out) - new Date(r.check_in)) / 3600000).toFixed(1) + 'h' : '—';
           const hasMap = !!(r.check_in_lat && r.check_in_lng);
           const status = r.status || 'present';
+          const locName = r.check_in_location_name || '';
           return h('tr', {},
             h('td', {}, String(r.date || '').slice(0, 10)),
             h('td', {}, h('b', {}, r.user_name || ('User #' + r.user_id))),
@@ -7369,6 +7371,9 @@ async function renderAttendanceDetailed() {
             h('td', {}, inT),
             h('td', {}, outT),
             h('td', {}, hrs),
+            h('td', { style: { fontSize: '.82rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: locName || '' },
+              locName ? h('span', {}, '📍 ', locName) : h('span', { class: 'muted' }, '—')
+            ),
             h('td', {},
               hasMap ? h('button', { class: 'btn sm', onclick: () => openAttendanceMap(r), title: 'Open GPS pin' }, '🗺️') : h('span', { class: 'muted' }, '—')
             ),
@@ -7414,7 +7419,8 @@ async function renderMyAttendance() {
         h('td', {}, fmtDate(r.check_in, 'time')),
         h('td', {}, fmtDate(r.check_out, 'time')),
         h('td', {}, (r.check_in_lat && r.check_in_lng)
-          ? h('a', { href: '#', onclick: ev => { ev.preventDefault(); openAttendanceMap(r); } }, '🗺️ Map')
+          ? h('a', { href: '#', onclick: ev => { ev.preventDefault(); openAttendanceMap(r); }, title: r.check_in_location_name || '' },
+              r.check_in_location_name ? '📍 ' + r.check_in_location_name : '🗺️ Map')
           : h('span', { class: 'muted' }, '—')),
         h('td', { class: 'muted' }, r.device_info || '—'),
         h('td', {}, r.status || '')
@@ -7514,10 +7520,14 @@ async function openAttendanceMap(r) {
       h('div', { class: 'att-meta' },
         r.device_info ? h('div', {}, h('b', {}, 'Device: '), r.device_info) : null,
         r.user_agent ? h('div', { class: 'muted' }, h('b', {}, 'UA: '), r.user_agent) : null,
-        h('div', {}, h('b', {}, 'Check in: '), fmtDate(r.check_in), '  ·  ',
-          r.check_in_lat ? `${Number(r.check_in_lat).toFixed(5)}, ${Number(r.check_in_lng).toFixed(5)}` : '—'),
-        r.check_out ? h('div', {}, h('b', {}, 'Check out: '), fmtDate(r.check_out), '  ·  ',
-          r.check_out_lat ? `${Number(r.check_out_lat).toFixed(5)}, ${Number(r.check_out_lng).toFixed(5)}` : '—') : null
+        h('div', {}, h('b', {}, 'Check in: '), fmtDate(r.check_in),
+          r.check_in_location_name ? h('span', {}, '  ·  📍 ', h('b', {}, r.check_in_location_name)) : null,
+          '  ·  ',
+          r.check_in_lat ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, `${Number(r.check_in_lat).toFixed(5)}, ${Number(r.check_in_lng).toFixed(5)}`) : '—'),
+        r.check_out ? h('div', {}, h('b', {}, 'Check out: '), fmtDate(r.check_out),
+          r.check_out_location_name ? h('span', {}, '  ·  📍 ', h('b', {}, r.check_out_location_name)) : null,
+          '  ·  ',
+          r.check_out_lat ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, `${Number(r.check_out_lat).toFixed(5)}, ${Number(r.check_out_lng).toFixed(5)}`) : '—') : null
       )
     )
   );
@@ -7530,12 +7540,16 @@ async function openAttendanceMap(r) {
     const pts = [];
     if (r.check_in_lat && r.check_in_lng) {
       const c = [Number(r.check_in_lat), Number(r.check_in_lng)];
-      L.marker(c).addTo(map).bindPopup('🕘 Check in<br>' + fmtDate(r.check_in));
+      const inHtml = '🕘 <b>Check in</b><br>' + fmtDate(r.check_in)
+        + (r.check_in_location_name ? '<br>📍 ' + esc(r.check_in_location_name) : '');
+      L.marker(c).addTo(map).bindPopup(inHtml);
       pts.push(c);
     }
     if (r.check_out_lat && r.check_out_lng) {
       const c = [Number(r.check_out_lat), Number(r.check_out_lng)];
-      L.marker(c).addTo(map).bindPopup('🕔 Check out<br>' + fmtDate(r.check_out));
+      const outHtml = '🕔 <b>Check out</b><br>' + fmtDate(r.check_out)
+        + (r.check_out_location_name ? '<br>📍 ' + esc(r.check_out_location_name) : '');
+      L.marker(c).addTo(map).bindPopup(outHtml);
       pts.push(c);
     }
     if (pts.length === 2) L.polyline(pts, { color: '#6366f1', weight: 3 }).addTo(map);
@@ -7544,10 +7558,48 @@ async function openAttendanceMap(r) {
   }, 50);
 }
 
+/**
+ * Reverse-geocode a (lat, lng) pair to a human-readable address.
+ *
+ * Uses BigDataCloud's free reverse-geocode endpoint — no API key required,
+ * CORS-allowed, 50k req/day free, and returns a useful Indian-locality
+ * breakdown (city, locality, principalSubdivision) which we collapse to a
+ * single readable string. Falls back to null on any error so the check-in
+ * flow never blocks on a network hiccup.
+ */
+async function _reverseGeocode(lat, lng) {
+  if (lat == null || lng == null) return null;
+  const url = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`;
+  try {
+    const resp = await fetch(url, { method: 'GET' });
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    // Prefer the most-specific locality bits, joined with commas.
+    // Example output: "Sector 18, Noida, Uttar Pradesh, India"
+    const parts = [
+      j.locality, j.city, j.principalSubdivision, j.countryName
+    ].map(s => (s || '').trim()).filter(Boolean);
+    // Dedupe consecutive duplicates (BDC sometimes returns city = locality)
+    const dedup = parts.filter((p, i) => i === 0 || p !== parts[i - 1]);
+    return dedup.length ? dedup.join(', ') : null;
+  } catch (_) { return null; }
+}
+
 async function checkInOut(which) {
   const device = _collectDevice();
   const call = async (lat, lng) => {
-    try { await api('api_attendance_' + which, lat, lng, device); toast(which === 'checkIn' ? 'Checked in' : 'Checked out'); navigateTo('attendance'); }
+    // Reverse-geocode in parallel with the API call so check-in stays fast
+    // even on a flaky network. If the geocode fails, we still check in
+    // with just the coordinates.
+    let locationName = null;
+    if (lat != null && lng != null) {
+      try { locationName = await _reverseGeocode(lat, lng); } catch (_) {}
+    }
+    try {
+      await api('api_attendance_' + which, lat, lng, device, locationName);
+      toast(which === 'checkIn' ? 'Checked in' : 'Checked out');
+      navigateTo('attendance');
+    }
     catch (e) { toast(e.message, 'err'); }
   };
   if (!navigator.geolocation) return call(null, null);

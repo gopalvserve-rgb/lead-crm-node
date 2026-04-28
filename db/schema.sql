@@ -307,6 +307,11 @@ CREATE INDEX IF NOT EXISTS idx_auto_log_lead ON automation_log(lead_id);
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS device_info TEXT;
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS user_agent TEXT;
 ALTER TABLE attendance ADD COLUMN IF NOT EXISTS ip TEXT;
+-- Human-readable address resolved from lat/lng at check-in/out time.
+-- Populated client-side via reverse-geocoding so admins see "Sector 18,
+-- Noida" instead of a "20.123, 78.456" pair of numbers.
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS check_in_location_name TEXT;
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS check_out_location_name TEXT;
 
 -- v6: role permissions
 CREATE TABLE IF NOT EXISTS role_permissions (

@@ -19,7 +19,7 @@ function haversine(lat1, lon1, lat2, lon2) {
 
 // ---- Attendance -----------------------------------------------------
 
-async function api_attendance_checkIn(token, lat, lng, deviceInfo) {
+async function api_attendance_checkIn(token, lat, lng, deviceInfo, locationName) {
   const me = await authUser(token);
   const date = todayIso();
 
@@ -46,6 +46,7 @@ async function api_attendance_checkIn(token, lat, lng, deviceInfo) {
     check_in: now,
     check_in_lat: lat || null,
     check_in_lng: lng || null,
+    check_in_location_name: locationName ? String(locationName).slice(0, 255) : null,
     status: 'present',
     device_info, user_agent
   };
@@ -59,7 +60,7 @@ async function api_attendance_checkIn(token, lat, lng, deviceInfo) {
   return { id, check_in: now };
 }
 
-async function api_attendance_checkOut(token, lat, lng, deviceInfo) {
+async function api_attendance_checkOut(token, lat, lng, deviceInfo, locationName) {
   const me = await authUser(token);
   const date = todayIso();
   const row = (await db.getAll('attendance'))
@@ -73,6 +74,7 @@ async function api_attendance_checkOut(token, lat, lng, deviceInfo) {
     check_out: now,
     check_out_lat: lat || null,
     check_out_lng: lng || null,
+    check_out_location_name: locationName ? String(locationName).slice(0, 255) : null,
     device_info: d.summary || row.device_info,
     user_agent: d.user_agent || row.user_agent
   });
