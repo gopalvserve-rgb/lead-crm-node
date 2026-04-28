@@ -96,6 +96,12 @@ async function apiRaw(fn, ...args) {
       // without them needing to refresh.
       refreshAnnouncements();
       setInterval(() => refreshAnnouncements().catch(() => {}), 60_000);
+      // In-app chat notification popup — polls every 15s while the user is
+      // anywhere in the CRM. Skips when the chat tab is open with that
+      // exact room visible (no point popping up your own active conversation).
+      if (CRM.access && CRM.access.can_chat !== false) {
+        startChatNotificationPolling();
+      }
       // Register Web Push so the user's phone gets SMS-style banners even
       // when the CRM tab / installed PWA is closed. Runs after a short delay
       // so it doesn't block initial render. Silently skips on browsers that
@@ -3611,6 +3617,7 @@ VIEWS.teamchat = async (view) => {
 
   function backToList() {
     openRoomId = null;
+    window._tcOpenRoomId = null;
     openMsgFingerprint = '';
     wrap.classList.remove('thread-open');
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
@@ -3619,6 +3626,9 @@ VIEWS.teamchat = async (view) => {
 
   async function openRoom(roomId, label, type) {
     openRoomId = roomId;
+    window._tcOpenRoomId = roomId;       // exposed so the in-app chat toast
+                                          // can suppress popups for the room
+                                          // the user is actively reading
     openMsgFingerprint = '';
     wrap.classList.add('thread-open');  // mobile: hide list, show thread
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
@@ -9907,6 +9917,90 @@ async function refreshAnnouncements() {
     );
     bar.appendChild(card);
   });
+}
+
+/* ---------------- In-app chat notification popup ----------------------
+ * For browser users (or APK users with the app open) — when a teammate
+ * sends a chat message we slide a Slack-style toast in from the bottom
+ * right with sender name, room, and a preview. Click → opens the
+ * conversation. Auto-dismiss after 8 seconds; stack up to 3.
+ *
+ * Suppressed when the user is on /#/teamchat AND has THAT specific room
+ * already open — no point flashing a popup for the conversation you're
+ * actively reading.
+ * -------------------------------------------------------------------- */
+
+const _chatToastShown = new Set();    // message ids we've already popped
+let _chatPollTimer = null;
+
+function startChatNotificationPolling() {
+  if (_chatPollTimer) clearInterval(_chatPollTimer);
+  // First poll seeds the "already seen" set so refreshing the page or
+  // logging in doesn't immediately spam toasts for old unread messages.
+  api('api_chat_recent_unread').then(rows => {
+    (rows || []).forEach(r => _chatToastShown.add(Number(r.id)));
+  }).catch(() => {});
+
+  _chatPollTimer = setInterval(async () => {
+    if (document.visibilityState === 'hidden') return;  // pause when tab hidden
+    let rows;
+    try { rows = await api('api_chat_recent_unread'); }
+    catch (_) { return; }
+    if (!rows || !rows.length) return;
+    // Show the OLDEST first so the newest ends up on top of the stack
+    [...rows].reverse().forEach(r => {
+      if (_chatToastShown.has(Number(r.id))) return;
+      _chatToastShown.add(Number(r.id));
+
+      // Suppress if user is on chat tab AND has this exact room open
+      const onChatTab = parseHashView() === 'teamchat';
+      const openRoomMatches = window._tcOpenRoomId === r.room_id;
+      if (onChatTab && openRoomMatches) return;
+
+      showChatToast(r);
+    });
+  }, 15_000);
+}
+
+function showChatToast(msg) {
+  let layer = document.getElementById('chat-toast-layer');
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = 'chat-toast-layer';
+    document.body.appendChild(layer);
+  }
+  // Cap to 3 visible at a time — pop the oldest off the bottom
+  while (layer.children.length >= 3) layer.removeChild(layer.firstChild);
+
+  const t = h('div', { class: 'chat-toast' },
+    h('div', { class: 'chat-toast-head' },
+      h('span', { class: 'chat-toast-icon' }, '💬'),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { class: 'chat-toast-from' }, msg.user_name || 'Teammate',
+          h('span', { class: 'chat-toast-room' }, ' · ' + (msg.room_label || '')))
+      ),
+      h('button', { class: 'chat-toast-close', onclick: () => t.remove() }, '✕')
+    ),
+    h('div', { class: 'chat-toast-body' },
+      String(msg.body || '').slice(0, 180) + (String(msg.body || '').length > 180 ? '…' : '')
+    ),
+    h('div', { class: 'chat-toast-actions' },
+      h('button', { class: 'btn sm primary', onclick: () => {
+        t.remove();
+        // Deep-link to the specific conversation
+        location.hash = '#/teamchat?room=' + msg.room_id;
+      } }, 'Open')
+    )
+  );
+  layer.appendChild(t);
+  // Allow the browser to paint the initial off-screen position before
+  // toggling the .show class so the slide-in transition actually animates.
+  requestAnimationFrame(() => t.classList.add('show'));
+  // Auto-dismiss after 8s
+  setTimeout(() => {
+    t.classList.remove('show');
+    setTimeout(() => t.remove(), 320);
+  }, 8000);
 }
 
 async function refreshNotifs() {

@@ -488,6 +488,40 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
 .cell-err { color: var(--err); font-weight: 500; }
 .cell-warn { color: #f59e0b; font-weight: 500; }
 
+/* In-app chat notification popup — slides in from bottom-right when a
+ * teammate sends a chat message. Stack of up to 3, auto-dismiss after 8s. */
+#chat-toast-layer {
+  position: fixed; right: 16px; bottom: 16px; z-index: 9999;
+  display: flex; flex-direction: column-reverse; gap: 10px;
+  pointer-events: none; max-width: 360px;
+}
+.chat-toast {
+  pointer-events: auto;
+  background: #fff; color: #1e293b;
+  border-radius: 12px; padding: .75rem 1rem;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .18), 0 0 0 1px rgba(15, 23, 42, .06);
+  min-width: 280px; max-width: 360px;
+  transform: translateX(110%); transition: transform .32s ease;
+}
+.chat-toast.show { transform: translateX(0); }
+.chat-toast-head { display: flex; align-items: center; gap: .5rem; margin-bottom: .35rem; }
+.chat-toast-icon { font-size: 1rem; }
+.chat-toast-from { font-weight: 600; font-size: .92rem; color: #1e293b;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chat-toast-room { color: #64748b; font-weight: 400; font-size: .82rem; }
+.chat-toast-close { background: transparent; border: 0; color: #94a3b8;
+  cursor: pointer; font-size: .9rem; padding: 0 .25rem; }
+.chat-toast-close:hover { color: #475569; }
+.chat-toast-body {
+  font-size: .88rem; line-height: 1.4; color: #334155;
+  margin-bottom: .55rem; white-space: pre-wrap; word-break: break-word;
+}
+.chat-toast-actions { display: flex; justify-content: flex-end; gap: .35rem; }
+@media (max-width: 600px) {
+  #chat-toast-layer { left: 16px; right: 16px; max-width: none; }
+  .chat-toast { min-width: 0; max-width: none; }
+}
+
 /* Announcement banner — top of every screen, one card per active item */
 #announce-bar { display: flex; flex-direction: column; gap: 4px; }
 .announce-card {

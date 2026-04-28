@@ -506,9 +506,71 @@ async function api_chat_groups_members(token, roomId) {
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
+/**
+ * Recent unread chat messages for the in-app notification popup.
+ *
+ * The browser/PWA chat client polls this every ~15 seconds. Each returned
+ * row has the sender name + room label resolved so the popup can render
+ * "💬 Vaibhav · #team — Hi everyone..." without a second round-trip.
+ *
+ * Capped at 10 rows so a long absence from the CRM doesn't dump 200
+ * messages into the toast queue. If you've been away that long, the
+ * unread badge in the chat sidebar is the right place to see everything.
+ */
+async function api_chat_recent_unread(token) {
+  const me = await authUser(token);
+  await _ensureCanChat(me);
+  const usersById = await _userMap();
+  const [rooms, members, messages] = await Promise.all([
+    db.getAll('chat_rooms'),
+    db.getAll('chat_room_members'),
+    db.getAll('chat_messages')
+  ]);
+  const myMemberships = members.filter(m => Number(m.user_id) === Number(me.id));
+
+  const out = [];
+  for (const mem of myMemberships) {
+    const lastReadAt = mem.last_read_at || '1970-01-01T00:00:00Z';
+    const room = rooms.find(r => Number(r.id) === Number(mem.room_id));
+    if (!room) continue;
+    const unread = messages.filter(msg =>
+      Number(msg.room_id) === Number(room.id) &&
+      Number(msg.user_id) !== Number(me.id) &&
+      String(msg.created_at) > String(lastReadAt)
+    );
+    if (!unread.length) continue;
+
+    // Resolve a friendly label for the popup title
+    let label = room.name || '';
+    if (room.type === 'dm') {
+      const ms = members.filter(x => Number(x.room_id) === Number(room.id));
+      const other = ms.find(x => Number(x.user_id) !== Number(me.id));
+      label = usersById[Number(other?.user_id)]?.name || 'Direct message';
+    } else if (room.type === 'channel') {
+      label = '#' + (room.name || 'team');
+    }
+
+    unread.forEach(msg => {
+      out.push({
+        id: msg.id,
+        room_id: room.id,
+        room_label: label,
+        room_type: room.type,
+        user_id: msg.user_id,
+        user_name: usersById[Number(msg.user_id)]?.name || 'Teammate',
+        body: msg.body || '',
+        created_at: msg.created_at
+      });
+    });
+  }
+  // Newest first — popup queue shows most-recent-first
+  out.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  return out.slice(0, 10);
+}
+
 module.exports = {
   api_chat_rooms_list, api_chat_messages_list, api_chat_send,
-  api_chat_markRead, api_chat_unreadCount,
+  api_chat_markRead, api_chat_unreadCount, api_chat_recent_unread,
   api_chat_visibleUsers, api_chat_myAccess,
   api_chat_settings_get, api_chat_settings_save,
   api_chat_groups_create, api_chat_groups_update,
