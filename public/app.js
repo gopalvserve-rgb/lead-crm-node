@@ -9717,11 +9717,10 @@ async function registerCapacitorPush() {
       try {
         const data = (action && action.notification && action.notification.data) || {};
         const url = data.url || '';
-        // Diagnostic toast — shows the raw action data on the phone so we
-        // can see exactly what arrived if anything goes wrong further down.
-        try {
-          if (typeof toast === 'function') toast('Tap received: ' + JSON.stringify(data).slice(0, 120));
-        } catch (_) {}
+        // Quiet debug log — no toast (the toast was a dev-time diagnostic
+        // that leaked the raw payload to users; the console line below is
+        // visible only via remote debugging).
+        try { console.log('[push] action received', { url, tag: data.tag }); } catch (_) {}
         if (!url) return;
 
         // Special case — dial request. Show a direct modal regardless of
