@@ -448,12 +448,49 @@ async function api_leads_create(token, payload) {
   return { id, duplicate: dup.duplicate, matched_id: dup.matched_id };
 }
 
+// Fields that originate from the customer / campaign and must never be edited
+// by anyone below admin once the lead has been created. This protects against:
+//   - Reps "fixing" a typo that's actually how the customer filled the form
+//     (and losing the original value forever)
+//   - Managers tweaking the source/UTM to make their numbers look better
+//   - Any non-admin overriding gclid/UTMs (which Google Ads conversion
+//     tracking depends on)
+// Admin can change them — for legitimate corrections after talking to the
+// customer.
+const CAMPAIGN_LOCKED_FIELDS = [
+  'name', 'phone', 'whatsapp', 'email',
+  'source', 'source_ref',
+  'gclid', 'gad_campaignid',
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'
+];
+
 async function api_leads_update(token, id, patch) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
   const lead = await db.findById('leads', id);
   if (!lead) throw new Error('Not found');
   if (!_isVisible(me, visible, lead)) throw new Error('Forbidden');
+
+  // Non-admins: silently strip campaign-locked fields from the patch BEFORE
+  // we copy values into `allowed`. Defense in depth — frontend also shows
+  // these inputs as readonly, but a determined user could still POST to the
+  // API directly. The strip here is the source of truth.
+  if (me.role !== 'admin') {
+    const blocked = [];
+    for (const f of CAMPAIGN_LOCKED_FIELDS) {
+      if (f in patch && String(patch[f] || '') !== String(lead[f] || '')) {
+        blocked.push(f);
+        delete patch[f];
+      }
+    }
+    if (blocked.length > 0) {
+      // Don't fail the whole save — just record it. The legitimate edits in
+      // the same patch (status, follow-up, notes) should still succeed.
+      console.warn(
+        `[leads] non-admin user ${me.id} (${me.role}) tried to change locked campaign fields on lead ${id}: ${blocked.join(', ')} — ignored`
+      );
+    }
+  }
 
   const allowed = {};
   ['name', 'email', 'phone', 'whatsapp', 'product_id', 'status_id', 'assigned_to',

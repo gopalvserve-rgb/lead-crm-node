@@ -1857,6 +1857,31 @@ async function openLeadModal(id) {
   });
 
   body.appendChild(form);
+
+  // Customer / campaign-supplied fields are read-only for non-admins on
+  // existing leads. Reps can update status/notes/follow-up/etc. but cannot
+  // overwrite what the customer typed in the form, the source, the GCLID,
+  // or the UTMs. Admin can still change these for legitimate corrections.
+  if (id && !isAdmin) {
+    const LOCKED = ['name', 'phone', 'whatsapp', 'email', 'source'];
+    LOCKED.forEach(name => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (!el) return;
+      el.readOnly = true;
+      el.disabled = (el.tagName === 'SELECT'); // <select> needs disabled, not readonly
+      el.title = 'Locked — set by the campaign / customer. Only admin can edit.';
+      el.classList.add('lead-locked');
+      // Append a lock badge to the field's label so users see immediately
+      // why they can't type.
+      const label = el.closest('.f-row')?.querySelector('label')
+                 || el.parentElement?.querySelector('label');
+      if (label && !label.querySelector('.locked-badge')) {
+        const badge = h('span', { class: 'locked-badge', title: 'Set by campaign — only admin can edit' }, ' 🔒');
+        label.appendChild(badge);
+      }
+    });
+  }
+
   if (id) body.appendChild(actionTimelineBlock(id));
   if (id) body.appendChild(remarksBlock(remarks, id));
   if (id) body.appendChild(recordingsBlock(id));
@@ -1893,17 +1918,22 @@ async function openLeadModal(id) {
     }
 
     // Required custom fields — enforce here in addition to HTML5 `required`.
-    for (const cf of (customFields || [])) {
-      if (!cf.is_required) continue;
-      const key = 'cf_' + cf.key;
-      let val;
-      if (cf.field_type === 'multiselect') val = (new FormData(form)).getAll(key).join(',');
-      else val = form.querySelector(`[name="${key}"]`)?.value || '';
-      if (!String(val).trim()) {
-        toast(`"${cf.label}" is required`, 'err');
-        const el = form.querySelector(`[name="${key}"]`);
-        if (el && el.focus) el.focus();
-        return;
+    // Admin is exempt: they often need to update a lead in flight (e.g.
+    // change status, add a note) without re-typing every required field
+    // that the rep should have filled. Other roles still get the validation.
+    if (CRM.user.role !== 'admin') {
+      for (const cf of (customFields || [])) {
+        if (!cf.is_required) continue;
+        const key = 'cf_' + cf.key;
+        let val;
+        if (cf.field_type === 'multiselect') val = (new FormData(form)).getAll(key).join(',');
+        else val = form.querySelector(`[name="${key}"]`)?.value || '';
+        if (!String(val).trim()) {
+          toast(`"${cf.label}" is required`, 'err');
+          const el = form.querySelector(`[name="${key}"]`);
+          if (el && el.focus) el.focus();
+          return;
+        }
       }
     }
 
