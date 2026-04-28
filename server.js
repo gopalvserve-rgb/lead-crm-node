@@ -46,7 +46,8 @@ const routes = {
   whatsapp:    require('./routes/whatsapp'),
   permissions: require('./routes/permissions'),
   recordings:  require('./routes/recordings'),
-  push:        require('./routes/push')
+  push:        require('./routes/push'),
+  knowledge:   require('./routes/knowledgeBase')
 };
 const webhooks = require('./routes/webhooks');
 

@@ -3141,6 +3141,237 @@ VIEWS.calendar = async (view) => {
   if (userSelect) userSelect.onchange = () => calendar.refetchEvents();
 };
 
+/* ---------------- Knowledge Base -----------------------------------
+ * Admin-curated reference content for the team — scripts, FAQs, offers,
+ * brochures, pricing sheets, video links. Everyone can read; only admin
+ * can create / edit / delete.
+ *
+ * Layout: category sidebar on the left, search box + entry list on the
+ * right. Click an entry to open it in a modal with the full body, the
+ * external URL (if any), tags, and copy-to-clipboard actions.
+ * ------------------------------------------------------------------ */
+
+const KB_CATEGORIES = [
+  { id: 'all',      label: 'All',        icon: '📚' },
+  { id: 'pinned',   label: 'Pinned',     icon: '📌' },
+  { id: 'script',   label: 'Scripts',    icon: '🎯' },
+  { id: 'faq',      label: 'FAQs',       icon: '❓' },
+  { id: 'offer',    label: 'Offers',     icon: '🎁' },
+  { id: 'brochure', label: 'Brochures',  icon: '📄' },
+  { id: 'pricing',  label: 'Pricing',    icon: '💰' },
+  { id: 'video',    label: 'Videos',     icon: '🎥' },
+  { id: 'link',     label: 'Links',      icon: '🔗' },
+  { id: 'other',    label: 'Other',      icon: '📌' }
+];
+
+VIEWS.knowledge = async (view) => {
+  view.innerHTML = '';
+  const isAdmin = CRM.user.role === 'admin';
+  let activeCat = 'all';
+  let query = '';
+
+  // Sidebar — category list (acts as a filter)
+  const sidebar = h('div', { class: 'kb-sidebar' });
+  function renderSidebar() {
+    sidebar.innerHTML = '';
+    sidebar.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '📚 Knowledge'));
+    KB_CATEGORIES.forEach(c => {
+      sidebar.appendChild(h('button', {
+        class: 'kb-cat' + (c.id === activeCat ? ' active' : ''),
+        onclick: () => { activeCat = c.id; renderSidebar(); refresh(); }
+      }, c.icon + ' ' + c.label));
+    });
+  }
+  renderSidebar();
+
+  // Right pane — search box + add-button + entry list
+  const right = h('div', { class: 'kb-main' });
+  const searchInput = h('input', {
+    type: 'search', placeholder: '🔍 Search title, body, tags or URL…',
+    style: { flex: 1 }
+  });
+  let _searchTimer;
+  searchInput.oninput = () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => { query = searchInput.value || ''; refresh(); }, 250);
+  };
+
+  const toolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem' } },
+    searchInput,
+    isAdmin ? h('button', { class: 'btn primary', onclick: () => openKbEditModal(null, refresh) }, '+ Add entry') : null
+  );
+  right.appendChild(toolbar);
+
+  const listEl = h('div', { id: 'kb-list' });
+  right.appendChild(listEl);
+
+  view.appendChild(h('div', { class: 'kb-wrap' }, sidebar, right));
+
+  async function refresh() {
+    listEl.innerHTML = '<div class="loading">Loading…</div>';
+    let rows;
+    try {
+      const filters = { q: query };
+      if (activeCat !== 'all' && activeCat !== 'pinned') filters.category = activeCat;
+      rows = await api('api_kb_list', filters);
+    } catch (e) {
+      listEl.innerHTML = '';
+      listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+      return;
+    }
+    if (activeCat === 'pinned') rows = rows.filter(r => r.is_pinned);
+    listEl.innerHTML = '';
+    if (!rows.length) {
+      listEl.appendChild(h('p', { class: 'muted' }, query
+        ? 'No entries matching "' + esc(query) + '"'
+        : (isAdmin ? 'No entries yet — click "+ Add entry" to create the first one.' : 'No entries in this category yet.')));
+      return;
+    }
+    rows.forEach(r => listEl.appendChild(kbCard(r, refresh, isAdmin)));
+  }
+
+  await refresh();
+};
+
+function kbCard(r, refresh, isAdmin) {
+  const cat = KB_CATEGORIES.find(c => c.id === r.category) || KB_CATEGORIES.find(c => c.id === 'other');
+  const card = h('div', { class: 'kb-card' + (r.is_pinned ? ' pinned' : '') },
+    h('div', { class: 'kb-card-head' },
+      h('div', {},
+        r.is_pinned ? h('span', { class: 'kb-pin' }, '📌 ') : null,
+        h('span', { class: 'kb-cat-tag' }, cat.icon + ' ' + cat.label),
+        r.product_name ? h('span', { class: 'kb-cat-tag', style: { background: '#ddd6fe', color: '#5b21b6' } }, '📦 ' + r.product_name) : null
+      ),
+      h('div', { class: 'muted', style: { fontSize: '.75rem' } }, fmtDate(r.updated_at, 'relative'))
+    ),
+    h('h4', { class: 'kb-title', onclick: () => openKbViewModal(r.id) }, r.title),
+    r.body ? h('p', { class: 'kb-body-preview' },
+      String(r.body).slice(0, 220) + (String(r.body).length > 220 ? '…' : '')
+    ) : null,
+    r.tags ? h('div', { class: 'kb-tags' },
+      ...String(r.tags).split(',').map(t => t.trim()).filter(Boolean)
+        .map(t => h('span', { class: 'kb-tag' }, '#' + t))
+    ) : null,
+    h('div', { class: 'kb-actions' },
+      h('button', { class: 'btn sm', onclick: () => openKbViewModal(r.id) }, '👁 Open'),
+      r.url ? h('a', { class: 'btn sm ghost', href: r.url, target: '_blank', rel: 'noopener' }, '🔗 Link') : null,
+      r.body ? h('button', { class: 'btn sm ghost', onclick: () => {
+        navigator.clipboard?.writeText(r.body).then(() => toast('Copied'));
+      }, title: 'Copy body to clipboard' }, '📋 Copy') : null,
+      isAdmin ? h('button', { class: 'btn sm ghost', onclick: () => openKbEditModal(r.id, refresh) }, '✎') : null,
+      isAdmin ? h('button', { class: 'btn sm ghost', onclick: async () => {
+        if (!confirm('Hide this entry from the team? (Soft-delete; admin can restore later.)')) return;
+        try { await api('api_kb_delete', r.id); toast('Hidden'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      }, title: 'Hide / soft-delete' }, '🗑') : null
+    )
+  );
+  return card;
+}
+
+async function openKbViewModal(id) {
+  let entry;
+  try { entry = await api('api_kb_get', id); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const cat = KB_CATEGORIES.find(c => c.id === entry.category) || { icon: '📌', label: entry.category };
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } },
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, entry.is_pinned ? '📌 ' : '', entry.title),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'kb-meta-row' },
+          h('span', { class: 'kb-cat-tag' }, cat.icon + ' ' + cat.label),
+          entry.product_name ? h('span', { class: 'kb-cat-tag', style: { background: '#ddd6fe', color: '#5b21b6' } }, '📦 ' + entry.product_name) : null,
+          entry.created_by_name ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'by ' + entry.created_by_name) : null,
+          h('span', { class: 'muted', style: { fontSize: '.78rem' } }, fmtDate(entry.updated_at))
+        ),
+        entry.url ? h('p', {}, h('a', { class: 'btn primary', href: entry.url, target: '_blank', rel: 'noopener' }, '🔗 Open external link')) : null,
+        entry.body ? h('div', { class: 'kb-body-full' }, entry.body) : h('p', { class: 'muted' }, '(No body content — use the link above.)'),
+        entry.tags ? h('div', { class: 'kb-tags' },
+          ...String(entry.tags).split(',').map(t => t.trim()).filter(Boolean)
+            .map(t => h('span', { class: 'kb-tag' }, '#' + t))
+        ) : null,
+        entry.body ? h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => {
+            navigator.clipboard?.writeText(entry.body).then(() => toast('Copied to clipboard'));
+          } }, '📋 Copy body')
+        ) : null
+      )
+    )
+  );
+  document.body.appendChild(m);
+}
+
+async function openKbEditModal(id, onSave) {
+  const { products = [] } = CRM.cache;
+  let entry = { title: '', category: 'script', body: '', url: '', tags: '', product_id: '', is_pinned: 0 };
+  if (id) {
+    try { entry = await api('api_kb_get', id); }
+    catch (e) { toast(e.message, 'err'); return; }
+  }
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, id ? 'Edit knowledge entry' : 'New knowledge entry'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+
+  const form = h('form', { id: 'kb-form', class: 'form-grid' });
+  const catOptions = KB_CATEGORIES
+    .filter(c => c.id !== 'all' && c.id !== 'pinned')
+    .map(c => ({ value: c.id, label: c.icon + ' ' + c.label }));
+  const productOptions = [{ value: '', label: '— None —' }, ...products.map(p => ({ value: p.id, label: p.name }))];
+  form.append(
+    field('title', 'Title *', entry.title, { required: true, full: true }),
+    selectField('category', 'Category *', entry.category, catOptions),
+    selectField('product_id', 'Related product (optional)', entry.product_id || '', productOptions),
+    field('url', 'External URL (Drive / Box / YouTube — optional)', entry.url, { full: true }),
+    field('tags', 'Tags (comma-separated)', entry.tags, { full: true }),
+    field('body', 'Body / Content', entry.body, { type: 'textarea', full: true }),
+    h('div', { class: 'f-row' },
+      h('label', {}, 'Pin to top'),
+      h('label', { class: 'qual-toggle' },
+        h('input', { type: 'checkbox', name: 'is_pinned', checked: entry.is_pinned ? 'checked' : null }),
+        ' Show this entry at the top of every category'
+      )
+    )
+  );
+  body.appendChild(form);
+
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'kb-form', class: 'btn primary' }, id ? 'Save changes' : 'Create entry')
+  ));
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = form;
+    const fd = new FormData(f);
+    const payload = {
+      id: id || undefined,
+      title: f.title.value.trim(),
+      category: f.category.value,
+      body: f.body.value,
+      url: f.url.value.trim(),
+      tags: f.tags.value.trim(),
+      product_id: f.product_id.value || null,
+      is_pinned: fd.get('is_pinned') ? 1 : 0
+    };
+    if (!payload.title) { toast('Title is required', 'err'); return; }
+    try {
+      await api('api_kb_save', payload);
+      toast(id ? 'Saved' : 'Created');
+      m.remove();
+      if (typeof onSave === 'function') onSave();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+
+  document.body.appendChild(m);
+}
+
 /* ---------------- Reports with charts ---------------- */
 async function ensureChartJs() {
   if (!window.Chart) {

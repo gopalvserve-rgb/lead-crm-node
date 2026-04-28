@@ -282,6 +282,12 @@ const SCHEMA = {
     columns: ['category', 'name', 'template_name', 'response_code', 'type',
               'request_json', 'response_json', 'recorded_on'],
     json: ['request_json', 'response_json']
+  },
+  // v15: Knowledge base — admin-curated reference content for the team
+  knowledge_base: {
+    columns: ['title', 'category', 'body', 'url', 'tags', 'product_id',
+              'is_pinned', 'is_active', 'created_by', 'created_at', 'updated_at'],
+    json: []
   }
 };
 

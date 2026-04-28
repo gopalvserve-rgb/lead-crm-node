@@ -601,3 +601,25 @@ CREATE TABLE IF NOT EXISTS wa_activity_log (
   recorded_on     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_wa_act_cat ON wa_activity_log(category, recorded_on DESC);
+
+-- ---- v15: Knowledge base -------------------------------------
+-- Admin-curated reference content for the sales team — scripts, FAQs,
+-- offers, brochures, pricing sheets, and any URL the team needs at hand
+-- when talking to a customer. Everyone can read; only admin can write.
+CREATE TABLE IF NOT EXISTS knowledge_base (
+  id           SERIAL PRIMARY KEY,
+  title        TEXT NOT NULL,
+  category     TEXT NOT NULL DEFAULT 'other',
+                 -- script | faq | offer | brochure | pricing | video | link | other
+  body         TEXT,                                -- main content (markdown / plain text)
+  url          TEXT,                                -- optional external link (Drive / Box / YouTube / etc.)
+  tags         TEXT,                                -- comma-separated for filtering
+  product_id   INTEGER REFERENCES products(id) ON DELETE SET NULL,
+  is_pinned    INTEGER NOT NULL DEFAULT 0,
+  is_active    INTEGER NOT NULL DEFAULT 1,
+  created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_kb_active_pinned ON knowledge_base(is_active, is_pinned DESC, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_kb_category ON knowledge_base(category);
