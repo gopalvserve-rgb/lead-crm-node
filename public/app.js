@@ -309,7 +309,7 @@ const NAV = [
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
-  { id: 'teamchat',   label: 'Team chat',    icon: '👥' },
+  { id: 'teamchat',   label: 'Team chat',    icon: '👥', countKey: 'chat_unread' },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
   { id: 'attendance', label: 'Attendance',   icon: '🕒' },
   { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
@@ -3666,6 +3666,9 @@ VIEWS.teamchat = async (view) => {
 
     await renderActiveThread(true);
     lastListFingerprint = ''; await renderThreadList();
+    // Reading a room marks it read server-side — refresh the sidebar
+    // badge immediately so the count drops without waiting 10s.
+    if (typeof _updateChatBadge === 'function') _updateChatBadge();
   }
 
   await renderThreadList();
@@ -9961,8 +9964,27 @@ async function refreshAnnouncements() {
 let _lastSeenChatAt = '0';   // ISO timestamp of the newest message we've toasted
 let _chatPollTimer = null;
 
+/**
+ * Update the sidebar badge next to "Team chat" with the current unread
+ * count. Cheap call (single COUNT-style query on the server). Runs on
+ * the same loop as the toast poll so the two stay in sync.
+ */
+async function _updateChatBadge() {
+  try {
+    const r = await api('api_chat_unreadCount');
+    const n = Number(r && r.unread || 0);
+    document.querySelectorAll('.nav-count[data-count-key="chat_unread"]').forEach(el => {
+      el.textContent = String(n);
+      el.hidden = n === 0;
+    });
+  } catch (_) {}
+}
+
 async function _chatPollOnce() {
   if (document.visibilityState === 'hidden') return;
+  // Always refresh the badge; even if no NEW messages, the user might have
+  // read some elsewhere and the count needs to come down.
+  _updateChatBadge();
   let rows;
   try { rows = await api('api_chat_recent_unread'); }
   catch (e) {
@@ -10023,10 +10045,14 @@ function startChatNotificationPolling() {
     } else {
       console.log('[chat-popup] no existing unread on seed');
     }
+    // Initial badge paint so the user sees the count immediately on login,
+    // not 10s later on the first interval tick.
+    _updateChatBadge();
   }).catch(e => {
     if (!String(e.message || '').includes('not enabled')) {
       console.warn('[chat-popup] seed failed:', e.message);
     }
+    _updateChatBadge();
   });
 
   // Poll every 10s (was 15s — tightened for snappier in-app feedback)
