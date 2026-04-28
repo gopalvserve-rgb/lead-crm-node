@@ -2798,7 +2798,9 @@ async function renderFollowupSection(view, key) {
   }
   wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
     h('thead', {}, h('tr', {},
-      h('th', {}, 'Lead'), h('th', {}, 'Phone'), h('th', {}, 'Due'),
+      h('th', {}, 'Lead'), h('th', {}, 'Phone'),
+      h('th', {}, 'Assigned to'),
+      h('th', {}, 'Due'),
       h('th', {}, 'Latest remark'), h('th', { style: { textAlign: 'right' } }, 'Actions')
     )),
     h('tbody', {}, ...rows.map(r => {
@@ -2808,6 +2810,7 @@ async function renderFollowupSection(view, key) {
       return h('tr', {},
         h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')),
         h('td', {}, phone || ''),
+        h('td', { class: r.assigned_name ? '' : 'muted' }, r.assigned_name || 'Unassigned'),
         h('td', { class: key === 'overdue' ? 'overdue' : '' }, fmtDate(r.due_at, 'relative')),
         h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
           r.latest_remark ? String(r.latest_remark).slice(0, 80) + (String(r.latest_remark).length > 80 ? '…' : '') : h('span', { class: 'muted' }, '—')),
@@ -2878,6 +2881,7 @@ VIEWS.followups = async (view) => {
       h('thead', {}, h('tr', {},
         h('th', {}, 'Lead'),
         h('th', {}, 'Phone'),
+        h('th', {}, 'Assigned to'),
         h('th', {}, 'Due'),
         h('th', {}, 'Latest remark'),
         h('th', {}, 'Note'),
@@ -2892,6 +2896,7 @@ VIEWS.followups = async (view) => {
             h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')
           ),
           h('td', {}, phone || ''),
+          h('td', { class: r.assigned_name ? '' : 'muted' }, r.assigned_name || 'Unassigned'),
           h('td', { class: klass === 'err' ? 'overdue' : '' }, fmtDate(r.due_at)),
           h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
             r.latest_remark

@@ -7,9 +7,13 @@ async function api_notifications_mine(token) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const now = new Date().toISOString();
 
-  const [allFollowups, allLeads] = await Promise.all([db.getAll('followups'), db.getAll('leads')]);
+  const [allFollowups, allLeads, allUsers] = await Promise.all([
+    db.getAll('followups'), db.getAll('leads'), db.getAll('users')
+  ]);
   const leadsById = {};
   allLeads.forEach(l => { leadsById[Number(l.id)] = l; });
+  const usersById = {};
+  allUsers.forEach(u => { usersById[Number(u.id)] = u; });
 
   // Build a map of (lead_id -> open followup) so we don't double-count when the lead
   // also has a next_followup_at that matches its open followup row.
@@ -65,6 +69,11 @@ async function api_notifications_mine(token) {
     const lr = latestByLead[Number(row.lead_id)];
     row.latest_remark = lr ? (lr.remark || '') : '';
     row.latest_remark_at = lr ? (lr.created_at || null) : null;
+    // Hydrate the assignee name so the follow-up tables can show "Assigned to"
+    // without a second round-trip. Falls back to "" if the lead is unassigned
+    // or the user has been deleted.
+    const u = usersById[Number(row.assigned_to)];
+    row.assigned_name = u ? (u.name || '') : '';
   });
 
   const overdue = [], due_today = [], upcoming = [];
