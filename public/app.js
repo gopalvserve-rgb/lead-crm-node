@@ -282,6 +282,7 @@ const NAV = [
   { id: 'pipeline',   label: 'Pipeline',     icon: '📈' },
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
+  { id: 'calendar',   label: 'Calendar',     icon: '📅' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
@@ -2998,6 +2999,116 @@ VIEWS.followups = async (view) => {
   section('⚠️ Overdue', data.overdue, 'err');
   section('📅 Due today', data.due_today, 'warn');
   section('⏰ Upcoming', data.upcoming);
+};
+
+/* ---------------- Calendar ----------------------------------------
+ * Full-month / week / day calendar showing every follow-up due date as
+ * an event. Powered by FullCalendar (CDN-loaded on first visit so the
+ * library only downloads when needed).
+ *
+ * Click an event → opens the lead modal so the rep can act immediately.
+ * Admin/manager get a "Filter by user" dropdown so they can isolate
+ * one rep's day.
+ * ------------------------------------------------------------------ */
+
+let _fcLib = null;
+async function ensureFullCalendar() {
+  if (window.FullCalendar) return window.FullCalendar;
+  if (_fcLib) return _fcLib;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  _fcLib = window.FullCalendar;
+  return _fcLib;
+}
+
+VIEWS.calendar = async (view) => {
+  view.innerHTML = '';
+  const FC = await ensureFullCalendar();
+  const { users = [] } = CRM.cache;
+  const isManager = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+
+  // Toolbar with user filter (admin/manager only) + a small legend
+  const userSelect = h('select', { id: 'cal-user' },
+    h('option', { value: '' }, 'All callers'),
+    ...users.filter(u => Number(u.is_active) === 1).map(u => h('option', { value: u.id }, u.name))
+  );
+  const legend = h('div', { class: 'cal-legend muted' },
+    h('span', { class: 'cal-dot', style: { background: '#ef4444' } }), ' Overdue ',
+    h('span', { class: 'cal-dot', style: { background: '#f59e0b' } }), ' Due today ',
+    h('span', { class: 'cal-dot', style: { background: '#3b82f6' } }), ' Upcoming ',
+    h('span', { class: 'cal-dot', style: { background: '#10b981' } }), ' Done '
+  );
+
+  const toolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem', alignItems: 'center' } },
+    isManager ? h('span', { class: 'muted' }, 'Show:') : null,
+    isManager ? userSelect : null,
+    legend
+  );
+  const calRoot = h('div', { id: 'cal-root', style: { background: '#fff', borderRadius: '12px', padding: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,.05)' } });
+  view.append(toolbar, calRoot);
+
+  let calendar;
+  function buildCalendar() {
+    if (calendar) calendar.destroy();
+    calendar = new FC.Calendar(calRoot, {
+      initialView: 'timeGridWeek',
+      // Match the screenshot's controls: prev/next/today + month/week/day
+      headerToolbar: {
+        left:   'prev,next today',
+        center: 'title',
+        right:  'dayGridMonth,timeGridWeek,timeGridDay'
+      },
+      // Remember the last-chosen view across visits
+      initialDate: new Date(),
+      height: 'auto',
+      slotMinTime: '07:00:00',
+      slotMaxTime: '22:00:00',
+      nowIndicator: true,
+      navLinks: true,           // click a date in month view → jumps to day
+      dayMaxEvents: true,       // collapse overflow as "+ more"
+      // Pull events on demand whenever the visible range changes
+      events: async (info, success, fail) => {
+        try {
+          const filterUser = $('#cal-user')?.value || undefined;
+          const evs = await api('api_calendar_events', {
+            from: info.startStr,
+            to: info.endStr,
+            assigned_to: filterUser || undefined
+          });
+          success(evs || []);
+        } catch (e) {
+          toast('Calendar load failed: ' + e.message, 'err');
+          fail(e);
+        }
+      },
+      // Click → open the lead modal so the rep can act
+      eventClick: (info) => {
+        const leadId = info.event.extendedProps.lead_id;
+        if (leadId) openLeadModal(leadId);
+        info.jsEvent?.preventDefault();
+      },
+      // Hover tooltip with phone + owner — useful in dense day views
+      eventDidMount: (info) => {
+        const p = info.event.extendedProps || {};
+        const tip = [
+          info.event.title,
+          p.lead_phone ? '📞 ' + p.lead_phone : null,
+          p.owner_name ? '👤 ' + p.owner_name : null,
+          p.note ? '📝 ' + p.note : null,
+          p.status ? '· ' + p.status : null
+        ].filter(Boolean).join('\n');
+        info.el.title = tip;
+      }
+    });
+    calendar.render();
+  }
+
+  buildCalendar();
+  if (userSelect) userSelect.onchange = () => calendar.refetchEvents();
 };
 
 /* ---------------- Reports with charts ---------------- */

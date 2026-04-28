@@ -478,6 +478,16 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
 .cell-ok { color: var(--ok); font-weight: 500; }
 .cell-err { color: var(--err); font-weight: 500; }
 .cell-warn { color: #f59e0b; font-weight: 500; }
+
+/* Calendar — FullCalendar wrapper polish + legend */
+.cal-legend { display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; font-size: .8rem; }
+.cal-legend .cal-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: .5rem; vertical-align: middle; }
+.cal-legend .cal-dot:first-of-type { margin-left: 0; }
+#cal-root .fc { font-size: .85rem; }
+#cal-root .fc-event { cursor: pointer; padding: 2px 4px; font-weight: 500; }
+#cal-root .fc-button-primary { background: #3b82f6; border-color: #3b82f6; }
+#cal-root .fc-button-primary:hover { background: #2563eb; border-color: #2563eb; }
+#cal-root .fc-button-primary:not(:disabled).fc-button-active { background: #1e40af; border-color: #1e40af; }
 .cell-name a { font-weight: 500; color: var(--text); }
 .cell-name a:hover { color: var(--brand); }
 .cell-phone { display: flex; align-items: center; gap: .25rem; white-space: nowrap; }

@@ -563,8 +563,132 @@ async function api_reports_tatViolationsByUser(token) {
   return rows;
 }
 
+/**
+ * Calendar event feed — powers the /calendar page (FullCalendar driven).
+ *
+ * Returns one event per open follow-up + one event per lead with a legacy
+ * next_followup_at (no follow-up row) so nothing falls through the cracks.
+ *
+ * Event shape matches FullCalendar's expectations:
+ *   { id, title, start, end?, color, extendedProps }
+ *
+ * Color rules:
+ *   - overdue (due_at < now)        → red    (#ef4444)
+ *   - due today                     → amber  (#f59e0b)
+ *   - upcoming                      → blue   (#3b82f6)
+ *   - status='done' (closed)        → green  (#10b981)  — useful in month view
+ *
+ * Visibility: admin sees everyone; manager/team_leader sees their tree;
+ * sales sees only their assigned leads. `assigned_to` filter param lets
+ * admin/manager narrow to a specific rep without changing role.
+ */
+async function api_calendar_events(token, opts) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const isAdmin = me.role === 'admin';
+  opts = opts || {};
+
+  const [followups, leads, users] = await Promise.all([
+    db.getAll('followups'), db.getAll('leads'), db.getAll('users')
+  ]);
+  const leadsById = {};
+  leads.forEach(l => { leadsById[Number(l.id)] = l; });
+  const usersById = {};
+  users.forEach(u => { usersById[Number(u.id)] = u; });
+
+  const fromIso = opts.from ? new Date(opts.from).toISOString() : null;
+  const toIso   = opts.to   ? new Date(opts.to).toISOString()   : null;
+  const now     = new Date();
+  const todayStr = _tzFmt.format(now);
+
+  // Optional per-user filter (admin/manager picking a specific rep)
+  const filterUserId = opts.assigned_to ? Number(opts.assigned_to) : null;
+
+  function visibleLead(lead) {
+    if (!lead) return false;
+    if (filterUserId && Number(lead.assigned_to) !== filterUserId) return false;
+    if (isAdmin) return true;
+    return lead.assigned_to && visible.includes(Number(lead.assigned_to));
+  }
+
+  function classify(dueAt, isDone) {
+    if (isDone) return { color: '#10b981', label: 'done' };
+    if (!dueAt) return { color: '#94a3b8', label: 'unscheduled' };
+    const dueDay = _tzDate(dueAt);
+    if (dueDay === todayStr) return { color: '#f59e0b', label: 'due today' };
+    if (new Date(dueAt) < now) return { color: '#ef4444', label: 'overdue' };
+    return { color: '#3b82f6', label: 'upcoming' };
+  }
+
+  const events = [];
+  const seenLeadIds = new Set();
+
+  // Open & recently-done follow-ups (showing done in green helps with the
+  // monthly retrospective view — "we resolved X this week")
+  followups.forEach(f => {
+    if (!f.due_at) return;
+    if (fromIso && String(f.due_at) < fromIso) return;
+    if (toIso   && String(f.due_at) > toIso)   return;
+    const lead = leadsById[Number(f.lead_id)];
+    if (!visibleLead(lead)) return;
+    const isDone = Number(f.is_done) === 1;
+    const meta = classify(f.due_at, isDone);
+    const owner = usersById[Number(lead.assigned_to)];
+    events.push({
+      id: 'fu-' + f.id,
+      title: (lead.name || 'Lead') + (f.note ? ' · ' + String(f.note).slice(0, 40) : ''),
+      start: f.due_at,
+      // Default 30-min block so events render cleanly in week/day views
+      end: new Date(new Date(f.due_at).getTime() + 30 * 60 * 1000).toISOString(),
+      color: meta.color,
+      extendedProps: {
+        lead_id: lead.id,
+        lead_name: lead.name,
+        lead_phone: lead.phone || '',
+        owner_name: owner?.name || 'Unassigned',
+        kind: 'followup',
+        status: meta.label,
+        note: f.note || '',
+        is_done: isDone
+      }
+    });
+    seenLeadIds.add(Number(lead.id));
+  });
+
+  // Legacy fallback — leads with next_followup_at but no followup row
+  leads.forEach(l => {
+    if (!l.next_followup_at) return;
+    if (seenLeadIds.has(Number(l.id))) return;
+    if (!visibleLead(l)) return;
+    if (fromIso && String(l.next_followup_at) < fromIso) return;
+    if (toIso   && String(l.next_followup_at) > toIso)   return;
+    const meta = classify(l.next_followup_at, false);
+    const owner = usersById[Number(l.assigned_to)];
+    events.push({
+      id: 'lead-' + l.id,
+      title: l.name || 'Lead',
+      start: l.next_followup_at,
+      end: new Date(new Date(l.next_followup_at).getTime() + 30 * 60 * 1000).toISOString(),
+      color: meta.color,
+      extendedProps: {
+        lead_id: l.id,
+        lead_name: l.name,
+        lead_phone: l.phone || '',
+        owner_name: owner?.name || 'Unassigned',
+        kind: 'lead-next',
+        status: meta.label,
+        note: '',
+        is_done: false
+      }
+    });
+  });
+
+  return events;
+}
+
 module.exports = {
   api_reports_summary, api_reports_funnel, api_reports_daily,
   api_reports_exportLeads, api_reports_groupBy,
-  api_reports_followupsByUser, api_reports_tatViolationsByUser
+  api_reports_followupsByUser, api_reports_tatViolationsByUser,
+  api_calendar_events
 };
