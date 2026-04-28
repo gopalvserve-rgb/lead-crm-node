@@ -287,6 +287,7 @@ const NAV = [
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
+  { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
   { id: 'tasks',      label: 'Tasks',        icon: '✅' },
   { id: 'attendance', label: 'Attendance',   icon: '🕒' },
   { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
