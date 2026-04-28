@@ -9645,6 +9645,23 @@ function openDialModal(phone) {
  * (/#/foo, #/foo) and absolute URLs. Forces a navigation event so the
  * router definitely fires VIEWS.<name> even if the same hash was set.
  */
+/**
+ * Navigate the SPA to the URL embedded in a push notification's data.url.
+ *
+ * Two failure modes we've hit before:
+ *   1. The retries (called at 800ms / 2000ms after the initial call) used
+ *      to set `location.hash = '#/_'` first to force a hashchange when the
+ *      hash was already at the target — but parseHashView('_') doesn't
+ *      match any NAV item so navigateTo would briefly fall back to
+ *      Dashboard. Users saw a dashboard flash and (in the cold-start
+ *      case where retry finished AFTER the page settled) it stuck.
+ *   2. The hashchange handler skips when CRM.user is null, so during very
+ *      early boot a hash change can be silently dropped.
+ *
+ * Fix: set location.hash directly (don't bounce through '#/_'). Also call
+ * navigateTo() explicitly so we don't depend on hashchange fully — that
+ * re-runs the view function and re-reads any ?room= deep-link param.
+ */
 function applyPushUrl(url) {
   if (!url) return;
   try {
@@ -9653,13 +9670,18 @@ function applyPushUrl(url) {
     else if (target.startsWith('#/')) { /* keep as-is */ }
     else if (target.startsWith('/')) target = '#' + target;
     else { location.href = target; return; }
-    // Force a hashchange even if same target — set to blank then real
-    // value so listeners fire.
-    if (location.hash === target) {
-      location.hash = '#/_';
-      setTimeout(() => { location.hash = target; }, 30);
-    } else {
-      location.hash = target;
+
+    // Set the URL hash (updates address bar; harmless if same as current)
+    if (location.hash !== target) location.hash = target;
+
+    // Always call navigateTo() directly — the hashchange listener has
+    // an `if (!CRM.user) return` guard, AND we want to re-run the view
+    // function even if we're already on the right route so deep-link
+    // params (e.g. ?room=3) are picked up after a retry.
+    if (typeof navigateTo === 'function' && CRM.user) {
+      const m = String(target).match(/^#\/([a-z_-]+)/i);
+      const id = m && m[1];
+      if (id && VIEWS[id]) navigateTo(id);
     }
   } catch (_) {}
 }
