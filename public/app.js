@@ -470,9 +470,14 @@ const VIEWS = {};
 /* ---------------- Dashboard ---------------- */
 VIEWS.dashboard = async (view) => {
   await ensureChartJs();
-  const [summary, due] = await Promise.all([
+  // Team follow-ups card — admin/manager/team_leader see how each rep is
+  // doing on overdue + due-today. Sales/employee don't (it's just their
+  // own numbers, already shown in the KPI cards above).
+  const showTeam = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const [summary, due, teamFu] = await Promise.all([
     api('api_reports_summary', {}),
-    api('api_notifications_mine')
+    api('api_notifications_mine'),
+    showTeam ? api('api_reports_followupsByUser').catch(() => []) : Promise.resolve([])
   ]);
   view.innerHTML = '';
 
@@ -547,6 +552,40 @@ VIEWS.dashboard = async (view) => {
     h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-pie' }))
   );
   grid.appendChild(pieCard);
+
+  // Team follow-ups by caller — managers see who's drowning in overdue.
+  // Hidden for sales/employee since their own numbers are already in KPI tiles.
+  if (showTeam) {
+    const teamRows = teamFu || [];
+    const teamCard = h('div', { class: 'card card-wide' },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+        h('h3', { style: { margin: 0 } }, '👥 Follow-ups by caller'),
+        h('a', { href: '#/followups', class: 'btn sm ghost' }, 'See all →')
+      )
+    );
+    if (!teamRows.length) {
+      teamCard.appendChild(h('p', { class: 'muted' }, 'No team data available.'));
+    } else {
+      teamCard.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Caller'), h('th', {}, 'Role'),
+          h('th', { style: { textAlign: 'right' } }, '⚠️ Overdue'),
+          h('th', { style: { textAlign: 'right' } }, '📅 Due today'),
+          h('th', { style: { textAlign: 'right' } }, '⏰ Upcoming'),
+          h('th', { style: { textAlign: 'right' } }, 'Total open')
+        )),
+        h('tbody', {}, ...teamRows.map(r => h('tr', {},
+          h('td', {}, r.name || '—'),
+          h('td', { class: 'muted' }, r.role || ''),
+          h('td', { class: r.overdue > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.overdue > 0 ? 700 : 400 } }, r.overdue),
+          h('td', { class: r.due_today > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.due_today > 0 ? 700 : 400 } }, r.due_today),
+          h('td', { class: 'muted', style: { textAlign: 'right' } }, r.upcoming),
+          h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total_open)
+        )))
+      )));
+    }
+    grid.appendChild(teamCard);
+  }
 
   // By source bar chart
   const srcCard = h('div', { class: 'card card-wide' },
@@ -4635,10 +4674,14 @@ function _currentReportFilters() {
 
 async function loadReports() {
   const filters = _currentReportFilters();
-  const [summary, funnel, daily] = await Promise.all([
+  // Caller-wise follow-up table is intentionally NOT date-filtered — "overdue"
+  // and "due today" are NOW concepts, not historical. So it ignores the date
+  // range filter and shows live counts for every visible rep.
+  const [summary, funnel, daily, teamFu] = await Promise.all([
     api('api_reports_summary', filters),
     api('api_reports_funnel',  filters),
-    api('api_reports_daily',   filters)
+    api('api_reports_daily',   filters),
+    api('api_reports_followupsByUser').catch(() => [])
   ]);
 
   $('#rep-cards').innerHTML = '';
@@ -4680,6 +4723,37 @@ async function loadReports() {
       h('td', { class: 'cell-ok' }, u.won), h('td', { class: 'cell-err' }, u.lost)
     )))
   )));
+
+  // Caller-wise follow-up table — live now-counts, NOT date-filtered.
+  // Kept on the Reports page as a separate card so a manager looking at a
+  // historical date range can still see the current overdue heatmap.
+  const teamRows = teamFu || [];
+  if (teamRows.length) {
+    const card = h('div', { class: 'card card-wide', style: { marginTop: '1rem' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+        h('h3', { style: { margin: 0 } }, '👥 Follow-ups by caller — live'),
+        h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Ignores the date range above — shows current open counts')
+      ),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Caller'), h('th', {}, 'Role'),
+          h('th', { style: { textAlign: 'right' } }, '⚠️ Overdue'),
+          h('th', { style: { textAlign: 'right' } }, '📅 Due today'),
+          h('th', { style: { textAlign: 'right' } }, '⏰ Upcoming'),
+          h('th', { style: { textAlign: 'right' } }, 'Total open')
+        )),
+        h('tbody', {}, ...teamRows.map(r => h('tr', {},
+          h('td', {}, r.name || '—'),
+          h('td', { class: 'muted' }, r.role || ''),
+          h('td', { class: r.overdue > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.overdue > 0 ? 700 : 400 } }, r.overdue),
+          h('td', { class: r.due_today > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.due_today > 0 ? 700 : 400 } }, r.due_today),
+          h('td', { class: 'muted', style: { textAlign: 'right' } }, r.upcoming),
+          h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total_open)
+        )))
+      ))
+    );
+    byUserEl.parentElement.appendChild(card);
+  }
 }
 
 /* --------------------------------------------------------------------

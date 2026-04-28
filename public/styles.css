@@ -477,6 +477,7 @@ tbody tr.row-duplicate:hover { background: #fef3c7; }
 .overdue { color: var(--err); font-weight: 500; }
 .cell-ok { color: var(--ok); font-weight: 500; }
 .cell-err { color: var(--err); font-weight: 500; }
+.cell-warn { color: #f59e0b; font-weight: 500; }
 .cell-name a { font-weight: 500; color: var(--text); }
 .cell-name a:hover { color: var(--brand); }
 .cell-phone { display: flex; align-items: center; gap: .25rem; white-space: nowrap; }

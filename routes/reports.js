@@ -404,7 +404,104 @@ async function api_reports_groupBy(token, filters, groupBy) {
   return { rows: out, total: rows.length, dimension: dim };
 }
 
+/**
+ * Caller-wise follow-up breakdown — for the team-followup card on the
+ * dashboard and the new "Follow-ups by caller" section on Reports.
+ *
+ * Returns one row per active user with:
+ *   - due_today   — open follow-ups whose due_at falls on TODAY (in REPORT_TZ)
+ *   - overdue     — open follow-ups whose due_at is before NOW
+ *   - upcoming    — open follow-ups in the future (after today)
+ *   - total_open  — sum of the three
+ *
+ * Visibility: admin sees everyone; manager/team_leader sees their tree
+ * (via getVisibleUserIds); rank-and-file users only see themselves. The
+ * counts are computed off LEAD assignment (lead.assigned_to) regardless
+ * of what user_id the followup row carries — that mirrors how the chips
+ * in /followups already work.
+ */
+async function api_reports_followupsByUser(token) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+
+  const [users, leads, followups] = await Promise.all([
+    db.getAll('users'), db.getAll('leads'), db.getAll('followups')
+  ]);
+  const leadsById = {};
+  leads.forEach(l => { leadsById[Number(l.id)] = l; });
+
+  // "Today" boundary — same TZ logic as the rest of reports.js so the chip
+  // counts on the dashboard, on /followups, and here all agree.
+  const todayStr = _tzFmt.format(new Date());
+  const nowIso   = new Date().toISOString();
+
+  // Pre-bucket every open follow-up by its assigned-user.
+  // Sources: (a) followups table rows, (b) leads.next_followup_at fallback
+  // for legacy rows. Same logic as api_notifications_mine — keeps numbers
+  // consistent across the app.
+  const seenLeadIds = new Set();
+  const buckets = {}; // user_id -> { due_today, overdue, upcoming }
+  function bump(userId, kind) {
+    const k = Number(userId) || 0;
+    if (!buckets[k]) buckets[k] = { due_today: 0, overdue: 0, upcoming: 0 };
+    buckets[k][kind]++;
+  }
+  function classify(dueAt) {
+    if (!dueAt) return null;
+    const dueDay = String(dueAt).slice(0, 10);
+    // _tzDate handles TZ; for the day comparison we just use the IST day
+    const localDay = _tzDate(dueAt);
+    if (localDay === todayStr) return 'due_today';
+    if (String(dueAt) < nowIso) return 'overdue';
+    return 'upcoming';
+  }
+
+  followups.forEach(f => {
+    if (Number(f.is_done) === 1) return;
+    if (!f.due_at) return;
+    const lead = leadsById[Number(f.lead_id)];
+    if (!lead) return;
+    const ownerId = Number(lead.assigned_to) || 0;
+    if (!ownerId) return;
+    if (me.role !== 'admin' && !visible.includes(ownerId)) return;
+    const kind = classify(f.due_at);
+    if (kind) {
+      bump(ownerId, kind);
+      seenLeadIds.add(Number(f.lead_id));
+    }
+  });
+
+  // Fallback — legacy leads with next_followup_at but no followup row.
+  leads.forEach(l => {
+    if (!l.next_followup_at) return;
+    if (seenLeadIds.has(Number(l.id))) return;
+    const ownerId = Number(l.assigned_to) || 0;
+    if (!ownerId) return;
+    if (me.role !== 'admin' && !visible.includes(ownerId)) return;
+    const kind = classify(l.next_followup_at);
+    if (kind) bump(ownerId, kind);
+  });
+
+  // Build the result — one row per visible active user, even if zero counts,
+  // so the team table renders consistently and managers spot reps with 0
+  // pending follow-ups (could be a problem the other way too).
+  const rows = users
+    .filter(u => Number(u.is_active) === 1)
+    .filter(u => me.role === 'admin' || visible.includes(Number(u.id)))
+    .map(u => {
+      const b = buckets[Number(u.id)] || { due_today: 0, overdue: 0, upcoming: 0 };
+      return {
+        user_id: u.id, name: u.name || '', role: u.role || '',
+        due_today: b.due_today, overdue: b.overdue, upcoming: b.upcoming,
+        total_open: b.due_today + b.overdue + b.upcoming
+      };
+    })
+    .sort((a, b) => (b.overdue - a.overdue) || (b.due_today - a.due_today) || (b.total_open - a.total_open));
+
+  return rows;
+}
+
 module.exports = {
   api_reports_summary, api_reports_funnel, api_reports_daily,
-  api_reports_exportLeads, api_reports_groupBy
+  api_reports_exportLeads, api_reports_groupBy, api_reports_followupsByUser
 };
