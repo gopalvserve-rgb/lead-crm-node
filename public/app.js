@@ -77,6 +77,17 @@ async function apiRaw(fn, ...args) {
       CRM.user = await api('api_me');
       renderShell();
       await warmCache();
+      // Resolve chat access for the current user — admin can disable chat
+      // for specific roles. Stored in CRM.access.can_chat so renderShell's
+      // nav rendering and gates check it consistently.
+      try {
+        const acc = await api('api_chat_myAccess');
+        CRM.access = Object.assign(CRM.access || {}, {
+          can_chat: !!acc.can_chat, chat_allowed_roles: acc.allowed_roles || []
+        });
+      } catch (_) {
+        CRM.access = Object.assign(CRM.access || {}, { can_chat: true });
+      }
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
       refreshNotifs();
@@ -344,6 +355,9 @@ function renderShell() {
   const mobilePrimary = ['dashboard', 'leads', 'dialer', 'followups'];
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
+    // Hide Team chat for users whose role admin has disabled chat for.
+    // CRM.access.can_chat is fetched right after login.
+    if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return;
     // Count badge — populated later by refreshNavCounts() when notifications load.
     const countBadge = item.countKey
       ? h('span', { class: 'nav-count', 'data-count-key': item.countKey, hidden: 'hidden' }, '0')
@@ -429,7 +443,11 @@ function showMobileMore() {
         )
       ),
       h('div', { class: 'mobile-menu-grid' },
-        ...NAV.filter(item => !item.roles || item.roles.includes(CRM.user.role)).map(item =>
+        ...NAV.filter(item => {
+          if (item.roles && !item.roles.includes(CRM.user.role)) return false;
+          if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return false;
+          return true;
+        }).map(item =>
           h('a', { href: '#/' + item.id, class: 'menu-tile', onclick: () => sheet.remove() },
             h('span', { class: 'menu-tile-icon' }, item.icon),
             h('span', {}, item.label))
@@ -3408,6 +3426,22 @@ VIEWS.teamchat = async (view) => {
   wrap.appendChild(left); wrap.appendChild(right);
   view.appendChild(wrap);
 
+  // Pre-load every user the caller is allowed to chat with — this is
+  // independent of CRM.cache.users (which is filtered by lead-management
+  // hierarchy and would hide the rest of the team from a sales rep).
+  let chatUsers = [];
+  try { chatUsers = await api('api_chat_visibleUsers'); }
+  catch (e) {
+    if (String(e.message || '').includes('not enabled')) {
+      view.innerHTML = `<div class="card" style="padding: 2rem; text-align: center;">
+        <h3>💬 Team chat</h3>
+        <p class="muted">Team chat isn't enabled for your role. Ask your admin to enable it in Settings → Chat permissions.</p>
+      </div>`;
+      return;
+    }
+    chatUsers = [];
+  }
+
   let openRoomId = null;
   let openMsgFingerprint = '';
   let lastListFingerprint = '';
@@ -3426,9 +3460,12 @@ VIEWS.teamchat = async (view) => {
 
     // Also include every other active user as a potential DM target —
     // even if no DM thread exists yet — so the user can start one.
+    // Uses the pre-loaded chatUsers (from api_chat_visibleUsers) which is
+    // NOT filtered by lead-management hierarchy. CRM.cache.users would
+    // hide the rest of the team from sales/employee role.
     const usersInList = new Set(rooms.filter(r => r.type === 'dm').map(r => r.counterpart_id));
-    const otherUsers = (CRM.cache.users || [])
-      .filter(u => Number(u.is_active) === 1 && Number(u.id) !== Number(CRM.user.id))
+    const otherUsers = chatUsers
+      .filter(u => Number(u.id) !== Number(CRM.user.id))
       .filter(u => !usersInList.has(Number(u.id)));
 
     const fp = listFp(rooms) + '|users:' + otherUsers.length;
@@ -3480,11 +3517,9 @@ VIEWS.teamchat = async (view) => {
   }
 
   async function startDmWith(userId) {
-    // Send a "blank" message? No — just open the DM by fetching messages
-    // for the soon-to-exist room. Send the first message via send.
-    // Simpler: open a temporary right-pane with input. On first send the
-    // server creates the room.
-    const u = (CRM.cache.users || []).find(x => Number(x.id) === Number(userId));
+    // Resolve the target user from the chat-visibleUsers list (NOT
+    // CRM.cache.users which is hierarchy-filtered).
+    const u = chatUsers.find(x => Number(x.id) === Number(userId));
     openRoomId = 'pending:' + userId;
     wrap.classList.add('thread-open');
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
@@ -6178,7 +6213,8 @@ VIEWS.admin = async (view) => {
     { id: 'permissions',  label: '🔐 Permissions' },
     { id: 'duplicates',   label: 'Duplicates' },
     { id: 'smtp',         label: 'SMTP' },
-    { id: 'announce',     label: '📢 Announcements' }
+    { id: 'announce',     label: '📢 Announcements' },
+    { id: 'chatperm',     label: '💬 Chat permissions' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -6208,7 +6244,62 @@ async function showAdminTab(id) {
     if (id === 'duplicates') body.replaceChildren(await adminDuplicates());
     if (id === 'smtp')     body.replaceChildren(await adminSmtp());
     if (id === 'announce') body.replaceChildren(await adminAnnouncements());
+    if (id === 'chatperm') body.replaceChildren(await adminChatPermissions());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+async function adminChatPermissions() {
+  const cfg = await api('api_chat_settings_get');
+  const wrap = h('div', {});
+  wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '💬 Who can use Team chat?'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'Pick which roles get access to the Team chat tab. Disabled roles don\'t see the sidebar entry, can\'t start DMs, and can\'t post to channels. Admin is always allowed (you can\'t lock yourself out).'));
+
+  const allowed = new Set(cfg.allowed_roles || []);
+  const labels = {
+    admin: '👑 Admin', manager: '🧭 Manager', team_leader: '🎯 Team leader',
+    sales: '📞 Sales / tele-caller', employee: '👤 Employee (read-only roles)'
+  };
+  const list = h('div', { class: 'card', style: { padding: '1rem', maxWidth: '520px' } });
+  cfg.all_roles.forEach(role => {
+    const isAdmin = role === 'admin';
+    const row = h('label', {
+      class: 'qual-toggle',
+      style: { display: 'flex', alignItems: 'center', padding: '.5rem 0', cursor: isAdmin ? 'not-allowed' : 'pointer' }
+    },
+      h('input', {
+        type: 'checkbox', name: 'role_' + role,
+        checked: allowed.has(role) ? 'checked' : null,
+        disabled: isAdmin ? 'disabled' : null,
+        style: { marginRight: '.5rem' }
+      }),
+      h('span', { style: { fontWeight: 500 } }, labels[role] || role),
+      isAdmin ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' (always allowed)') : null
+    );
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+
+  wrap.appendChild(h('div', { style: { marginTop: '1rem' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      const checks = list.querySelectorAll('input[type="checkbox"]');
+      const picked = [];
+      checks.forEach(c => {
+        if (c.checked || c.disabled) {
+          picked.push(c.name.replace(/^role_/, ''));
+        }
+      });
+      try {
+        const r = await api('api_chat_settings_save', { allowed_roles: picked });
+        toast('Saved — ' + r.allowed_roles.length + ' role(s) allowed');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '💾 Save')
+  ));
+
+  wrap.appendChild(h('p', { class: 'muted', style: { marginTop: '1rem', fontSize: '.85rem' } },
+    'Note: changes take effect when each user reloads the CRM. Active sessions on disabled roles will see "Team chat is not enabled for your role" the next time they open the chat tab.'));
+
+  return wrap;
 }
 
 /* ---------------- Settings → Announcements ----------------------- */

@@ -14,10 +14,90 @@
 const db = require('../db/pg');
 const { authUser } = require('../utils/auth');
 
+const ALL_ROLES = ['admin', 'manager', 'team_leader', 'sales', 'employee'];
+
+/**
+ * Read the admin-set list of roles allowed to use the team chat. Default
+ * (when never configured) is ALL_ROLES so a fresh install just works.
+ * Admin is ALWAYS allowed regardless of config — to keep them from locking
+ * themselves out by accident.
+ */
+async function _allowedRoles() {
+  let stored;
+  try { stored = await db.getConfig('chat_allowed_roles', null); }
+  catch (_) { stored = null; }
+  if (!stored) return ALL_ROLES.slice();
+  const list = String(stored).split(',').map(s => s.trim()).filter(Boolean);
+  if (!list.length) return ALL_ROLES.slice();
+  // Admin always retains access
+  if (!list.includes('admin')) list.push('admin');
+  return list;
+}
+
+async function _ensureCanChat(me) {
+  const allowed = await _allowedRoles();
+  if (!allowed.includes(me.role)) {
+    const err = new Error('Team chat is not enabled for your role. Ask your admin.');
+    err.code = 'CHAT_DISABLED';
+    throw err;
+  }
+}
+
 async function _userMap() {
   const users = await db.getAll('users');
   const byId = {}; users.forEach(u => { byId[Number(u.id)] = u; });
   return byId;
+}
+
+/**
+ * For the DM picker: every active user the caller can chat with, regardless
+ * of lead-visibility hierarchy. Returns minimal fields (id, name, role).
+ *
+ * Why a separate endpoint? CRM.cache.users on the frontend is filtered by
+ * the lead-management hierarchy (a sales rep only sees themselves there),
+ * so it can't be reused for the chat picker — chat is a team-comms tool,
+ * everyone needs to see everyone.
+ */
+async function api_chat_visibleUsers(token) {
+  const me = await authUser(token);
+  await _ensureCanChat(me);
+  const allowed = await _allowedRoles();
+  const users = await db.getAll('users');
+  return users
+    .filter(u => Number(u.is_active) === 1)
+    .filter(u => allowed.includes(u.role))
+    .map(u => ({ id: u.id, name: u.name, role: u.role, photo_url: u.photo_url || '' }))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+/** Surfaces the current chat-permission config to the client so the nav
+ *  entry can hide itself when chat is disabled for the user's role. */
+async function api_chat_myAccess(token) {
+  const me = await authUser(token);
+  const allowed = await _allowedRoles();
+  return { allowed_roles: allowed, can_chat: allowed.includes(me.role) };
+}
+
+/** Admin-only — read the current allowed-roles list */
+async function api_chat_settings_get(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const allowed = await _allowedRoles();
+  return { allowed_roles: allowed, all_roles: ALL_ROLES };
+}
+
+/** Admin-only — set the allowed-roles list. Pass an array of role strings. */
+async function api_chat_settings_save(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const list = Array.isArray(payload?.allowed_roles) ? payload.allowed_roles : [];
+  const cleaned = list
+    .map(r => String(r).trim().toLowerCase())
+    .filter(r => ALL_ROLES.includes(r));
+  // Admin always retained
+  if (!cleaned.includes('admin')) cleaned.push('admin');
+  await db.setConfig('chat_allowed_roles', cleaned.join(','));
+  return { ok: true, allowed_roles: cleaned };
 }
 
 /**
@@ -70,6 +150,7 @@ async function _ensureChannelMember(roomId, userId) {
  */
 async function api_chat_rooms_list(token) {
   const me = await authUser(token);
+  await _ensureCanChat(me);
   const usersById = await _userMap();
   const [rooms, members, messages] = await Promise.all([
     db.getAll('chat_rooms'),
@@ -150,6 +231,7 @@ async function api_chat_rooms_list(token) {
  */
 async function api_chat_messages_list(token, roomId) {
   const me = await authUser(token);
+  await _ensureCanChat(me);
   if (!roomId) throw new Error('roomId required');
   // Membership check — channels everyone, DMs only members
   const room = await db.findById('chat_rooms', roomId);
@@ -193,6 +275,7 @@ async function api_chat_messages_list(token, roomId) {
 
 async function api_chat_send(token, payload) {
   const me = await authUser(token);
+  await _ensureCanChat(me);
   const p = payload || {};
   let roomId = p.room_id;
   if (!roomId && p.user_id) {
@@ -290,5 +373,7 @@ async function api_chat_unreadCount(token) {
 
 module.exports = {
   api_chat_rooms_list, api_chat_messages_list, api_chat_send,
-  api_chat_markRead, api_chat_unreadCount
+  api_chat_markRead, api_chat_unreadCount,
+  api_chat_visibleUsers, api_chat_myAccess,
+  api_chat_settings_get, api_chat_settings_save
 };
