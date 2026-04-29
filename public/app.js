@@ -121,6 +121,10 @@ async function apiRaw(fn, ...args) {
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
+      // First-run onboarding (APK only) — if user has never picked a
+      // call-recordings folder, prompt them with a clear modal so they
+      // don't have to discover it via the Dialer tab.
+      setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
       // Silent background sweep: pick up any missed recordings.
       setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
@@ -2498,11 +2502,17 @@ VIEWS.dialer = async (view) => {
 
   renderDialerTab();
 
-  // First-run nudge: if the user hasn't picked a folder yet, gently prompt
+  // Dialer-tab nudge: if the user lands on the Dialer page and still hasn't
+  // picked a folder (e.g. they dismissed the boot-time onboarding modal),
+  // open the picker once per session. The boot onboarding (firstRunRecordingPrompt)
+  // is the primary path; this is a backup so users who hit Dialer before
+  // dismissing/seeing onboarding still get prompted.
   if (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') {
     try {
       const fld = LeadCRMNative.getRecordingFolder();
-      if (!fld && !sessionStorage.getItem('rec_setup_dismissed')) {
+      if (!fld
+          && !sessionStorage.getItem('rec_setup_dismissed')
+          && localStorage.getItem('rec_onboarding_seen') !== '1') {
         setTimeout(() => {
           if (location.hash === '#/dialer') setupRecordingFolder();
           sessionStorage.setItem('rec_setup_dismissed', '1');
@@ -9327,6 +9337,80 @@ async function syncRecordings(opts) {
   if (failed) parts.push(`${failed} failed`);
   toast(parts.join(' · '));
   if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+}
+
+/**
+ * First-run onboarding — when a user first signs in on the APK, prompt them
+ * to connect their call-recordings folder so call audio auto-attaches to
+ * leads. Skipped silently if:
+ *   - We're in a regular browser (no LeadCRMNative bridge — the picker only
+ *     exists in the Android app).
+ *   - User has already picked a folder (getRecordingFolder returns non-empty).
+ *   - User has previously dismissed onboarding (rec_onboarding_seen flag).
+ *
+ * The modal has a "Pick folder now" CTA and a "Skip — I'll do it later" link.
+ * Skip writes the flag so we don't pester them every login.
+ */
+async function firstRunRecordingPrompt() {
+  // Browser users have no native picker — silently skip.
+  if (!window.LeadCRMNative || typeof LeadCRMNative.pickRecordingFolder !== 'function') {
+    return;
+  }
+  // Already picked? Nothing to prompt.
+  let existingFolder = '';
+  try { existingFolder = LeadCRMNative.getRecordingFolder() || ''; } catch (_) {}
+  if (existingFolder) return;
+  // User already dismissed onboarding once — they can re-trigger from
+  // Dialer → Settings → Pick recordings folder if they change their mind.
+  if (localStorage.getItem('rec_onboarding_seen') === '1') return;
+
+  const modal = h('div', { class: 'modal-backdrop',
+    onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) {
+      // Close on backdrop click counts as "skip for now"
+      try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+      modal.remove();
+    } }
+  },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '👋 Welcome — connect call recordings'),
+        h('button', { class: 'btn icon', onclick: () => {
+          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          modal.remove();
+        }, title: 'Maybe later' }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('p', {},
+          'Pick the folder where your phone saves call recordings. From this point on, any call you make to a CRM lead will be automatically attached to that lead — so you can replay it later from the lead\'s page.'
+        ),
+        h('p', { class: 'muted' },
+          h('b', {}, 'Common locations: '),
+          'Stock Android → Recordings/Call · Samsung → Call · Xiaomi → MIUI/sound_recorder/call_rec · Truecaller → Truecaller folder.'
+        ),
+        h('p', { class: 'muted', style: { fontSize: '.82rem' } },
+          'You can skip this and set it up later from ',
+          h('b', {}, 'Dialer → Settings → Pick recordings folder.'),
+          ' Recording must already be enabled in your phone\'s call recorder app.'
+        )
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => {
+          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          modal.remove();
+          toast('You can connect the folder later from Dialer → Settings.');
+        } }, 'Skip — I\'ll do it later'),
+        h('button', { class: 'btn primary', onclick: () => {
+          modal.remove();
+          // Mark seen now so re-opening from setupRecordingFolder doesn't
+          // re-trigger the onboarding nudge.
+          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          // Open the actual folder picker
+          setupRecordingFolder();
+        } }, '📁 Pick folder now')
+      )
+    )
+  );
+  document.body.appendChild(modal);
 }
 
 /** First-run flow: ask the user to point the app at their recordings folder. */
