@@ -678,3 +678,19 @@ CREATE INDEX IF NOT EXISTS idx_chat_member_user ON chat_room_members(user_id);
 INSERT INTO chat_rooms (type, name)
 SELECT 'channel', 'team'
 WHERE NOT EXISTS (SELECT 1 FROM chat_rooms WHERE type = 'channel' AND name = 'team');
+
+-- ---- v18: Attendance work mode + 30-min location pings -----------
+ALTER TABLE attendance ADD COLUMN IF NOT EXISTS work_mode TEXT;
+                         -- office | home | on_site
+CREATE TABLE IF NOT EXISTS location_pings (
+  id             SERIAL PRIMARY KEY,
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attendance_id  INTEGER REFERENCES attendance(id) ON DELETE SET NULL,
+  lat            NUMERIC(10,6),
+  lng            NUMERIC(10,6),
+  location_name  TEXT,
+  accuracy_m     NUMERIC(10,1),
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_location_pings_user_date ON location_pings(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_location_pings_attendance ON location_pings(attendance_id);

@@ -128,7 +128,14 @@ const SCHEMA = {
     columns: ['user_id', 'date', 'check_in', 'check_out',
               'check_in_lat', 'check_in_lng', 'check_out_lat', 'check_out_lng',
               'check_in_location_name', 'check_out_location_name',
-              'status', 'notes', 'device_info', 'user_agent', 'ip'],
+              'work_mode', 'status', 'notes',
+              'device_info', 'user_agent', 'ip'],
+    json: []
+  },
+  // v18: Periodic location pings (every 30 min while user is checked in)
+  location_pings: {
+    columns: ['user_id', 'attendance_id', 'lat', 'lng',
+              'location_name', 'accuracy_m', 'created_at'],
     json: []
   },
   leaves: {

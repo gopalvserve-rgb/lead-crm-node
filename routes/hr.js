@@ -19,7 +19,9 @@ function haversine(lat1, lon1, lat2, lon2) {
 
 // ---- Attendance -----------------------------------------------------
 
-async function api_attendance_checkIn(token, lat, lng, deviceInfo, locationName) {
+const VALID_WORK_MODES = ['office', 'home', 'on_site'];
+
+async function api_attendance_checkIn(token, lat, lng, deviceInfo, locationName, workMode) {
   const me = await authUser(token);
   const date = todayIso();
 
@@ -27,7 +29,11 @@ async function api_attendance_checkIn(token, lat, lng, deviceInfo, locationName)
     const olat = Number(process.env.OFFICE_LAT);
     const olng = Number(process.env.OFFICE_LNG);
     const rad  = Number(process.env.OFFICE_RADIUS_M || 300);
-    if (olat && olng && lat && lng) {
+    // GPS office-radius enforcement only applies when the user said
+    // they're at the office. Work-from-home and on-site (field) work
+    // are intentionally unconstrained.
+    const wm = VALID_WORK_MODES.includes(workMode) ? workMode : 'office';
+    if (wm === 'office' && olat && olng && lat && lng) {
       const dist = haversine(olat, olng, Number(lat), Number(lng));
       if (dist > rad) throw new Error(`Too far from office (${Math.round(dist)}m > ${rad}m)`);
     }
@@ -47,6 +53,7 @@ async function api_attendance_checkIn(token, lat, lng, deviceInfo, locationName)
     check_in_lat: lat || null,
     check_in_lng: lng || null,
     check_in_location_name: locationName ? String(locationName).slice(0, 255) : null,
+    work_mode: VALID_WORK_MODES.includes(workMode) ? workMode : 'office',
     status: 'present',
     device_info, user_agent
   };
@@ -627,6 +634,76 @@ async function api_bank_list(token) {
     }));
 }
 
+// ---- Location pings (every 30 minutes while user is checked in) -----
+
+/**
+ * Save a single location ping. Called by the client every 30 minutes while
+ * the user is checked in (no check_out yet for today). Tied to today's
+ * attendance row so admin can see the trail per shift.
+ */
+async function api_location_ping(token, lat, lng, locationName, accuracyM) {
+  const me = await authUser(token);
+  if (lat == null || lng == null) throw new Error('lat/lng required');
+  const date = todayIso();
+  const att = (await db.getAll('attendance'))
+    .find(a => Number(a.user_id) === Number(me.id) &&
+               String(a.date).slice(0, 10) === date);
+  // Only accept pings while the user is checked in but not yet checked out.
+  // Clients shouldn't be calling this otherwise but be defensive.
+  if (!att || !att.check_in) {
+    throw new Error('Not checked in — pings only stored during a shift');
+  }
+  if (att.check_out) {
+    throw new Error('Already checked out — pings not stored after shift end');
+  }
+  const id = await db.insert('location_pings', {
+    user_id: me.id,
+    attendance_id: att.id,
+    lat: Number(lat) || null,
+    lng: Number(lng) || null,
+    location_name: locationName ? String(locationName).slice(0, 255) : null,
+    accuracy_m: (accuracyM != null && !isNaN(accuracyM)) ? Number(accuracyM) : null,
+    created_at: db.nowIso()
+  });
+  return { id, attendance_id: att.id };
+}
+
+/**
+ * Admin / manager view: location trail for one user on one date.
+ * Returns the day's attendance row + every ping in chronological order.
+ */
+async function api_location_trail(token, userId, date) {
+  const me = await authUser(token);
+  if (!['admin', 'manager', 'team_leader'].includes(me.role) &&
+      Number(userId) !== Number(me.id)) {
+    throw new Error('Forbidden');
+  }
+  const visible = await getVisibleUserIds(me);
+  if (me.role !== 'admin' && !visible.includes(Number(userId))) {
+    throw new Error('Forbidden');
+  }
+  const day = String(date || todayIso()).slice(0, 10);
+  const att = (await db.getAll('attendance'))
+    .find(a => Number(a.user_id) === Number(userId) &&
+               String(a.date).slice(0, 10) === day);
+  if (!att) return { attendance: null, pings: [] };
+  const pings = (await db.getAll('location_pings'))
+    .filter(p => Number(p.attendance_id) === Number(att.id))
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  return {
+    attendance: {
+      id: att.id, user_id: att.user_id, date: att.date,
+      check_in: att.check_in, check_out: att.check_out,
+      check_in_lat: att.check_in_lat, check_in_lng: att.check_in_lng,
+      check_out_lat: att.check_out_lat, check_out_lng: att.check_out_lng,
+      check_in_location_name: att.check_in_location_name,
+      check_out_location_name: att.check_out_location_name,
+      work_mode: att.work_mode, status: att.status
+    },
+    pings
+  };
+}
+
 module.exports = {
   api_attendance_checkIn, api_attendance_checkOut,
   api_attendance_mine, api_attendance_team, api_attendance_report,
@@ -634,5 +711,6 @@ module.exports = {
   api_tasks_list, api_tasks_save, api_tasks_complete, api_tasks_doneToday,
   api_salary_mine, api_salary_list, api_salary_save,
   api_salary_bulkSave, api_salary_report, api_salary_payslip,
-  api_bank_mine, api_bank_save, api_bank_list
+  api_bank_mine, api_bank_save, api_bank_list,
+  api_location_ping, api_location_trail
 };

@@ -125,6 +125,10 @@ async function apiRaw(fn, ...args) {
       // call-recordings folder, prompt them with a clear modal so they
       // don't have to discover it via the Dialer tab.
       setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
+      // If user is already checked in today (came back to app later in
+      // the day), resume the 30-min location-ping loop so the trail
+      // continues from where the previous session left off.
+      setTimeout(() => _resumeLocationPingsIfCheckedIn().catch(() => {}), 3000);
       // Silent background sweep: pick up any missed recordings.
       setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
@@ -8256,6 +8260,7 @@ VIEWS.attendance = async (view) => {
   if (canReport) {
     tabs.push({ id: 'report',   label: 'Team report (matrix)' });
     tabs.push({ id: 'detailed', label: '📋 Detailed log' });
+    tabs.push({ id: 'trail',    label: '🗺️ Location trail' });
   }
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab' + (t.id === 'mine' ? ' active' : ''),
@@ -8271,6 +8276,112 @@ async function showAttTab(ev, id) {
   if (id === 'mine')     body.replaceChildren(await renderMyAttendance());
   if (id === 'report')   body.replaceChildren(await renderAttendanceReport());
   if (id === 'detailed') body.replaceChildren(await renderAttendanceDetailed());
+  if (id === 'trail')    body.replaceChildren(await renderLocationTrail());
+}
+
+/* ---------------- Location trail view (admin / manager) ----------------
+ * Pick a user + a date → see their 30-min location pings on a Leaflet map
+ * with a polyline connecting them. Includes the check-in pin (green) and
+ * check-out pin (red) for context.
+ * --------------------------------------------------------------------- */
+async function renderLocationTrail() {
+  await ensureLeaflet();
+  const wrap = h('div', {});
+  const users = (CRM.cache.users || []).filter(u => Number(u.is_active) === 1);
+  const today = new Date().toISOString().slice(0, 10);
+
+  const userSel = h('select', { id: 'lt-user' },
+    h('option', { value: '' }, '— Pick employee —'),
+    ...users.map(u => h('option', { value: u.id }, u.name))
+  );
+  const dateInp = h('input', { type: 'date', id: 'lt-date', value: today });
+  const summary = h('div', { id: 'lt-summary', class: 'muted', style: { marginTop: '.5rem' } });
+  const mapBox = h('div', { id: 'lt-map', style: { height: '480px', borderRadius: '12px', marginTop: '.75rem', background: '#f1f5f9' } });
+
+  async function load() {
+    const uid = userSel.value; const date = dateInp.value;
+    summary.textContent = '';
+    mapBox.innerHTML = '';
+    if (!uid) { summary.textContent = 'Pick an employee to load their trail.'; return; }
+    let resp;
+    try { resp = await api('api_location_trail', uid, date); }
+    catch (e) { summary.textContent = 'Could not load: ' + e.message; return; }
+    const att = resp && resp.attendance;
+    const pings = (resp && resp.pings) || [];
+    if (!att) { summary.textContent = 'No attendance record for this date.'; return; }
+
+    const wmLabel = { office: '🏢 Office', home: '🏠 Home', on_site: '📍 On-site' }[att.work_mode] || '—';
+    summary.innerHTML = '';
+    summary.appendChild(h('div', {},
+      h('b', {}, 'Mode: '), wmLabel, ' · ',
+      h('b', {}, 'Check-in: '), att.check_in ? fmtDate(att.check_in) : '—',
+      att.check_out ? h('span', {}, ' · ', h('b', {}, 'Check-out: '), fmtDate(att.check_out)) : null,
+      ' · ', h('b', {}, 'Pings: '), pings.length
+    ));
+
+    setTimeout(() => {
+      const map = L.map('lt-map');
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 19
+      }).addTo(map);
+      const pts = [];
+      // Check-in pin (green)
+      if (att.check_in_lat && att.check_in_lng) {
+        const c = [Number(att.check_in_lat), Number(att.check_in_lng)];
+        L.circleMarker(c, { radius: 10, color: '#10b981', fillColor: '#10b981', fillOpacity: 0.9 })
+          .addTo(map).bindPopup('🕘 <b>Check in</b><br>' + fmtDate(att.check_in)
+            + (att.check_in_location_name ? '<br>📍 ' + esc(att.check_in_location_name) : ''));
+        pts.push(c);
+      }
+      // Pings (blue dots) connected by a polyline
+      const pingPts = pings
+        .filter(p => p.lat && p.lng)
+        .map(p => [Number(p.lat), Number(p.lng)]);
+      pings.forEach((p, i) => {
+        if (!p.lat || !p.lng) return;
+        const c = [Number(p.lat), Number(p.lng)];
+        L.circleMarker(c, { radius: 6, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.7 })
+          .addTo(map).bindPopup(
+            '#' + (i + 1) + ' · ' + fmtDate(p.created_at, 'relative')
+            + (p.location_name ? '<br>📍 ' + esc(p.location_name) : '')
+            + (p.accuracy_m ? '<br>Accuracy: ±' + Math.round(p.accuracy_m) + ' m' : '')
+          );
+        pts.push(c);
+      });
+      if (pingPts.length > 1) {
+        L.polyline(pingPts, { color: '#3b82f6', weight: 2, opacity: 0.6, dashArray: '4 4' }).addTo(map);
+      }
+      // Check-out pin (red)
+      if (att.check_out_lat && att.check_out_lng) {
+        const c = [Number(att.check_out_lat), Number(att.check_out_lng)];
+        L.circleMarker(c, { radius: 10, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 0.9 })
+          .addTo(map).bindPopup('🕔 <b>Check out</b><br>' + fmtDate(att.check_out)
+            + (att.check_out_location_name ? '<br>📍 ' + esc(att.check_out_location_name) : ''));
+        pts.push(c);
+      }
+      if (pts.length === 0) {
+        map.setView([20, 78], 4);
+      } else if (pts.length === 1) {
+        map.setView(pts[0], 16);
+      } else {
+        map.fitBounds(pts, { padding: [40, 40], maxZoom: 17 });
+      }
+    }, 50);
+  }
+
+  userSel.onchange = load;
+  dateInp.onchange = load;
+
+  wrap.append(
+    h('div', { class: 'toolbar' },
+      h('label', {}, 'Employee'), userSel,
+      h('label', {}, 'Date'), dateInp,
+      h('button', { class: 'btn primary', onclick: load }, 'Load trail')
+    ),
+    summary,
+    mapBox
+  );
+  return wrap;
 }
 
 /**
@@ -8547,8 +8658,55 @@ async function _reverseGeocode(lat, lng) {
   } catch (_) { return null; }
 }
 
+/**
+ * Show a quick "where are you working from?" picker before check-in fires.
+ * Three options matching the schema: office | home | on_site. Pre-selects
+ * office (the default for most teams). Returns a Promise that resolves to
+ * the chosen mode or null if the user closed the picker.
+ */
+function _pickWorkMode() {
+  return new Promise(resolve => {
+    let resolved = false;
+    const finish = (val) => { if (!resolved) { resolved = true; m.remove(); resolve(val); } };
+    const opt = (mode, icon, label, blurb) =>
+      h('button', {
+        class: 'wm-opt', 'data-mode': mode,
+        onclick: () => finish(mode),
+        style: { display: 'flex', alignItems: 'center', gap: '.65rem', padding: '.85rem 1rem', width: '100%', textAlign: 'left', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', cursor: 'pointer', marginBottom: '.5rem' }
+      },
+        h('span', { style: { fontSize: '1.6rem' } }, icon),
+        h('div', {},
+          h('div', { style: { fontWeight: 600 } }, label),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' } }, blurb)
+        )
+      );
+    const m = h('div', { class: 'modal-backdrop',
+      onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) finish(null); }
+    },
+      h('div', { class: 'modal' },
+        h('div', { class: 'modal-head' },
+          h('h3', {}, '🕘 Where are you working from?'),
+          h('button', { class: 'btn icon', onclick: () => finish(null) }, '✕')
+        ),
+        h('div', { class: 'modal-body' },
+          opt('office',  '🏢', 'Office',          'In the office today.'),
+          opt('home',    '🏠', 'Work from home',  'Working remotely.'),
+          opt('on_site', '📍', 'On-site / Field', 'Customer visit, project site, etc.')
+        )
+      )
+    );
+    document.body.appendChild(m);
+  });
+}
+
 async function checkInOut(which) {
   const device = _collectDevice();
+  // Ask work mode for check-in only (check-out doesn't need it)
+  let workMode = null;
+  if (which === 'checkIn') {
+    workMode = await _pickWorkMode();
+    if (!workMode) return;  // user cancelled
+  }
   const call = async (lat, lng) => {
     // Reverse-geocode in parallel with the API call so check-in stays fast
     // even on a flaky network. If the geocode fails, we still check in
@@ -8558,8 +8716,13 @@ async function checkInOut(which) {
       try { locationName = await _reverseGeocode(lat, lng); } catch (_) {}
     }
     try {
-      await api('api_attendance_' + which, lat, lng, device, locationName);
-      toast(which === 'checkIn' ? 'Checked in' : 'Checked out');
+      await api('api_attendance_' + which, lat, lng, device, locationName, workMode);
+      toast(which === 'checkIn'
+        ? ('Checked in · ' + (workMode === 'home' ? '🏠 Home' : workMode === 'on_site' ? '📍 On-site' : '🏢 Office'))
+        : 'Checked out');
+      // Start / stop the 30-minute location-ping timer
+      if (which === 'checkIn') startLocationPingTimer();
+      else stopLocationPingTimer();
       navigateTo('attendance');
     }
     catch (e) { toast(e.message, 'err'); }
@@ -8569,6 +8732,71 @@ async function checkInOut(which) {
     p => call(p.coords.latitude, p.coords.longitude),
     () => call(null, null)
   );
+}
+
+/* ---------------- 30-minute location-ping loop --------------------------
+ * While the user is checked in (no check_out yet for today), ping their
+ * location every 30 minutes and post to the server. Runs only while the
+ * app/tab is open — Android's background-kill rules + browser background
+ * geolocation restrictions make true background tracking unreliable
+ * (same constraints we hit with call detection). Documented limitation.
+ * --------------------------------------------------------------------- */
+
+let _locPingTimer = null;
+const PING_INTERVAL_MS = 30 * 60 * 1000;
+
+function startLocationPingTimer() {
+  if (_locPingTimer) clearInterval(_locPingTimer);
+  // First ping right away so the trail starts at check-in
+  setTimeout(() => _sendLocationPing().catch(() => {}), 5000);
+  _locPingTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    _sendLocationPing().catch(() => {});
+  }, PING_INTERVAL_MS);
+  console.log('[locping] timer started, interval=' + PING_INTERVAL_MS + 'ms');
+}
+
+function stopLocationPingTimer() {
+  if (_locPingTimer) clearInterval(_locPingTimer);
+  _locPingTimer = null;
+  console.log('[locping] timer stopped');
+}
+
+async function _sendLocationPing() {
+  if (!navigator.geolocation) return;
+  return new Promise(resolve => {
+    navigator.geolocation.getCurrentPosition(async pos => {
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const acc = pos.coords.accuracy;
+      let name = null;
+      try { name = await _reverseGeocode(lat, lng); } catch (_) {}
+      try {
+        await api('api_location_ping', lat, lng, name, acc);
+        console.log('[locping] sent', { lat, lng, name, accuracy: acc });
+      } catch (e) {
+        console.warn('[locping] send failed:', e.message);
+      }
+      resolve();
+    }, err => {
+      console.warn('[locping] geolocation error:', err.message);
+      resolve();
+    }, { enableHighAccuracy: false, timeout: 12000, maximumAge: 5 * 60 * 1000 });
+  });
+}
+
+// On boot, if the user is already checked in (came back to the app after
+// closing it earlier in the day), restart the ping timer so the trail
+// continues from where it left off.
+async function _resumeLocationPingsIfCheckedIn() {
+  try {
+    const rows = await api('api_attendance_mine', '', '');
+    const today = new Date().toISOString().slice(0, 10);
+    const todayRow = (rows || []).find(r => String(r.date).slice(0, 10) === today);
+    if (todayRow && todayRow.check_in && !todayRow.check_out) {
+      startLocationPingTimer();
+    }
+  } catch (_) {}
 }
 
 function _collectDevice() {
