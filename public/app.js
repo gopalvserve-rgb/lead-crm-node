@@ -2472,6 +2472,23 @@ VIEWS.dialer = async (view) => {
   _dialerState = { tab: 'pad', digits: '', view };
 
   view.innerHTML = '';
+
+  // Always-visible banner when running on the APK and no folder is connected
+  // yet. Impossible to miss, taps directly into the picker. Hidden as soon
+  // as the user picks a folder (next render won't include it).
+  const isApkRuntime = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
+  let connectedFolder = '';
+  try { connectedFolder = isApkRuntime ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  if (isApkRuntime && !connectedFolder) {
+    view.appendChild(h('div', {
+      style: { background: '#fef3c7', color: '#92400e', borderLeft: '4px solid #f59e0b', padding: '.7rem 1rem', borderRadius: '8px', marginBottom: '.75rem', cursor: 'pointer' },
+      onclick: () => setupRecordingFolder()
+    },
+      h('b', {}, '📁 Connect call recordings folder '),
+      h('span', { class: 'muted' }, '— tap here to pick the folder where your phone saves call recordings. Without this, calls won\'t auto-attach to leads.')
+    ));
+  }
+
   const tabs = h('div', { class: 'dialer-tabs' },
     tabBtn('pad', '📟 Dialpad'),
     tabBtn('history', '🕒 History'),
@@ -2512,7 +2529,7 @@ VIEWS.dialer = async (view) => {
       const fld = LeadCRMNative.getRecordingFolder();
       if (!fld
           && !sessionStorage.getItem('rec_setup_dismissed')
-          && localStorage.getItem('rec_onboarding_seen') !== '1') {
+          && localStorage.getItem('rec_onboarding_seen_v2') !== '1') {
         setTimeout(() => {
           if (location.hash === '#/dialer') setupRecordingFolder();
           sessionStorage.setItem('rec_setup_dismissed', '1');
@@ -9341,33 +9358,44 @@ async function syncRecordings(opts) {
 
 /**
  * First-run onboarding — when a user first signs in on the APK, prompt them
- * to connect their call-recordings folder so call audio auto-attaches to
- * leads. Skipped silently if:
- *   - We're in a regular browser (no LeadCRMNative bridge — the picker only
- *     exists in the Android app).
- *   - User has already picked a folder (getRecordingFolder returns non-empty).
- *   - User has previously dismissed onboarding (rec_onboarding_seen flag).
+ * to connect their call-recordings folder. Plus exposed via
+ * window.testRecordingOnboarding() so the user can paste it into the
+ * console to force-show the modal for diagnostic.
  *
- * The modal has a "Pick folder now" CTA and a "Skip — I'll do it later" link.
- * Skip writes the flag so we don't pester them every login.
+ * Skipped silently if:
+ *   - We're in a regular browser (no LeadCRMNative bridge — the picker only
+ *     exists in the Android app). Browser users get a different nudge.
+ *   - User has already picked a folder (getRecordingFolder returns non-empty).
+ *   - User has previously dismissed onboarding (rec_onboarding_seen_v2 flag —
+ *     bumped from v1 so any user who dismissed before sees the new version).
  */
-async function firstRunRecordingPrompt() {
-  // Browser users have no native picker — silently skip.
+async function firstRunRecordingPrompt(forceShow) {
+  console.log('[onboarding] firstRunRecordingPrompt called, forceShow=', !!forceShow);
+  // Browser users have no native picker — silently skip unless forced.
   if (!window.LeadCRMNative || typeof LeadCRMNative.pickRecordingFolder !== 'function') {
-    return;
+    console.log('[onboarding] skip — not in APK (no LeadCRMNative bridge)');
+    if (!forceShow) return;
   }
   // Already picked? Nothing to prompt.
   let existingFolder = '';
-  try { existingFolder = LeadCRMNative.getRecordingFolder() || ''; } catch (_) {}
-  if (existingFolder) return;
+  try { existingFolder = (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  if (existingFolder && !forceShow) {
+    console.log('[onboarding] skip — folder already picked:', existingFolder);
+    return;
+  }
   // User already dismissed onboarding once — they can re-trigger from
-  // Dialer → Settings → Pick recordings folder if they change their mind.
-  if (localStorage.getItem('rec_onboarding_seen') === '1') return;
+  // Dialer → Settings → Pick recordings folder, or by tapping the
+  // permanent banner on the Dialer tab if no folder is set.
+  if (localStorage.getItem('rec_onboarding_seen_v2') === '1' && !forceShow) {
+    console.log('[onboarding] skip — already dismissed (rec_onboarding_seen_v2=1)');
+    return;
+  }
+  console.log('[onboarding] showing first-run modal');
 
   const modal = h('div', { class: 'modal-backdrop',
     onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) {
       // Close on backdrop click counts as "skip for now"
-      try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+      try { localStorage.setItem('rec_onboarding_seen_v2', '1'); } catch (_) {}
       modal.remove();
     } }
   },
@@ -9375,7 +9403,7 @@ async function firstRunRecordingPrompt() {
       h('div', { class: 'modal-head' },
         h('h3', {}, '👋 Welcome — connect call recordings'),
         h('button', { class: 'btn icon', onclick: () => {
-          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          try { localStorage.setItem('rec_onboarding_seen_v2', '1'); } catch (_) {}
           modal.remove();
         }, title: 'Maybe later' }, '✕')
       ),
@@ -9395,7 +9423,7 @@ async function firstRunRecordingPrompt() {
       ),
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => {
-          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          try { localStorage.setItem('rec_onboarding_seen_v2', '1'); } catch (_) {}
           modal.remove();
           toast('You can connect the folder later from Dialer → Settings.');
         } }, 'Skip — I\'ll do it later'),
@@ -9403,7 +9431,7 @@ async function firstRunRecordingPrompt() {
           modal.remove();
           // Mark seen now so re-opening from setupRecordingFolder doesn't
           // re-trigger the onboarding nudge.
-          try { localStorage.setItem('rec_onboarding_seen', '1'); } catch (_) {}
+          try { localStorage.setItem('rec_onboarding_seen_v2', '1'); } catch (_) {}
           // Open the actual folder picker
           setupRecordingFolder();
         } }, '📁 Pick folder now')
@@ -9412,6 +9440,13 @@ async function firstRunRecordingPrompt() {
   );
   document.body.appendChild(modal);
 }
+
+// Manual debug hook — paste `testRecordingOnboarding()` in the console to
+// force-show the modal regardless of localStorage flags or folder state.
+// Useful when "not appearing" reports come in.
+window.testRecordingOnboarding = function () {
+  return firstRunRecordingPrompt(true);
+};
 
 /** First-run flow: ask the user to point the app at their recordings folder. */
 function setupRecordingFolder() {
