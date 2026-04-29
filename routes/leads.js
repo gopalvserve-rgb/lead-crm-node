@@ -181,6 +181,14 @@ async function api_leads_list(token, filters) {
   if (filters.source)      rows = rows.filter(l => l.source === filters.source);
   if (filters.product_id)  rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
   if (filters.assigned_to) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
+  // Qualified filter:
+  //   '1' / 'only' → only leads marked qualified
+  //   '0' / 'unqualified' → only leads NOT marked qualified
+  if (filters.qualified === '1' || filters.qualified === 'only') {
+    rows = rows.filter(l => Number(l.qualified) === 1);
+  } else if (filters.qualified === '0' || filters.qualified === 'unqualified') {
+    rows = rows.filter(l => Number(l.qualified) !== 1);
+  }
   if (filters.from)        rows = rows.filter(l => String(l.created_at).slice(0, 10) >= filters.from);
   if (filters.to)          rows = rows.filter(l => String(l.created_at).slice(0, 10) <= filters.to);
   if (filters.q) {
@@ -375,7 +383,14 @@ async function api_leads_create(token, payload) {
     utm_content:    p.utm_content || '',
     next_followup_at: p.next_followup_at || '',
     last_status_change_at: db.nowIso(),
-    created_by: me.id
+    created_by: me.id,
+    // Qualified flag — the form's checkbox sends 0/1; previously dropped
+    // by the create path so the lead saved as "not qualified" even if the
+    // rep ticked it. Persist + stamp who marked it and when, mirroring the
+    // update-flow behaviour.
+    qualified:    Number(p.qualified) === 1 ? 1 : 0,
+    qualified_at: Number(p.qualified) === 1 ? db.nowIso() : null,
+    qualified_by: Number(p.qualified) === 1 ? me.id : null
   };
   const dup = await _applyDuplicatePolicy(base, me.id);
   base = dup.payload;
@@ -1005,15 +1020,12 @@ async function api_leads_duplicateAndReassign(token, leadId, newAssigneeId) {
     // original. Fresh lead, fresh data.
   });
 
-  // Audit on the ORIGINAL only (so the old assignee sees what happened).
-  // We do NOT add an audit remark on the new lead — its remark history
-  // should start clean. The duplicate_of FK + activity timeline are enough
-  // to trace.
-  await db.insert('remarks', {
-    lead_id: original.id, user_id: me.id,
-    remark: `Duplicated and reassigned to ${newUser.name} as lead #${newId}`,
-    status_id: original.status_id
-  });
+  // Per product owner: the manual "Duplicate & reassign" flow must leave
+  // the ORIGINAL lead untouched in the UI — no reassignment trail in the
+  // remarks list, no last-touched bump. The duplicate_of FK on the new row
+  // is the only persisted backlink, and the activity timeline below covers
+  // audit. (Earlier we wrote "Duplicated and reassigned to X" on the
+  // original; that was confusing the old assignee and is now removed.)
 
   // Initialise the new lead's activity timeline + stage log so it shows
   // 'Lead received' as the first event (just like a brand-new lead).

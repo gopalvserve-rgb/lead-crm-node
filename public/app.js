@@ -767,6 +767,11 @@ VIEWS.leads = async (view) => {
     wireFilter(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source)),
     wireFilter(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to)),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
+    wireFilter(selectOpts('f-qualified', [
+      { id: '',  name: 'Any qualified' },
+      { id: '1', name: '⭐ Qualified only' },
+      { id: '0', name: 'Not qualified' }
+    ], CRM.prefs.filters.qualified)),
     wireFilter(selectOpts('f-duplicate', [
       { id: '', name: 'All leads' },
       { id: 'only', name: '⚠️ Duplicates only' },
@@ -835,6 +840,7 @@ async function loadLeads(opts) {
     source:      $('#f-source')?.value || undefined,
     assigned_to: $('#f-assigned')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
+    qualified:   $('#f-qualified')?.value || undefined,
     duplicate:   $('#f-duplicate')?.value || undefined,
     page,
     page_size:   pageSize
