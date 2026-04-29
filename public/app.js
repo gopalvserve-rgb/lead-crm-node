@@ -8423,6 +8423,7 @@ async function renderAttendanceDetailed() {
           h('th', {}, 'Date'),
           h('th', {}, 'Employee'),
           h('th', {}, 'Status'),
+          h('th', {}, 'Mode'),
           h('th', {}, 'Check-in'),
           h('th', {}, 'Check-out'),
           h('th', {}, 'Hours'),
@@ -8437,10 +8438,22 @@ async function renderAttendanceDetailed() {
           const hasMap = !!(r.check_in_lat && r.check_in_lng);
           const status = r.status || 'present';
           const locName = r.check_in_location_name || '';
+          // Work mode pill — colour-coded so admin can see at a glance
+          // who's WFH vs in-office vs out on field
+          const modeMap = {
+            office:  { icon: '🏢', label: 'Office',  bg: '#dbeafe', color: '#1d4ed8' },
+            home:    { icon: '🏠', label: 'Home',    bg: '#dcfce7', color: '#15803d' },
+            on_site: { icon: '📍', label: 'On-site', bg: '#fef3c7', color: '#92400e' }
+          };
+          const mode = modeMap[r.work_mode];
           return h('tr', {},
             h('td', {}, String(r.date || '').slice(0, 10)),
             h('td', {}, h('b', {}, r.user_name || ('User #' + r.user_id))),
             h('td', {}, h('span', { class: 'tag', style: { background: status === 'present' ? '#10b981' : '#94a3b8', color: '#fff' } }, status)),
+            h('td', {}, mode
+              ? h('span', { class: 'tag', style: { background: mode.bg, color: mode.color, fontSize: '.72rem', fontWeight: 600 } }, mode.icon + ' ' + mode.label)
+              : h('span', { class: 'muted' }, '—')
+            ),
             h('td', {}, inT),
             h('td', {}, outT),
             h('td', {}, hrs),
