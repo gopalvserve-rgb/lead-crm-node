@@ -1997,6 +1997,21 @@ async function openLeadModal(id) {
     return (opt ? opt.textContent : '').trim().toLowerCase();
   }
 
+  // When the rep flips status to a "dead-end" one (Not Pick, Not Interested,
+  // Junk, Does Not Exist, Broker) we strip the HTML5 `required` attribute
+  // from custom fields so they can save the lead without filling capital
+  // range / risk tolerance / etc. JS validation below honours the same rule.
+  function syncRequiredFromStatus() {
+    const skip = _statusSkipsRequired(selectedStatusName());
+    form.querySelectorAll('[data-cf-required="1"]').forEach(el => {
+      if (skip) el.removeAttribute('required');
+      else      el.setAttribute('required', '');
+    });
+  }
+  const _statusSel = form.querySelector('[name="status_id"]');
+  if (_statusSel) _statusSel.addEventListener('change', syncRequiredFromStatus);
+  syncRequiredFromStatus();
+
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
 
@@ -2013,7 +2028,11 @@ async function openLeadModal(id) {
     // Admin is exempt: they often need to update a lead in flight (e.g.
     // change status, add a note) without re-typing every required field
     // that the rep should have filled. Other roles still get the validation.
-    if (CRM.user.role !== 'admin') {
+    // Also exempt: when the chosen status marks the lead as a dead-end
+    // (Not Pick, Not Interested, Junk, Does Not Exist, Broker) — pointless
+    // to demand custom-field detail for leads that aren't progressing.
+    const _skipRequired = _statusSkipsRequired(statusName);
+    if (CRM.user.role !== 'admin' && !_skipRequired) {
       for (const cf of (customFields || [])) {
         if (!cf.is_required) continue;
         const key = 'cf_' + cf.key;
@@ -2230,6 +2249,22 @@ function parseFieldOptions(raw) {
   // Backwards compatible with existing pipe-separated data.
   return String(raw || '').split(/[|,\n]/).map(s => s.trim()).filter(Boolean);
 }
+// Statuses that mark a lead as "dead-end" and DON'T need the rep to fill
+// the full mandatory custom-field set (no point asking for capital range,
+// risk tolerance, etc. when the lead never picked up or said no).
+// Matched case-insensitively against status name.
+const SKIP_REQUIRED_STATUSES = [
+  'not pick', 'not picked', 'not picking',
+  'not interested',
+  'junk', 'spam',
+  'does not exist', 'doesnt exist', "doesn't exist", 'invalid',
+  'broker'
+];
+function _statusSkipsRequired(statusName) {
+  const n = String(statusName || '').toLowerCase().trim();
+  return SKIP_REQUIRED_STATUSES.some(s => n.includes(s));
+}
+
 function customFieldInput(cf, val) {
   const name = 'cf_' + cf.key;
   const opts = parseFieldOptions(cf.options);
@@ -2240,7 +2275,11 @@ function customFieldInput(cf, val) {
   // the rep should have filled). Skip the HTML5 `required` attribute for
   // admins so the browser-level "Please select an item in the list"
   // popup doesn't fire either.
+  // Required fields are also tagged with data-cf-required="1" so the lead
+  // form can dynamically toggle the `required` attribute when the user
+  // picks a "dead-end" status (Not Pick / Not Interested / Junk / etc.).
   const reqAttr = (cf.is_required && CRM.user?.role !== 'admin') ? { required: true } : {};
+  if (cf.is_required && CRM.user?.role !== 'admin') reqAttr['data-cf-required'] = '1';
   let input;
   if (cf.field_type === 'textarea') input = h('textarea', Object.assign({ name }, reqAttr), val || '');
   else if (cf.field_type === 'select') input = h('select', Object.assign({ name }, reqAttr),

@@ -96,6 +96,23 @@ async function _newStatusId() {
 }
 
 /**
+ * Resolve the 'Pending' status id — used as the starting status for any
+ * newly-created lead that's been flagged as a duplicate. We don't carry
+ * the original's status over to the duplicate row because the duplicate
+ * is conceptually a fresh enquiry that needs review. Auto-creates the
+ * status if a 'Pending' row doesn't exist yet.
+ */
+async function _pendingStatusId() {
+  const all = await db.getAll('statuses');
+  const found = all.find(s => /^pending$/i.test(String(s.name || '').trim()));
+  if (found) return found.id;
+  const id = await db.insert('statuses', {
+    name: 'Pending', color: '#94a3b8', sort_order: 5, is_final: 0
+  });
+  return id;
+}
+
+/**
  * Resolve the 'Junk' status id. Matches 'Junk', 'Junk Lead', 'Spam'
  * case-insensitively, then auto-creates 'Junk' if no matching status
  * exists yet — so the rule keeps working even on fresh databases.
@@ -370,13 +387,45 @@ async function api_leads_create(token, payload) {
     base.is_duplicate = 1;
   }
   base.duplicate_of = dup.duplicate ? dup.matched_id : '';
+
+  // Duplicate handling — force a fresh "Pending" status on the new row so
+  // a re-enquiry doesn't masquerade as already-progressed. The CSV import,
+  // website webhook, or whoever called us may have passed the original's
+  // status by accident; we override here unconditionally for duplicates.
+  if (dup.duplicate) {
+    base.status_id = await _pendingStatusId();
+    base.last_status_change_at = db.nowIso();
+  }
+
   const id = await db.insert('leads', base);
   if (dup.duplicate) {
+    // Flag on the new (duplicate) row.
     await db.insert('remarks', {
       lead_id: id, user_id: me.id,
       remark: '⚠️ Duplicate of lead #' + dup.matched_id + ' (policy: ' + (process.env.DUPLICATE_POLICY || 'allow') + ')',
       status_id: ''
     });
+    // Trail on the ORIGINAL row so its recent-remark column tells the rep
+    // that an enquiry just came in again. This is what makes the original
+    // lead visible to the rep even when policy=assign_same_user routes
+    // the new row directly to them.
+    try {
+      const assigneeNote = dup.matched_assigned_to
+        ? ' (reassigned to existing owner)'
+        : '';
+      await db.insert('remarks', {
+        lead_id: dup.matched_id,
+        user_id: me.id,
+        remark: '🔁 Duplicate lead #' + id + ' created' + assigneeNote +
+                '. New enquiry from same contact details.',
+        status_id: ''
+      });
+      // Bump the matched lead's last-touch timestamp so list/sort by recent
+      // activity surfaces it. Wrap so a missing column doesn't break creation.
+      await db.update('leads', dup.matched_id, { updated_at: db.nowIso() });
+    } catch (e) {
+      console.warn('[duplicate] failed to annotate original lead:', e.message);
+    }
   }
   // Sync followup + fire automations
   if (base.next_followup_at) {
