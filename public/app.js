@@ -1055,11 +1055,22 @@ function renderLeadsMobile(rows) {
   });
 }
 
-/** Click-to-call with after-call modal + targeted recording sync.
- *  IMPORTANT: persist the call context to localStorage so it survives
- *  Android killing the WebView during the call (common on Xiaomi/OnePlus/
- *  Samsung phones with aggressive battery management). When the WebView
- *  reloads after the call, _resumePendingCall() picks up where we left off. */
+/** Click-to-call.
+ *
+ *  RELIABLE FLOW: open the after-call modal IMMEDIATELY when the user taps,
+ *  before firing the tel: link. The modal sits in the background while the
+ *  user is on the call. When they hang up and return to the app, the modal
+ *  is right there waiting — no dependency on Android telling us "call ended".
+ *
+ *  Why we do it this way: Android 12+ deprecated PhoneStateListener,
+ *  READ_CALL_LOG / READ_PHONE_STATE are sensitive permissions, and OEM
+ *  battery managers (Xiaomi, OnePlus, Samsung, etc.) aggressively kill
+ *  background services. Trying to detect "call ended" reliably across all
+ *  phones is a maintenance nightmare. Opening the modal at dial-time works
+ *  on every phone, on every Android version, with zero permissions.
+ *
+ *  We still stash the call context to localStorage so _resumePendingCall
+ *  can re-open the modal if the WebView is killed mid-call. */
 function callLead(lead) {
   const raw = String(lead.phone || '');
   const digits = raw.replace(/\D/g, '');
@@ -1086,10 +1097,8 @@ function callLead(lead) {
     } catch (e) { console.warn('[leadcrm] registerOutgoingCall:', e); }
   }
 
-  // Log a server-side call_events row so the recording sync gate
-  // (api_call_hasRecentEvent) has a reference point even on phones where
-  // the native broadcast receiver isn't firing reliably. Best-effort —
-  // doesn't block the dial.
+  // Log a server-side call_events row so the recording sync gate has a
+  // reference point. Best-effort — doesn't block the dial.
   try {
     api('api_call_logEvent', {
       phone: lead.phone || '',
@@ -1099,11 +1108,22 @@ function callLead(lead) {
     }).catch(() => {});
   } catch (_) {}
 
+  // Fire the tel: link FIRST so the dialer opens immediately (any user
+  // gesture context is still active here)
   const hasPlus = raw.trim().startsWith('+');
   const telTarget = (hasPlus ? '+' : '') + digits;
   const a = document.createElement('a');
   a.href = 'tel:' + telTarget;
   a.click();
+
+  // Then open the after-call modal. It sits in the background while the
+  // user is on the call. When they return to the app, it's already there.
+  // setTimeout 0 so this runs after the tel: navigation has been queued.
+  setTimeout(() => {
+    if (!document.querySelector('.after-call-modal')) {
+      openAfterCallModal(lead);
+    }
+  }, 0);
 }
 
 /**
@@ -1181,16 +1201,17 @@ async function openAfterCallModal(lead) {
   const modal = h('div', { class: 'modal-backdrop after-call-modal' },
     h('div', { class: 'modal' },
       h('div', { class: 'modal-head' },
-        h('h3', {}, '📞 Call with ' + (lead.name || 'lead')),
-        h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+        h('h3', {}, '📞 Call ' + (lead.name || 'lead')),
+        h('button', { class: 'btn icon', onclick: () => modal.remove(), title: 'Close — you can re-open from the lead' }, '✕')
       ),
-      h('p', { class: 'muted' }, 'How did the call go? Update the status and add a remark.'),
+      h('p', { class: 'muted', style: { background: '#fef3c7', color: '#92400e', padding: '.6rem .8rem', borderRadius: '8px', borderLeft: '3px solid #f59e0b' } },
+        '☎️ Dialer is opening now. After your call, return here and fill in the status + remark below — this window will be waiting for you.'),
       h('label', {}, 'Status'),
       h('select', { id: 'ac-status' },
         ...statuses.map(s => h('option', { value: s.id, selected: Number(s.id) === Number(lead.status_id) ? 'selected' : null }, s.name))
       ),
-      h('label', {}, 'Remark'),
-      h('textarea', { id: 'ac-remark', rows: 4, placeholder: 'What was discussed? Next step?' }),
+      h('label', {}, 'Remark — what was discussed, next step?'),
+      h('textarea', { id: 'ac-remark', rows: 4, placeholder: 'e.g. Customer needs more details on payment plan, sending brochure tomorrow' }),
       h('label', {}, 'Next follow-up (optional)'),
       h('input', { type: 'datetime-local', id: 'ac-followup' }),
       h('div', { class: 'actions' },
@@ -1207,6 +1228,10 @@ async function openAfterCallModal(lead) {
             if (remark) await api('api_leads_addRemark', lead.id, { remark });
             toast('Updated');
             modal.remove();
+            // Clear the pending-call stash so we don't re-open this modal
+            // on the next visibilitychange / nav.
+            try { localStorage.removeItem('crm_pending_call'); } catch (_) {}
+            CRM.pendingCall = null;
             if (typeof loadLeads === 'function') loadLeads();
           } catch (e) { toast(e.message, 'err'); }
         } }, '✓ Save update')
@@ -1214,7 +1239,9 @@ async function openAfterCallModal(lead) {
     )
   );
   document.body.appendChild(modal);
-  setTimeout(() => $('#ac-remark')?.focus(), 100);
+  // Don't auto-focus the textarea — opening the soft keyboard while the
+  // dialer is launching can fight for focus and look janky. User taps
+  // when they return.
 }
 
 function renderCell(col, l, statuses) {
