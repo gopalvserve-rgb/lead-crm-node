@@ -2234,8 +2234,13 @@ function customFieldInput(cf, val) {
   const name = 'cf_' + cf.key;
   const opts = parseFieldOptions(cf.options);
   // Required attribute on the underlying input — backed up by JS validation
-  // in the lead-modal submit handler so multi-select / checkbox cases also work.
-  const reqAttr = cf.is_required ? { required: true } : {};
+  // in the lead-modal submit handler so multi-select / checkbox cases also
+  // work. Admins are exempt from required-field enforcement (they often
+  // need to update status / notes without re-typing every required field
+  // the rep should have filled). Skip the HTML5 `required` attribute for
+  // admins so the browser-level "Please select an item in the list"
+  // popup doesn't fire either.
+  const reqAttr = (cf.is_required && CRM.user?.role !== 'admin') ? { required: true } : {};
   let input;
   if (cf.field_type === 'textarea') input = h('textarea', Object.assign({ name }, reqAttr), val || '');
   else if (cf.field_type === 'select') input = h('select', Object.assign({ name }, reqAttr),
