@@ -980,6 +980,7 @@ VIEWS.leads = async (view) => {
       { id: 'unique', name: 'No duplicates' }
     ], CRM.prefs.filters.duplicate)),
     h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
+    h('button', { class: 'btn ghost', onclick: openSavedFiltersMenu, title: 'Saved filter presets' }, '📌'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
     h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
     h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
@@ -1030,6 +1031,97 @@ function clearFilters() {
   CRM.prefs.filters = {};
   localStorage.setItem('crm_filters', '{}');
   navigateTo('leads');
+}
+
+/**
+ * Saved filter presets — modal to save the current filter combo under a
+ * name and one-click re-apply or delete saved presets. Admins can flag
+ * a preset as shared (visible to everyone in the org).
+ */
+async function openSavedFiltersMenu() {
+  const isAdmin = CRM.user && CRM.user.role === 'admin';
+  let saved;
+  try { saved = await api('api_filters_list', 'leads'); }
+  catch (e) { return toast(e.message, 'err'); }
+
+  const list = h('div', { class: 'sf-list', style: { display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '320px', overflowY: 'auto' } });
+  const renderList = (items) => {
+    list.innerHTML = '';
+    if (!items.length) {
+      list.appendChild(h('div', { class: 'muted', style: { padding: '8px', textAlign: 'center', fontSize: '.85rem' } }, 'No saved filters yet.'));
+      return;
+    }
+    items.forEach(f => {
+      const row = h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: '4px', background: 'var(--bg-alt)' } },
+        h('button', {
+          type: 'button', class: 'btn ghost',
+          style: { flex: '1', textAlign: 'left', padding: '4px 6px' },
+          onclick: () => {
+            const fObj = (typeof f.filter_json === 'string') ? JSON.parse(f.filter_json || '{}') : (f.filter_json || {});
+            CRM.prefs.filters = fObj;
+            localStorage.setItem('crm_filters', JSON.stringify(fObj));
+            modal.remove();
+            navigateTo('leads');
+          }
+        },
+          h('span', {}, f.name),
+          Number(f.is_shared) === 1 ? h('span', { class: 'muted', style: { fontSize: '.7rem', marginLeft: '6px' } }, '🌐 shared') : null
+        ),
+        (Number(f.user_id) === Number(CRM.user.id) || isAdmin)
+          ? h('button', { type: 'button', class: 'btn icon', title: 'Delete', onclick: async () => {
+              try { await api('api_filters_delete', f.id); toast('Filter deleted'); items.splice(items.indexOf(f), 1); renderList(items); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '🗑️')
+          : null
+      );
+      list.appendChild(row);
+    });
+  };
+
+  const nameInput = h('input', { placeholder: 'Filter name (e.g. "Mumbai · hot · negotiation")' });
+  const sharedBox = h('input', { type: 'checkbox' });
+  const shareRow = isAdmin
+    ? h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '.82rem', marginTop: '4px' } },
+        sharedBox,
+        ' Share with everyone in the org'
+      )
+    : null;
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal modal-sm' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '📌 Saved filters'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: 0 } },
+      'Save the current filter combination under a name, or click a saved preset to apply it.'),
+    list,
+    h('hr', { style: { margin: '12px 0', border: 0, borderTop: '1px solid var(--border-light)' } }),
+    h('label', { style: { fontSize: '.85rem' } }, 'Save current filters as:'),
+    nameInput,
+    shareRow,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Close'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const name = nameInput.value.trim();
+        if (!name) return toast('Give the filter a name', 'err');
+        try {
+          await api('api_filters_save', {
+            name,
+            view: 'leads',
+            filter: CRM.prefs.filters || {},
+            is_shared: (isAdmin && sharedBox.checked) ? 1 : 0
+          });
+          toast('Filter saved');
+          saved = await api('api_filters_list', 'leads');
+          renderList(saved);
+          nameInput.value = '';
+          if (isAdmin) sharedBox.checked = false;
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderList(saved);
 }
 
 async function loadLeads(opts) {

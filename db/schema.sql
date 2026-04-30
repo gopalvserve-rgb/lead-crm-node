@@ -704,3 +704,17 @@ CREATE INDEX IF NOT EXISTS idx_location_pings_attendance ON location_pings(atten
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret      TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled     INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_verified_at TIMESTAMPTZ;
+
+-- ---- v12: saved filter presets per user --------------------------------
+-- Lets users save named combinations of leads-list filters (status,
+-- assignee, source, qualified, etc.) and re-apply them with one click.
+CREATE TABLE IF NOT EXISTS saved_filters (
+  id           SERIAL PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  view         TEXT NOT NULL DEFAULT 'leads',
+  filter_json  JSONB NOT NULL,
+  is_shared    INTEGER NOT NULL DEFAULT 0,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_saved_filters_user ON saved_filters(user_id);

@@ -49,7 +49,8 @@ const routes = {
   push:        require('./routes/push'),
   knowledge:   require('./routes/knowledgeBase'),
   announcements: require('./routes/announcements'),
-  chat:        require('./routes/chat')
+  chat:        require('./routes/chat'),
+  savedFilters: require('./routes/savedFilters')
 };
 const webhooks = require('./routes/webhooks');
 
