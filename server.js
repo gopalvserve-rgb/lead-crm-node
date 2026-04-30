@@ -259,15 +259,109 @@ app.get('/api-docs', (req, res) => {
   res.type('html').send(apiDocsHtml(host));
 });
 
-app.get('/api/sample.csv', (req, res) => {
-  const csv = [
-    'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at,assigned_to',
-    // assigned_to accepts an employee email OR full name. Leave blank to use assignment rules.
-    'John Doe,+911234567890,john@example.com,+911234567890,Website,Basic Plan,Mumbai,"hot,vip","Demo requested",2026-05-01 10:00,sales1@yourcompany.com',
-    'Jane Smith,+919876543210,jane@example.com,+919876543210,Facebook Lead Ad,Premium,Delhi,vip,"Referred by John",,Rajesh Kumar',
-    'Alex Kumar,+917777777777,,,WhatsApp,,Bangalore,cold,,,'
-  ].join('\n');
-  res.type('text/csv').attachment('lead-crm-sample.csv').send(csv);
+/**
+ * /api/sample.csv — comprehensive migration template.
+ *
+ * Pulls real custom-field keys from the DB so the column list mirrors THIS
+ * deployment's lead form exactly. Migrators can paste their old data into
+ * the matching columns and bulk-upload in one pass.
+ *
+ * Columns are grouped:
+ *   1. Contact & identity      (name, phone, alt_phone, whatsapp, email)
+ *   2. Routing                 (status, source, source_ref, product, assigned_to)
+ *   3. Address                 (address, city, state, pincode, country, company)
+ *   4. Qualification           (value, currency, qualified, tags)
+ *   5. Activity                (next_followup_at, notes)
+ *   6. Marketing attribution   (gclid, gad_campaignid, utm_*)
+ *   7. Custom fields           (cf_<key> for every custom field defined)
+ *
+ * status / source / product values are matched by NAME (case-insensitive,
+ * auto-created if missing). assigned_to accepts ID, email or full name.
+ * Dates: ISO (2026-05-01 10:00) or YYYY-MM-DD HH:mm. qualified: 1 or 0.
+ */
+function _csvCell(v) {
+  const s = v == null ? '' : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+app.get('/api/sample.csv', async (req, res) => {
+  // Pull custom fields so the template includes every cf_<key> column
+  // currently defined in this deployment.
+  let customFields = [];
+  try {
+    const db = require('./db/pg');
+    customFields = (await db.getAll('custom_fields'))
+      .filter(c => Number(c.is_active) !== 0 && c.key)
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
+  } catch (_) { /* empty deployment is fine — fall through with no cf_ columns */ }
+
+  const baseCols = [
+    // 1. Contact
+    'name', 'phone', 'alt_phone', 'whatsapp', 'email',
+    // 2. Routing — status / source / product accepted by NAME, assigned_to by email-or-name-or-id
+    'status', 'source', 'source_ref', 'product', 'assigned_to',
+    // 3. Address
+    'address', 'city', 'state', 'pincode', 'country', 'company',
+    // 4. Qualification
+    'value', 'currency', 'qualified', 'tags',
+    // 5. Activity
+    'next_followup_at', 'notes',
+    // 6. Marketing attribution (Google Ads / UTM)
+    'gclid', 'gad_campaignid',
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'
+  ];
+  const cfCols = customFields.map(c => 'cf_' + c.key);
+  const headers = [...baseCols, ...cfCols];
+
+  const sampleRow = (overrides = {}) => {
+    const row = {
+      name: '', phone: '', alt_phone: '', whatsapp: '', email: '',
+      status: '', source: '', source_ref: '', product: '', assigned_to: '',
+      address: '', city: '', state: '', pincode: '', country: '', company: '',
+      value: '', currency: '', qualified: '', tags: '',
+      next_followup_at: '', notes: '',
+      gclid: '', gad_campaignid: '',
+      utm_source: '', utm_medium: '', utm_campaign: '', utm_term: '', utm_content: ''
+    };
+    // Default empty string for every custom-field column
+    customFields.forEach(c => { row['cf_' + c.key] = ''; });
+    return Object.assign(row, overrides);
+  };
+
+  // Three rows showing: (1) fully-filled hot lead, (2) website-form lead with
+  // attribution, (3) bare-minimum import. Migrators see what valid values
+  // look like at every level of detail.
+  const rows = [
+    sampleRow({
+      name: 'John Doe', phone: '+919876543210', whatsapp: '+919876543210',
+      email: 'john@example.com',
+      status: 'New', source: 'Website', product: 'Basic Plan',
+      assigned_to: 'sales1@yourcompany.com',
+      address: '12 MG Road', city: 'Mumbai', state: 'MH',
+      pincode: '400001', country: 'India', company: 'Acme Corp',
+      value: '50000', currency: 'INR', qualified: '1',
+      tags: 'hot,vip',
+      next_followup_at: '2026-05-01 10:00',
+      notes: 'Demo requested — interested in premium tier'
+    }),
+    sampleRow({
+      name: 'Jane Smith', phone: '+919876543211', email: 'jane@example.com',
+      status: 'Contacted', source: 'Facebook Lead Ad',
+      assigned_to: 'Rajesh Kumar',
+      city: 'Delhi', tags: 'vip',
+      utm_source: 'facebook', utm_medium: 'paid_social',
+      utm_campaign: 'spring_2026'
+    }),
+    sampleRow({
+      name: 'Alex Kumar', phone: '+917777777777',
+      source: 'WhatsApp', city: 'Bangalore'
+    })
+  ];
+
+  const lines = [
+    headers.join(','),
+    ...rows.map(r => headers.map(h => _csvCell(r[h])).join(','))
+  ];
+  res.type('text/csv').attachment('lead-crm-sample.csv').send(lines.join('\n'));
 });
 
 // Config for the frontend (non-secret; used to pre-populate CRM.webAppUrl etc.).

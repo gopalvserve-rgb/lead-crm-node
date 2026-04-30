@@ -356,22 +356,51 @@ async function api_leads_create(token, payload) {
     _statusId = resolvedStatusId || (await _newStatusId());
   }
 
+  // Custom-field collection — the bulk-upload sample CSV exposes one
+  // column per custom field as `cf_<key>`. Collect those into the `extra`
+  // map so they land in extra_json. (Programmatic API callers can also
+  // pass `p.extra` as a pre-built object — that wins if present.)
+  let extraObj = (p.extra && typeof p.extra === 'object') ? Object.assign({}, p.extra) : {};
+  for (const key of Object.keys(p)) {
+    if (key.startsWith('cf_') && p[key] !== '' && p[key] != null) {
+      extraObj[key.slice(3)] = String(p[key]);
+    }
+  }
+  // Coerce numeric `value` cleanly — strip "₹", commas, spaces.
+  const cleanValue = (() => {
+    const raw = String(p.value ?? '').trim().replace(/[₹$,\s]/g, '');
+    if (!raw) return null;
+    const n = Number(raw);
+    return isFinite(n) ? n : null;
+  })();
+
   let base = {
     name: String(p.name).trim(),
     email: String(p.email || '').trim(),
     phone: cleanPhone,
+    alt_phone: String(p.alt_phone || '').trim().replace(/^'/, ''),
     whatsapp: cleanWA,
     source: p.source || 'manual',
     source_ref: p.source_ref || '',
     product_id: resolvedProductId,
     status_id: _statusId,
     assigned_to: resolvedAssignee || me.id,
-    city: p.city || '',
+    // Address block — accepted for migration imports; lead form already
+    // captures city, the rest is opt-in.
+    address: p.address || '',
+    city:    p.city    || '',
+    state:   p.state   || '',
+    pincode: p.pincode || '',
+    country: p.country || '',
+    company: p.company || '',
+    // Deal value — useful for forecasting reports.
+    value:    cleanValue,
+    currency: p.currency || '',
     tags: p.tags || '',
     notes: _autoJunk
       ? ('⚠ Auto-flagged Junk: phone "' + (cleanPhone || _phoneDigits) + '" has only ' + _phoneDigits.length + ' digits.\n' + (p.notes || ''))
       : (p.notes || ''),
-    extra_json: p.extra ? JSON.stringify(p.extra) : '',
+    extra_json: Object.keys(extraObj).length ? JSON.stringify(extraObj) : '',
     // Attribution columns — passed through from the API (and the website
     // webhook). Useful for filtering and reporting on Google Ads.
     gclid:          p.gclid || '',
