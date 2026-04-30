@@ -292,10 +292,210 @@ function renderLogin() {
     $('#login-err').textContent = '';
     try {
       const r = await apiRaw('api_login', f.email.value, f.password.value);
+      // 2FA path — server returned a challenge token instead of a session.
+      // Swap the form for an OTP entry step. The user's challenge expires
+      // in 5 minutes; api_login_otp_verify exchanges it for the real token.
+      if (r && r.needs_otp && r.challenge_token) {
+        showOtpStep(r.challenge_token, r.user || { email: f.email.value });
+        return;
+      }
       CRM.token = r.token; CRM.user = r.user;
       localStorage.setItem('crm_token', r.token);
       location.reload();
     } catch (e) { $('#login-err').textContent = e.message; }
+  });
+}
+
+/**
+ * Security modal — change password + manage 2FA (Google Authenticator).
+ *
+ * 2FA flow:
+ *   1. User clicks "Set up 2FA" → server generates a fresh secret (saved
+ *      with totp_enabled=0 so the half-set-up state can't lock anyone out).
+ *   2. We render a QR code (qrcode.js loaded from cdnjs) plus the raw
+ *      base32 for manual entry.
+ *   3. User scans, types one code, clicks Verify → server flips the
+ *      totp_enabled flag to 1.
+ *   4. From the next login onwards, the OTP step in the login form fires.
+ *
+ * Disable requires the current password AND a current OTP — defends
+ * against both a hijacked session token and a stolen/known password.
+ */
+async function openSecurityModal() {
+  let me;
+  try { me = await api('api_me'); }
+  catch (e) { return toast(e.message, 'err'); }
+
+  const status = h('div', { class: 'sec-status' });
+  const renderStatus = () => {
+    status.innerHTML = '';
+    const enabled = !!me.totp_enabled;
+    status.appendChild(h('div', {
+      style: { padding: '10px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+               background: enabled ? 'var(--ok-soft)' : 'var(--warn-soft)',
+               color: enabled ? 'var(--ok)' : 'var(--warn)', fontWeight: 500 } },
+      h('span', {}, enabled ? '✓ Two-factor authentication is enabled' : '⚠ Two-factor authentication is not enabled'),
+      enabled
+        ? h('button', { class: 'btn sm', onclick: () => disable2FA() }, 'Disable')
+        : h('button', { class: 'btn sm primary', onclick: () => setup2FA() }, 'Set up 2FA')
+    ));
+  };
+
+  const setup2FA = async () => {
+    let r;
+    try { r = await api('api_2fa_setup_start'); }
+    catch (e) { return toast(e.message, 'err'); }
+
+    const qrHolder = h('div', { id: 'sec-qr', style: { width: '180px', height: '180px', background: '#fff', border: '1px solid var(--border)', padding: '8px', borderRadius: '6px' } });
+    const otpInput = h('input', { name: 'otp', maxlength: '6', inputmode: 'numeric', placeholder: '000000',
+      style: { fontSize: '1.2rem', letterSpacing: '.3em', textAlign: 'center', fontFamily: 'monospace' } });
+
+    const setupModal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '🔒 Set up two-factor authentication'),
+        h('button', { class: 'btn icon', onclick: () => setupModal.remove() }, '✕')
+      ),
+      h('ol', { style: { paddingLeft: '1.2rem', fontSize: '.88rem', lineHeight: '1.55' } },
+        h('li', {}, 'Install Google Authenticator (or Microsoft Authenticator / Authy / 1Password) on your phone.'),
+        h('li', {}, 'Open the app and tap +, choose ', h('b', {}, 'Scan QR code'), '.'),
+        h('li', {}, 'Scan this code:')
+      ),
+      h('div', { style: { display: 'flex', gap: '14px', alignItems: 'center', justifyContent: 'center', margin: '10px 0', flexWrap: 'wrap' } },
+        qrHolder,
+        h('div', { style: { fontSize: '.8rem' } },
+          h('div', { class: 'muted' }, 'Or type this secret manually:'),
+          h('code', { style: { display: 'inline-block', padding: '4px 8px', marginTop: '4px', background: 'var(--bg-alt)', borderRadius: '4px', fontSize: '.85rem', wordBreak: 'break-all' } }, r.secret),
+          h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Issuer: ' + (r.issuer || 'CRM')),
+          h('div', { class: 'muted' }, 'Account: ' + (r.account || me.email))
+        )
+      ),
+      h('label', {}, '4. Enter the 6-digit code shown in your authenticator:'),
+      otpInput,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => setupModal.remove() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          try {
+            await api('api_2fa_setup_verify', otpInput.value.trim());
+            toast('2FA enabled — you\'ll need your authenticator app to sign in next time');
+            me.totp_enabled = true;
+            setupModal.remove();
+            renderStatus();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Verify and enable')
+      )
+    ));
+    document.body.appendChild(setupModal);
+
+    // Render QR code. Library is ~16KB from cdnjs, loaded once and cached.
+    const drawQr = () => {
+      if (!window.QRCode) return setTimeout(drawQr, 200);
+      qrHolder.innerHTML = '';
+      new window.QRCode(qrHolder, { text: r.otpauth_url, width: 168, height: 168, correctLevel: window.QRCode.CorrectLevel.M });
+    };
+    if (!window.QRCode) {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+      s.onload = drawQr;
+      document.head.appendChild(s);
+    } else { drawQr(); }
+  };
+
+  const disable2FA = async () => {
+    const pwInput = h('input', { type: 'password', autocomplete: 'current-password' });
+    const otpInput = h('input', { name: 'otp', maxlength: '6', inputmode: 'numeric', placeholder: '000000',
+      style: { letterSpacing: '.2em', textAlign: 'center', fontFamily: 'monospace' } });
+    const disableModal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal modal-sm' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, 'Disable 2FA'),
+        h('button', { class: 'btn icon', onclick: () => disableModal.remove() }, '✕')
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.85rem' } }, 'Confirm your password and a current 6-digit code to disable two-factor authentication.'),
+      h('label', {}, 'Password'),
+      pwInput,
+      h('label', { style: { marginTop: '8px' } }, 'Current 6-digit code'),
+      otpInput,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => disableModal.remove() }, 'Cancel'),
+        h('button', { class: 'btn danger', onclick: async () => {
+          try {
+            await api('api_2fa_disable', pwInput.value, otpInput.value.trim());
+            toast('2FA disabled');
+            me.totp_enabled = false;
+            disableModal.remove();
+            renderStatus();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Disable')
+      )
+    ));
+    document.body.appendChild(disableModal);
+  };
+
+  // Change password section
+  const cpOld = h('input', { type: 'password', autocomplete: 'current-password' });
+  const cpNew = h('input', { type: 'password', autocomplete: 'new-password', minlength: '6' });
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '🔒 Security'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+
+    h('h4', { style: { margin: '4px 0 8px' } }, 'Two-factor authentication'),
+    status,
+    h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '6px' } },
+      'Adds a 6-digit code from your phone on top of your password. Strongly recommended for admins and managers.'),
+
+    h('hr', { style: { margin: '18px 0', border: '0', borderTop: '1px solid var(--border-light)' } }),
+
+    h('h4', { style: { margin: '4px 0 8px' } }, 'Change password'),
+    h('label', {}, 'Current password'), cpOld,
+    h('label', { style: { marginTop: '8px' } }, 'New password'), cpNew,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Close'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        if (!cpOld.value || !cpNew.value) return toast('Both fields required', 'err');
+        if (cpNew.value.length < 6) return toast('New password must be at least 6 characters', 'err');
+        try {
+          await api('api_changePassword', cpOld.value, cpNew.value);
+          toast('Password changed');
+          cpOld.value = ''; cpNew.value = '';
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Update password')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderStatus();
+}
+
+function showOtpStep(challengeToken, who) {
+  const card = document.querySelector('.login-card');
+  if (!card) return;
+  card.innerHTML = `
+    <div class="login-brand">
+      ${CRM.config && CRM.config.company_logo_url ? `<img src="${esc(CRM.config.company_logo_url)}" class="login-logo" alt="" />` : '<div class="login-logo-dot">🔒</div>'}
+      <h1>Two-step verification</h1>
+      <p class="muted">Enter the 6-digit code from your authenticator app for ${esc(who.email || '')}.</p>
+    </div>
+    <form id="login-otp-form">
+      <label>6-digit code</label>
+      <input type="text" name="otp" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" pattern="[0-9]{6}" required autofocus
+             style="font-size:1.4rem;letter-spacing:.4em;text-align:center;font-family:var(--font-mono,monospace);" />
+      <button type="submit" class="btn primary block">Verify and sign in</button>
+      <p id="login-err" class="error"></p>
+      <button type="button" class="btn ghost block" id="login-otp-back" style="margin-top:.5rem;">← Use a different account</button>
+    </form>`;
+  document.getElementById('login-otp-back').addEventListener('click', () => location.reload());
+  document.getElementById('login-otp-form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const otp = ev.target.otp.value.trim();
+    document.getElementById('login-err').textContent = '';
+    try {
+      const r = await apiRaw('api_login_otp_verify', challengeToken, otp);
+      CRM.token = r.token; CRM.user = r.user;
+      localStorage.setItem('crm_token', r.token);
+      location.reload();
+    } catch (e) { document.getElementById('login-err').textContent = e.message; }
   });
 }
 
@@ -345,6 +545,7 @@ function renderShell() {
               <div class="role">${esc(CRM.user.role)}</div>
             </div>
           </div>
+          <button class="btn ghost block" id="btn-security" style="margin-bottom:.35rem;">🔒 Security</button>
           <button class="btn ghost block" id="btn-logout">Logout</button>
         </div>
       </aside>
@@ -392,6 +593,7 @@ function renderShell() {
     h('span', { class: 'bn-ico' }, '⋯'), h('span', {}, 'More')));
 
   $('#btn-logout').onclick = logout;
+  const _btnSec = $('#btn-security'); if (_btnSec) _btnSec.onclick = openSecurityModal;
   $('#btn-notif').onclick = showNotifs;
   $('#btn-more').onclick = showMobileMore;
   const _ga = $('#btn-getapp'); if (_ga) _ga.onclick = showGetApp;
@@ -802,6 +1004,7 @@ VIEWS.leads = async (view) => {
     h('button', { class: 'btn sm', onclick: bulkAssignPrompt }, '👤 Assign'),
     h('button', { class: 'btn sm', onclick: bulkStatusPrompt }, '🏷️ Status'),
     h('button', { class: 'btn sm', onclick: bulkAddTagPrompt }, '🏁 Add tag'),
+    h('button', { class: 'btn sm', onclick: bulkWhatsAppPrompt }, '💬 WhatsApp'),
     h('button', { class: 'btn sm danger', onclick: bulkDelete }, '🗑️ Delete'),
     h('button', { class: 'btn sm ghost', onclick: () => clearSelection() }, 'Clear')
   ));
@@ -1380,6 +1583,113 @@ async function bulkStatusPrompt() {
   ));
   document.body.appendChild(modal);
 }
+/**
+ * Bulk WhatsApp send — fire an approved template to every selected lead.
+ *
+ * Reuses the existing campaign infra (api_wb_campaigns_create + send_now)
+ * so messages queue, retry on failure, log to whatsapp_messages, and show
+ * up in the per-lead chat thread automatically.
+ *
+ * Variables support per-lead merge tokens via @{name}, @{firstname},
+ * @{phone}, @{email}, @{source} — same renderer the rest of WhatsBot uses.
+ */
+async function bulkWhatsAppPrompt() {
+  const ids = selectedIds(); if (!ids.length) return;
+  const templates = await api('api_wb_templates_list').catch(() => []);
+  if (!templates.length) {
+    return toast('No approved WhatsApp templates yet — sync from Meta in WhatsBot tab', 'err');
+  }
+
+  const tplSel = h('select', { id: 'bw-tpl' },
+    ...templates.map(t => h('option', { value: t.name + '|' + (t.language || 'en_US') }, `${t.name} · ${t.language || 'en_US'}`))
+  );
+  const varsBox = h('div', { id: 'bw-vars', style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' } });
+  const previewBox = h('div', { class: 'muted', id: 'bw-preview',
+    style: { background: 'var(--bg-alt)', padding: '8px 10px', borderRadius: '6px', fontSize: '.82rem', whiteSpace: 'pre-wrap', marginTop: '8px', minHeight: '40px' } });
+
+  const renderVars = () => {
+    const sel = tplSel.value || '';
+    const [name, lang] = sel.split('|');
+    const tpl = templates.find(t => t.name === name && (t.language || 'en_US') === lang);
+    const bodyText = String(tpl?.body_text || '');
+    const params = (tpl?.body_params || tpl?.params || []);
+    const count = Array.isArray(params) ? params.length : (Number(tpl?.body_params_count) || (bodyText.match(/\{\{\d+\}\}/g) || []).length);
+    varsBox.innerHTML = '';
+    if (!count) {
+      varsBox.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem' } }, 'This template has no variables.'));
+    } else {
+      for (let i = 0; i < count; i++) {
+        const inp = h('input', { class: 'bw-var', placeholder: 'e.g. @{firstname} or "20%"', 'data-idx': String(i) });
+        const row = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+          h('span', { class: 'muted', style: { minWidth: '70px', fontSize: '.78rem' } }, '{{' + (i + 1) + '}}'),
+          inp,
+          h('button', { type: 'button', class: 'btn sm ghost', title: 'Insert lead first name', onclick: () => { inp.value = '@{firstname}'; updatePreview(); } }, '@name')
+        );
+        inp.addEventListener('input', updatePreview);
+        varsBox.appendChild(row);
+      }
+    }
+    updatePreview();
+  };
+
+  const updatePreview = () => {
+    const sel = tplSel.value || '';
+    const [name, lang] = sel.split('|');
+    const tpl = templates.find(t => t.name === name && (t.language || 'en_US') === lang);
+    let body = String(tpl?.body_text || '');
+    const inputs = Array.from(varsBox.querySelectorAll('.bw-var'));
+    inputs.forEach((inp, i) => {
+      const v = inp.value || ('{{' + (i + 1) + '}}');
+      body = body.replace(new RegExp('\\{\\{' + (i + 1) + '\\}\\}', 'g'), v);
+    });
+    previewBox.textContent = body || '(empty template)';
+  };
+
+  tplSel.addEventListener('change', renderVars);
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, `💬 Send WhatsApp to ${ids.length} lead${ids.length === 1 ? '' : 's'}`),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { marginTop: 0, fontSize: '.82rem' } },
+      'Pick an approved template and fill its variables. Use @{firstname}, @{name}, @{phone}, @{email}, @{source} for per-lead substitution. The send queues through the campaign worker — failures are retried automatically.'),
+    h('label', {}, 'Template'),
+    tplSel,
+    h('label', { style: { marginTop: '10px' } }, 'Variables'),
+    varsBox,
+    h('label', { style: { marginTop: '10px' } }, 'Preview (first lead)'),
+    previewBox,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const sel = tplSel.value || '';
+        const [name, lang] = sel.split('|');
+        const inputs = Array.from(varsBox.querySelectorAll('.bw-var'));
+        const variables = inputs.map(inp => ({ value: inp.value || '' }));
+        try {
+          const r = await api('api_wb_campaigns_create', {
+            name: 'Bulk send · ' + new Date().toLocaleString(),
+            template_name: name,
+            template_language: lang,
+            variables_json: JSON.stringify(variables),
+            filter: { lead_ids: ids },
+            send_now: 1
+          });
+          if (r && r.id) {
+            await api('api_wb_campaigns_send_now', r.id);
+          }
+          toast(`Queued WhatsApp send to ${ids.length} leads`);
+          modal.remove();
+          clearSelection();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, `Send to ${ids.length}`)
+    )
+  ));
+  document.body.appendChild(modal);
+  renderVars();
+}
+
 async function bulkAddTagPrompt() {
   const ids = selectedIds(); if (!ids.length) return;
   const tag = prompt('Tag to add to ' + ids.length + ' leads:');

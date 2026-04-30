@@ -694,3 +694,13 @@ CREATE TABLE IF NOT EXISTS location_pings (
 );
 CREATE INDEX IF NOT EXISTS idx_location_pings_user_date ON location_pings(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_location_pings_attendance ON location_pings(attendance_id);
+
+-- ---- v11: TOTP 2FA (Google Authenticator compatible) ------------------
+-- totp_secret is the user's base32-encoded HMAC secret. Stored plaintext
+-- here for simplicity; if you need defense-in-depth later, encrypt at
+-- rest via app-level AES-GCM with a key in env. totp_enabled gates the
+-- check on login — set to 1 only after the user has scanned the QR and
+-- successfully verified one OTP, so a half-set-up account can still log in.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret      TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_verified_at TIMESTAMPTZ;

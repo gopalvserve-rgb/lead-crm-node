@@ -76,7 +76,7 @@ app.post('/api', async (req, res) => {
     // Pass request metadata to api_login so it can fingerprint the device
     // for the "new device login" notification.
     const finalArgs = (args || []).slice();
-    if (fn === 'api_login') {
+    if (fn === 'api_login' || fn === 'api_login_otp_verify') {
       finalArgs.push({
         ua: String(req.headers['user-agent'] || ''),
         ip: String(req.headers['x-forwarded-for'] || req.connection?.remoteAddress || '').split(',')[0].trim()
