@@ -318,6 +318,10 @@ const SCHEMA = {
   chat_messages: {
     columns: ['room_id', 'user_id', 'body', 'created_at'],
     json: []
+  },
+  saved_filters: {
+    columns: ['user_id', 'name', 'view', 'filter_json', 'is_shared', 'created_at'],
+    json: ['filter_json']
   }
 };
 
