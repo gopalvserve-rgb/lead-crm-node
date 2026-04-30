@@ -2975,68 +2975,235 @@ VIEWS.pipeline = async (view) => {
   });
 };
 
-/* ---------------- Kanban (drag & drop, stable handlers) ---------------- */
+/* ---------------- Kanban (drag & drop, stable handlers) ----------------
+ * Design notes:
+ *  - Cards mirror the leads-list row content (name, phone, value, tags,
+ *    qualified ★, assignee, FU chip) so reps don't lose info when they
+ *    flip from list to board.
+ *  - Same filter set as the leads list (search, assignee, source,
+ *    qualified). Persisted to localStorage as `crm_kanban_filters` so
+ *    the rep's morning view stays put.
+ *  - Click a column header to collapse it to a thin strip — useful for
+ *    Lost / Junk which don't need to occupy 250px of board real estate.
+ *    Collapsed columns persist via `crm_kanban_collapsed`.
+ */
+
+function _kbFollowupChip(iso) {
+  if (!iso) return null;
+  const due = new Date(iso).getTime();
+  if (isNaN(due)) return null;
+  const now = Date.now();
+  const today = new Date(); today.setHours(23, 59, 59, 999);
+  const isOverdue = due < now;
+  const isToday   = !isOverdue && due <= today.getTime();
+  const cls = isOverdue ? 'kc-fu overdue' : isToday ? 'kc-fu today' : 'kc-fu future';
+  return h('span', { class: cls }, '⏰ ' + fmtDate(iso, 'relative'));
+}
+
+function _kbInr(value) {
+  const n = Number(value);
+  if (!isFinite(n) || n <= 0) return '';
+  if (n >= 10000000) return '₹' + (n / 10000000).toFixed(n % 10000000 === 0 ? 0 : 2) + ' Cr';
+  if (n >= 100000)   return '₹' + (n / 100000).toFixed(n % 100000 === 0 ? 0 : 2) + ' L';
+  if (n >= 1000)     return '₹' + (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'k';
+  return '₹' + n.toFixed(0);
+}
+
+function _kbInitials(name) {
+  return String(name || '?').split(/\s+/).map(s => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+}
+
+function _kbMatchesFilters(l, f) {
+  if (f.q) {
+    const q = String(f.q).toLowerCase();
+    const hit =
+      String(l.name || '').toLowerCase().includes(q) ||
+      String(l.phone || '').toLowerCase().includes(q) ||
+      String(l.email || '').toLowerCase().includes(q) ||
+      String(l.whatsapp || '').toLowerCase().includes(q);
+    if (!hit) return false;
+  }
+  if (f.assigned_to && Number(l.assigned_to) !== Number(f.assigned_to)) return false;
+  if (f.source && l.source !== f.source) return false;
+  if (f.qualified === '1' && Number(l.qualified) !== 1) return false;
+  if (f.qualified === '0' && Number(l.qualified) === 1) return false;
+  return true;
+}
+
 VIEWS.kanban = async (view) => {
   if (!CRM.cache.statuses) await warmCache();
   const statuses = CRM.cache.statuses;
-  const kanban = await api('api_leads_pipeline');
+  const sources  = CRM.cache.sources  || [];
+  const users    = CRM.cache.users    || [];
+  const kanban   = await api('api_leads_pipeline');
+  const filters  = JSON.parse(localStorage.getItem('crm_kanban_filters') || '{}');
+  const collapsed = JSON.parse(localStorage.getItem('crm_kanban_collapsed') || '[]');
   view.innerHTML = '';
-  const wrap = h('div', { class: 'kanban' });
 
-  statuses.forEach(s => {
-    const col = h('div', { class: 'kanban-col' });
-    col.dataset.statusId = s.id;
+  const persistFilters = () => localStorage.setItem('crm_kanban_filters', JSON.stringify(filters));
+  const persistCollapsed = () => localStorage.setItem('crm_kanban_collapsed', JSON.stringify(collapsed));
 
-    // Use addEventListener so handlers survive and stopPropagation works
-    col.addEventListener('dragover', ev => {
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = 'move';
-      col.classList.add('drop-hover');
-    });
-    col.addEventListener('dragleave', () => col.classList.remove('drop-hover'));
-    col.addEventListener('drop', async ev => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      col.classList.remove('drop-hover');
-      const leadId = Number(ev.dataTransfer.getData('text/plain') || ev.dataTransfer.getData('application/lead-id'));
-      if (!leadId) return;
-      const newStatusId = Number(col.dataset.statusId);
-      try {
-        await api('api_leads_update', leadId, { status_id: newStatusId });
-        toast('Status updated');
-        navigateTo('kanban');
-      } catch (e) { toast(e.message, 'err'); }
-    });
-
-    col.appendChild(h('h4', { class: 'kanban-head', style: { borderTopColor: s.color } },
-      h('span', {}, s.name),
-      h('span', { class: 'kanban-count' }, (kanban.find(k => Number(k.id) === Number(s.id))?.leads || []).length)
-    ));
-
-    (kanban.find(k => Number(k.id) === Number(s.id))?.leads || []).forEach(l => {
-      const card = h('div', { class: 'kanban-card', draggable: 'true' });
-      card.dataset.leadId = l.id;
-      card.addEventListener('dragstart', ev => {
-        ev.dataTransfer.setData('text/plain', String(l.id));
-        ev.dataTransfer.setData('application/lead-id', String(l.id));
-        ev.dataTransfer.effectAllowed = 'move';
-        card.classList.add('dragging');
-      });
-      card.addEventListener('dragend', () => card.classList.remove('dragging'));
-      card.addEventListener('click', ev => {
-        // Only open modal on click, not after drag
-        if (!card.classList.contains('was-dragged')) openLeadModal(l.id);
-      });
-      card.append(
-        h('div', { class: 'kc-name' }, l.name || '—'),
-        h('div', { class: 'kc-meta' }, (l.phone || ''), l.source ? ' · ' + l.source : ''),
-        l.next_followup_at ? h('div', { class: 'kc-fu' }, '⏰ ' + fmtDate(l.next_followup_at, 'relative')) : null
-      );
-      col.appendChild(card);
-    });
-    wrap.appendChild(col);
+  // ---- Toolbar (mirrors the leads-list filter set) ---------------------
+  const search = h('input', {
+    id: 'kb-q', class: 'flex',
+    placeholder: 'Search name / phone / email…',
+    value: filters.q || ''
   });
+  let searchTimer;
+  search.addEventListener('input', () => {
+    filters.q = search.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { persistFilters(); render(); }, 200);
+  });
+
+  const assigneeSel = selectOpts('kb-assigned',
+    [{ id: '', name: 'Any assignee' }, ...users],
+    filters.assigned_to);
+  assigneeSel.addEventListener('change', () => { filters.assigned_to = assigneeSel.value || ''; persistFilters(); render(); });
+
+  const sourceSel = selectOpts('kb-source',
+    [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))],
+    filters.source);
+  sourceSel.addEventListener('change', () => { filters.source = sourceSel.value || ''; persistFilters(); render(); });
+
+  const qualifiedSel = selectOpts('kb-qualified',
+    [{ id: '', name: 'Any qualified' }, { id: '1', name: '⭐ Qualified only' }, { id: '0', name: 'Not qualified' }],
+    filters.qualified);
+  qualifiedSel.addEventListener('change', () => { filters.qualified = qualifiedSel.value || ''; persistFilters(); render(); });
+
+  const clearBtn = h('button', {
+    class: 'btn ghost', title: 'Reset filters',
+    onclick: () => {
+      ['q', 'assigned_to', 'source', 'qualified'].forEach(k => delete filters[k]);
+      persistFilters();
+      navigateTo('kanban');
+    }
+  }, '✕');
+
+  view.appendChild(h('div', { class: 'toolbar' },
+    search, assigneeSel, sourceSel, qualifiedSel, clearBtn,
+    h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
+  ));
+
+  const wrap = h('div', { class: 'kanban' });
   view.appendChild(wrap);
+
+  function render() {
+    wrap.innerHTML = '';
+    statuses.forEach(s => {
+      const col = h('div', { class: 'kanban-col' });
+      col.dataset.statusId = s.id;
+      const isCollapsed = collapsed.includes(Number(s.id));
+      if (isCollapsed) col.classList.add('kanban-col-collapsed');
+
+      // ---- Drag-and-drop handlers (drop changes status) -----------------
+      col.addEventListener('dragover', ev => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        col.classList.add('drop-hover');
+      });
+      col.addEventListener('dragleave', () => col.classList.remove('drop-hover'));
+      col.addEventListener('drop', async ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        col.classList.remove('drop-hover');
+        const leadId = Number(ev.dataTransfer.getData('text/plain') || ev.dataTransfer.getData('application/lead-id'));
+        if (!leadId) return;
+        const newStatusId = Number(col.dataset.statusId);
+        try {
+          await api('api_leads_update', leadId, { status_id: newStatusId });
+          toast('Status updated');
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      });
+
+      // Filter the leads for this column.
+      const allLeads = kanban.find(k => Number(k.id) === Number(s.id))?.leads || [];
+      const visible  = allLeads.filter(l => _kbMatchesFilters(l, filters));
+      const valueSum = visible.reduce((sum, l) => sum + (Number(l.value) || 0), 0);
+
+      // ---- Column header — click to collapse/expand --------------------
+      const head = h('h4', {
+        class: 'kanban-head',
+        style: { borderTopColor: s.color },
+        onclick: () => {
+          const idx = collapsed.indexOf(Number(s.id));
+          if (idx >= 0) collapsed.splice(idx, 1); else collapsed.push(Number(s.id));
+          persistCollapsed();
+          render();
+        }
+      },
+        h('span', { class: 'kanban-name' }, s.name),
+        h('span', { class: 'kanban-meta' },
+          visible.length + (valueSum > 0 ? ' · ' + _kbInr(valueSum) : '')
+        )
+      );
+      col.appendChild(head);
+
+      if (!isCollapsed) {
+        visible.forEach(l => {
+          const card = h('div', { class: 'kanban-card', draggable: 'true' });
+          card.dataset.leadId = l.id;
+          card.addEventListener('dragstart', ev => {
+            ev.dataTransfer.setData('text/plain', String(l.id));
+            ev.dataTransfer.setData('application/lead-id', String(l.id));
+            ev.dataTransfer.effectAllowed = 'move';
+            card.classList.add('dragging');
+          });
+          card.addEventListener('dragend', () => card.classList.remove('dragging'));
+          card.addEventListener('click', () => {
+            if (!card.classList.contains('was-dragged')) openLeadModal(l.id);
+          });
+
+          // Top row: name + qualified ★
+          const topRow = h('div', { class: 'kc-top' },
+            h('div', { class: 'kc-name' }, l.name || '—'),
+            Number(l.qualified) === 1 ? h('span', { class: 'kc-star', title: 'Qualified' }, '★') : null
+          );
+          card.appendChild(topRow);
+
+          // Phone + source
+          const meta = (l.phone || '') + (l.source ? ' · ' + l.source : '');
+          if (meta) card.appendChild(h('div', { class: 'kc-meta' }, meta));
+
+          // Value (large, prominent)
+          const valStr = _kbInr(l.value);
+          if (valStr) card.appendChild(h('div', { class: 'kc-value' }, valStr));
+
+          // Tags (chips, max 3 visible)
+          const tags = String(l.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+          if (tags.length) {
+            const tagWrap = h('div', { class: 'kc-tags' });
+            tags.slice(0, 3).forEach(t => tagWrap.appendChild(h('span', { class: 'kc-tag' }, t)));
+            if (tags.length > 3) tagWrap.appendChild(h('span', { class: 'kc-tag muted' }, '+' + (tags.length - 3)));
+            card.appendChild(tagWrap);
+          }
+
+          // Footer: assignee | follow-up chip
+          const repName = l.assigned_name || '—';
+          const initials = _kbInitials(repName);
+          card.appendChild(h('div', { class: 'kc-foot' },
+            h('span', { class: 'kc-rep', title: repName },
+              h('span', { class: 'kc-avatar' }, initials),
+              h('span', { class: 'kc-rep-name' }, repName)
+            ),
+            _kbFollowupChip(l.next_followup_at)
+          ));
+
+          col.appendChild(card);
+        });
+
+        if (allLeads.length > visible.length) {
+          col.appendChild(h('div', { class: 'kanban-filtered-note' },
+            (allLeads.length - visible.length) + ' filtered out'));
+        }
+      }
+
+      wrap.appendChild(col);
+    });
+  }
+
+  render();
 };
 
 /* ---------------- Follow-ups ---------------- */
