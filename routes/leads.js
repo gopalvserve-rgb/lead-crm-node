@@ -441,6 +441,11 @@ async function api_leads_create(token, payload) {
     base.last_status_change_at = db.nowIso();
   }
 
+  // Block a rep from scheduling two follow-ups at the same minute.
+  if (base.next_followup_at) {
+    await _assertFollowupSlotFree(me, base.assigned_to || me.id, base.next_followup_at, null);
+  }
+
   const id = await db.insert('leads', base);
   if (dup.duplicate) {
     // Flag on the new (duplicate) row.
@@ -616,6 +621,15 @@ async function api_leads_update(token, id, patch) {
   const assigneeChanged = patch.assigned_to && Number(patch.assigned_to) !== Number(lead.assigned_to);
   if (statusChanged) allowed.last_status_change_at = db.nowIso();
 
+  // Block a rep from scheduling two follow-ups at the same minute. Run
+  // BEFORE the lead update so a clash leaves the row untouched.
+  if ('next_followup_at' in patch && patch.next_followup_at) {
+    // The follow-up belongs to whoever currently owns the lead — either
+    // the new assignee from this same patch or the existing owner.
+    const ownerId = patch.assigned_to || lead.assigned_to || me.id;
+    await _assertFollowupSlotFree(me, ownerId, patch.next_followup_at, id);
+  }
+
   await db.update('leads', id, allowed);
 
   // Sync next_followup_at → followups table so reminder/notification views find it
@@ -675,6 +689,49 @@ async function api_leads_update(token, id, patch) {
   return { ok: true };
 }
 
+/**
+ * Guard against a single rep double-booking the same minute on two
+ * different leads. Throws a friendly error naming the conflicting lead
+ * so the rep can re-pick a slot.
+ *
+ * Compares via UTC milliseconds floored to the minute, so a timezone
+ * difference between the candidate and an existing row can't sneak
+ * past the check. Admins are exempt — they often shift schedules
+ * around on behalf of their team and this rule would block legitimate
+ * bulk operations.
+ *
+ * Same lead being rescheduled = no clash (excludeLeadId).
+ * Done / completed follow-ups don't count (is_done=1).
+ * Empty or invalid due_at = no check.
+ */
+async function _assertFollowupSlotFree(me, userId, dueAt, excludeLeadId) {
+  if (!dueAt || me.role === 'admin') return;
+  const candidateMs = new Date(dueAt).getTime();
+  if (!isFinite(candidateMs)) return;
+  const minuteKey = Math.floor(candidateMs / 60000);
+  const all = await db.getAll('followups');
+  const conflict = all.find(f =>
+    Number(f.user_id) === Number(userId) &&
+    Number(f.is_done) !== 1 &&
+    Number(f.lead_id) !== Number(excludeLeadId || 0) &&
+    f.due_at &&
+    Math.floor(new Date(f.due_at).getTime() / 60000) === minuteKey
+  );
+  if (!conflict) return;
+  // Hydrate the conflicting lead's name + the human-readable time so the
+  // toast tells the rep exactly what's already on their calendar.
+  const otherLead = await db.findById('leads', conflict.lead_id).catch(() => null);
+  const niceTime = new Date(conflict.due_at).toLocaleString('en-IN', {
+    weekday: 'short', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit'
+  });
+  const otherName = otherLead?.name || ('lead #' + conflict.lead_id);
+  throw new Error(
+    'Follow-up clash: you already have "' + otherName + '" scheduled at ' +
+    niceTime + '. Pick a different time.'
+  );
+}
+
 // Sync helper — creates or updates a followup row when the lead's next_followup_at changes
 async function _syncFollowup(leadId, userId, dueAt, note) {
   const existing = (await db.getAll('followups')).filter(f =>
@@ -705,6 +762,14 @@ async function api_leads_addRemark(token, leadId, payload) {
   // Was the status changed by this remark? If so, capture the prior status_id
   const lead = await db.findById('leads', leadId);
   const priorStatus = lead ? Number(lead.status_id) : null;
+  // Block a rep from scheduling two follow-ups at the same minute via
+  // the addRemark shortcut. Run BEFORE persisting the remark so a
+  // clash leaves nothing on the lead.
+  if (p.next_followup_at) {
+    const ownerId = lead?.assigned_to || me.id;
+    await _assertFollowupSlotFree(me, ownerId, p.next_followup_at, leadId);
+  }
+
   await db.insert('remarks', {
     lead_id: leadId, user_id: me.id,
     remark: p.remark, status_id: p.status_id || ''
