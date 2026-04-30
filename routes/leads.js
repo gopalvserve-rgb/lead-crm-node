@@ -1072,7 +1072,12 @@ async function api_leads_duplicateAndReassign(token, leadId, newAssigneeId) {
   const newUser = await db.findById('users', newAssigneeId);
   if (!newUser) throw new Error('Target user not found');
 
-  const newStatusId = await _newStatusId();
+  // Manual duplicate-and-reassign always lands the new row in "Pending"
+  // (auto-created if missing) — same convention the auto-dedup path
+  // uses. Reasoning: the new assignee should review the lead before it
+  // re-enters the live pipeline; "New" / inheriting the original's
+  // status would let the new row jump stages without their input.
+  const newStatusId = await _pendingStatusId();
   const now = db.nowIso();
   // Fresh lead — only contact info + attribution carry over. We deliberately
   // DO NOT copy: notes (free-form history), extra_json (stale custom-field
