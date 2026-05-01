@@ -16,8 +16,13 @@
   },
   "android": {
     "allowMixedContent": false,
-    "backgroundColor": "#0F172A",
+    "backgroundColor": "#0E1A14",
     "webContentsDebuggingEnabled": false
+  },
+  "plugins": {
+    "CallerId": {
+      "enabled": true
+    }
   },
   "ios": {
     "backgroundColor": "#0F172A",
