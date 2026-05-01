@@ -73,7 +73,9 @@ const SCHEMA = {
               'emergency_contact_name', 'emergency_contact_phone',
               'reference_1_name', 'reference_1_phone', 'reference_1_relation',
               'reference_2_name', 'reference_2_phone', 'reference_2_relation',
-              'is_active', 'created_at'],
+              'is_active', 'created_at',
+              'totp_secret', 'totp_enabled', 'totp_verified_at',
+              'daily_lead_cap', 'monthly_lead_cap'],
     json: []
   },
   leads: {

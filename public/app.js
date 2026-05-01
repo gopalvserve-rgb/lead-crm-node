@@ -8862,6 +8862,15 @@ async function openUserModal(u) {
         field('monthly_salary', 'Monthly salary (₹)', u.monthly_salary || '', { type: 'number' }),
         field('last_company', 'Last company', u.last_company),
 
+        // Lead capping — controls how many leads auto-assignment can
+        // route to this rep per day / per month. 0 = no cap.
+        section('⛔ Lead capping'),
+        h('div', { class: 'f-row full' },
+          h('p', { class: 'muted', style: { margin: 0, fontSize: '.82rem' } },
+            'Limits how many leads auto-assignment (round-robin / website webhook / assignment rules) can route to this rep. Manual admin assignment bypasses. Set to 0 for no cap.')),
+        field('daily_lead_cap',   'Daily cap (leads/day)',    u.daily_lead_cap   || 0, { type: 'number', min: 0 }),
+        field('monthly_lead_cap', 'Monthly cap (leads/month)', u.monthly_lead_cap || 0, { type: 'number', min: 0 }),
+
         // Personal
         section('👤 Personal'),
         field('father_name', 'Father\'s name', u.father_name),
@@ -8925,7 +8934,9 @@ async function openUserModal(u) {
             reference_1_relation:    fd.get('reference_1_relation')    || '',
             reference_2_name:        fd.get('reference_2_name')        || '',
             reference_2_phone:       fd.get('reference_2_phone')       || '',
-            reference_2_relation:    fd.get('reference_2_relation')    || ''
+            reference_2_relation:    fd.get('reference_2_relation')    || '',
+            daily_lead_cap:          Number(fd.get('daily_lead_cap'))   || 0,
+            monthly_lead_cap:        Number(fd.get('monthly_lead_cap')) || 0
           };
           if (!u.id) payload.password = fd.get('password');
           try { await api('api_users_save', payload); toast('Saved'); modal.remove(); await warmCache(); navigateTo('users'); }

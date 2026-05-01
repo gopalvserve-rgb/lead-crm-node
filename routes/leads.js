@@ -90,6 +90,64 @@ async function _applyDuplicatePolicy(payload, fallbackUserId) {
   return { payload: out, duplicate: true, matched_id: match.id, matched_assigned_to: match.assigned_to || '' };
 }
 
+/**
+ * Lead cap check — returns whether `userId` can accept one more lead
+ * today / this month based on their daily_lead_cap and monthly_lead_cap
+ * settings. Admin manual assignments bypass via the `forceBypass` arg.
+ *
+ *   { ok: true }  → safe to assign
+ *   { ok: false, reason: '...', daily_used, daily_cap, ... } → at cap
+ *
+ * Cap = 0 means "no cap" — the more common default.
+ */
+async function _canAssignToUser(userId, forceBypass) {
+  if (forceBypass) return { ok: true };
+  if (!userId) return { ok: true };
+  const user = await db.findById('users', userId).catch(() => null);
+  if (!user) return { ok: true };
+  const dailyCap = Number(user.daily_lead_cap) || 0;
+  const monthlyCap = Number(user.monthly_lead_cap) || 0;
+  if (dailyCap <= 0 && monthlyCap <= 0) return { ok: true };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const myLeads = (await db.getAll('leads')).filter(l => Number(l.assigned_to) === Number(userId));
+
+  if (dailyCap > 0) {
+    const todayCount = myLeads.filter(l => String(l.created_at).slice(0, 10) === today).length;
+    if (todayCount >= dailyCap) {
+      return { ok: false, reason: `daily cap reached (${todayCount}/${dailyCap})`,
+               daily_used: todayCount, daily_cap: dailyCap };
+    }
+  }
+  if (monthlyCap > 0) {
+    const monthCount = myLeads.filter(l => String(l.created_at).slice(0, 7) === month).length;
+    if (monthCount >= monthlyCap) {
+      return { ok: false, reason: `monthly cap reached (${monthCount}/${monthlyCap})`,
+               monthly_used: monthCount, monthly_cap: monthlyCap };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * Pick the next user from a candidate pool who is NOT at cap. Used by
+ * round-robin / percent assignment loops. Falls back to null if every
+ * candidate is capped (caller decides what to do — usually leaves the
+ * lead unassigned and surfaces it for admin review).
+ */
+async function _pickUncappedUser(candidateIds, startIdx) {
+  const total = candidateIds.length;
+  if (!total) return null;
+  for (let i = 0; i < total; i++) {
+    const idx = (startIdx + i) % total;
+    const uid = Number(candidateIds[idx]);
+    const r = await _canAssignToUser(uid, false);
+    if (r.ok) return uid;
+  }
+  return null;
+}
+
 async function _newStatusId() {
   const s = await db.findOneBy('statuses', 'name', 'New');
   return s ? s.id : '';
@@ -374,6 +432,26 @@ async function api_leads_create(token, payload) {
     return isFinite(n) ? n : null;
   })();
 
+  // Lead-cap enforcement. Admin manual creates bypass (admin knows what
+  // they're doing); auto-routed leads (website webhook, assignment
+  // rules, CSV imports without per-row override) honour it. If the
+  // resolved assignee is at cap, the lead lands UNASSIGNED — admin
+  // sees it on the dashboard and can route it manually.
+  let _capWarning = null;
+  const _adminBypass = me.role === 'admin' && p.cap_bypass === true;
+  let _proposedAssignee = resolvedAssignee || me.id;
+  if (_proposedAssignee && !_adminBypass) {
+    const capCheck = await _canAssignToUser(_proposedAssignee, false);
+    if (!capCheck.ok) {
+      _capWarning = capCheck.reason + ' for user #' + _proposedAssignee;
+      // For round-robin / percent at the bulk layer, _pickUncappedUser
+      // already rotated past capped reps. At single-create time we
+      // simply leave the lead unassigned with a warning remark; manual
+      // admin re-routing is the right escape hatch.
+      _proposedAssignee = null;
+    }
+  }
+
   let base = {
     name: String(p.name).trim(),
     email: String(p.email || '').trim(),
@@ -384,7 +462,7 @@ async function api_leads_create(token, payload) {
     source_ref: p.source_ref || '',
     product_id: resolvedProductId,
     status_id: _statusId,
-    assigned_to: resolvedAssignee || me.id,
+    assigned_to: _proposedAssignee || null,
     // Address block — accepted for migration imports; lead form already
     // captures city, the rest is opt-in.
     address: p.address || '',
@@ -447,6 +525,19 @@ async function api_leads_create(token, payload) {
   }
 
   const id = await db.insert('leads', base);
+
+  // If we deflected an auto-assignment due to a cap, record the trail
+  // so admins reviewing the unassigned queue know why the lead is here.
+  if (_capWarning) {
+    try {
+      await db.insert('remarks', {
+        lead_id: id, user_id: me.id,
+        remark: '⛔ Auto-assignment skipped: ' + _capWarning + '. Lead left unassigned for manual review.',
+        status_id: ''
+      });
+    } catch (_) {}
+  }
+
   if (dup.duplicate) {
     // Flag on the new (duplicate) row.
     await db.insert('remarks', {
@@ -1003,12 +1094,60 @@ async function api_leads_bulkCreate(token, rows, assign) {
   }
   // mode 'csv' (default): leave plan[i] = null → use the row's own assigned_to (or assignment rules)
 
+  // Track how many leads each user has already been assigned in THIS
+  // batch so the cap math is accurate even before the rows commit to
+  // the DB. Without this, every row would query the DB and see the
+  // same pre-batch counts.
+  const inBatchAssigned = {};
+  // Helper: re-rotate to the next user who is under cap, accounting
+  // for both DB counts and rows already planned in this batch.
+  const _findNextUncapped = async (candidates, startIdx) => {
+    if (!candidates.length) return null;
+    for (let off = 0; off < candidates.length; off++) {
+      const idx = (startIdx + off) % candidates.length;
+      const uid = Number(candidates[idx]);
+      const u = await db.findById('users', uid).catch(() => null);
+      if (!u) continue;
+      const dCap = Number(u.daily_lead_cap) || 0;
+      const mCap = Number(u.monthly_lead_cap) || 0;
+      if (dCap <= 0 && mCap <= 0) return uid;
+      const r = await _canAssignToUser(uid, false);
+      if (!r.ok) continue;
+      const usedThisBatch = Number(inBatchAssigned[uid] || 0);
+      if (dCap > 0 && (Number(r.daily_used || 0) + usedThisBatch) >= dCap) continue;
+      if (mCap > 0 && (Number(r.monthly_used || 0) + usedThisBatch) >= mCap) continue;
+      return uid;
+    }
+    return null;
+  };
+
   for (let i = 0; i < total; i++) {
     const r = Object.assign({}, rows[i]);
-    if (plan[i]) r.assigned_to = plan[i];
+    let planned = plan[i] || null;
+
+    // Cap-aware re-rotation for round_robin / percent. Lands the lead
+    // on the next uncapped user instead of dumping it on someone full.
+    if (planned && (assignment.mode === 'round_robin' || assignment.mode === 'percent')) {
+      const candidates = (assignment.mode === 'round_robin'
+        ? ((assignment.user_ids && assignment.user_ids.length) ? assignment.user_ids : users.map(u => u.id))
+        : Array.from(new Set(plan.filter(Boolean))));
+      // Start the search at the originally-planned user
+      const startIdx = Math.max(0, candidates.findIndex(x => Number(x) === Number(planned)));
+      const uncapped = await _findNextUncapped(candidates.map(Number), startIdx);
+      if (uncapped) {
+        planned = uncapped;
+      } else {
+        // Every candidate is at cap → leave unassigned, admin reviews.
+        planned = null;
+      }
+    }
+    if (planned) r.assigned_to = planned;
+    else if (assignment.mode === 'round_robin' || assignment.mode === 'percent') r.assigned_to = '';
+
     try {
       if (!r.name) { results.skipped++; results.errors.push({ row: i + 1, error: 'missing name' }); continue; }
       const out = await api_leads_create(token, r);
+      if (planned) inBatchAssigned[planned] = (inBatchAssigned[planned] || 0) + 1;
       results.created++;
       if (out.duplicate) results.duplicate++;
       const finalAssignee = r.assigned_to || (out && out.assigned_to) || 'unassigned';

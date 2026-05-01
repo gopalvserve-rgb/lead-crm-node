@@ -54,6 +54,8 @@ async function api_users_create(token, payload) {
     reference_2_name:        p.reference_2_name        || '',
     reference_2_phone:       p.reference_2_phone       || '',
     reference_2_relation:    p.reference_2_relation    || '',
+    daily_lead_cap:          Math.max(0, Number(p.daily_lead_cap)   || 0),
+    monthly_lead_cap:        Math.max(0, Number(p.monthly_lead_cap) || 0),
     is_active: 1
   });
   return { id };
@@ -89,6 +91,11 @@ async function api_users_update(token, id, patch) {
   if (['admin', 'manager'].includes(me.role)) {
     if ('role' in p) allowed.role = p.role;
     if ('parent_id' in p) allowed.parent_id = p.parent_id;
+    // Lead capping — only admins/managers can set someone else's caps.
+    // Self-edit isn't allowed via this path (users shouldn't relax
+    // their own caps).
+    if ('daily_lead_cap' in p)   allowed.daily_lead_cap   = Math.max(0, Number(p.daily_lead_cap)   || 0);
+    if ('monthly_lead_cap' in p) allowed.monthly_lead_cap = Math.max(0, Number(p.monthly_lead_cap) || 0);
   }
   if (p.password) allowed.password_hash = hashPassword(p.password);
   await db.update('users', id, allowed);

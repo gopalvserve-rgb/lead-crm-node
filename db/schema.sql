@@ -738,3 +738,10 @@ CREATE TABLE IF NOT EXISTS monthly_targets (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_monthly_targets_unique ON monthly_targets(COALESCE(user_id, 0), month);
 CREATE INDEX IF NOT EXISTS idx_monthly_targets_month ON monthly_targets(month);
+
+-- ---- v14: lead caps per user --------------------------------------
+-- Daily / monthly caps on how many leads a rep can be assigned. 0 = no
+-- cap (default). Enforced by the auto-assignment path (round-robin,
+-- assignment rules, website webhook). Admin manual assigns bypass.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_lead_cap   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_lead_cap INTEGER NOT NULL DEFAULT 0;
