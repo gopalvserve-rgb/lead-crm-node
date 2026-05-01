@@ -5,7 +5,7 @@
 // We only need to register our custom plugin and handle the deeplink
 // extra from the caller-ID notification tap.
 
-package com.stockboxtech.crm;     // change to com.celesteabode.crm for Celeste
+package app.leadcrm.mobile;     // change to com.celesteabode.crm for Celeste
 
 import android.content.Intent;
 import android.os.Bundle;

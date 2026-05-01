@@ -1,4 +1,4 @@
-package com.stockboxtech.crm
+package app.leadcrm.mobile
 
 import android.content.BroadcastReceiver
 import android.content.Context

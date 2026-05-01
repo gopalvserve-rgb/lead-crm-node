@@ -1,4 +1,4 @@
-package com.stockboxtech.crm
+package app.leadcrm.mobile
 
 import android.app.NotificationManager
 import android.app.PendingIntent

@@ -1,10 +1,10 @@
-# Stockbox CRM — Native Android app build guide
+# Lead CRM — Native Android app build guide
 
 This builds a Capacitor-wrapped APK with **caller-ID popup + auto-add
 lead + auto-attach call recording**, replacing the Bubblewrap TWA APK
 that's currently shipped.
 
-The app loads the live CRM (`https://lead-crm-production-d08d.up.railway.app/`)
+The app loads the live CRM (`https://crm.celesteabode.com/`)
 inside a WebView and adds three native superpowers:
 
 1. **Caller-ID popup** — a high-priority Android notification with the
@@ -27,7 +27,7 @@ inside a WebView and adds three native superpowers:
 | JDK | 17 (Temurin recommended) |
 | Android SDK | API 34+ (`build-tools` 34.0.0+) |
 | Capacitor CLI | ≥ 6 (`npm install -g @capacitor/cli`) |
-| Existing Stockbox keystore | `stockbox-build-secrets/android.keystore` |
+| Existing Celeste keystore | `celeste-build-secrets/android.keystore` |
 
 ---
 
@@ -48,15 +48,15 @@ This generates `cap-app/android/` with Capacitor's standard scaffolding.
 ## Step 2 — drop in the custom plugin
 
 Copy the four Kotlin files from `cap-app/native/plugin/` into
-`cap-app/android/app/src/main/java/com/stockboxtech/crm/`:
+`cap-app/android/app/src/main/java/app.leadcrm.mobile/`:
 
 ```bash
 # from repo root
-mkdir -p cap-app/android/app/src/main/java/com/stockboxtech/crm
-cp cap-app/native/plugin/CallerIdPlugin.kt        cap-app/android/app/src/main/java/com/stockboxtech/crm/
-cp cap-app/native/plugin/PhoneStateReceiver.kt    cap-app/android/app/src/main/java/com/stockboxtech/crm/
-cp cap-app/native/plugin/RecordingObserver.kt     cap-app/android/app/src/main/java/com/stockboxtech/crm/
-cp cap-app/native/plugin/NotificationHelper.kt    cap-app/android/app/src/main/java/com/stockboxtech/crm/
+mkdir -p cap-app/android/app/src/main/java/app.leadcrm.mobile
+cp cap-app/native/plugin/CallerIdPlugin.kt        cap-app/android/app/src/main/java/app.leadcrm.mobile/
+cp cap-app/native/plugin/PhoneStateReceiver.kt    cap-app/android/app/src/main/java/app.leadcrm.mobile/
+cp cap-app/native/plugin/RecordingObserver.kt     cap-app/android/app/src/main/java/app.leadcrm.mobile/
+cp cap-app/native/plugin/NotificationHelper.kt    cap-app/android/app/src/main/java/app.leadcrm.mobile/
 ```
 
 Replace the auto-generated `MainActivity.java` with the snippet from
@@ -77,15 +77,15 @@ contents of `cap-app/native/AndroidManifest-additions.xml`. In short:
 
 ## Step 4 — Capacitor config
 
-`cap-app/capacitor.config.json` should already point at the Stockbox
+`cap-app/capacitor.config.json` should already point at the Celeste
 live URL. Verify:
 
 ```json
 {
-  "appId": "com.stockboxtech.crm",
-  "appName": "Stockbox CRM",
+  "appId": "app.leadcrm.mobile",
+  "appName": "Lead CRM",
   "webDir": "www",
-  "server": { "url": "https://lead-crm-production-d08d.up.railway.app", ... }
+  "server": { "url": "https://crm.celesteabode.com", ... }
 }
 ```
 
@@ -98,10 +98,10 @@ cd cap-app
 npx cap sync android
 cd android
 ./gradlew assembleRelease \
-  -PstoreFile=../../../mnt/Downloads/stockbox-build-secrets/android.keystore \
-  -PstorePassword=StockboxCRM2026 \
+  -PstoreFile=../../../mnt/Downloads/celeste-build-secrets/android.keystore \
+  -PstorePassword=LeadCRM2026 \
   -PkeyAlias=android \
-  -PkeyPassword=StockboxCRM2026
+  -PkeyPassword=LeadCRM2026
 ```
 
 Output: `cap-app/android/app/build/outputs/apk/release/app-release.apk`
@@ -109,18 +109,18 @@ Output: `cap-app/android/app/build/outputs/apk/release/app-release.apk`
 Sign + zipalign:
 
 ```bash
-cd ../../../mnt/Downloads/stockbox-build-secrets/
+cd ../../../mnt/Downloads/celeste-build-secrets/
 $ANDROID_HOME/build-tools/35.0.0/zipalign -p 4 \
   ../../../lead-crm-stockbox/cap-app/android/app/build/outputs/apk/release/app-release-unsigned.apk \
-  StockboxCRM-aligned.apk
+  LeadCRM-aligned.apk
 $ANDROID_HOME/build-tools/35.0.0/apksigner sign \
   --ks android.keystore --ks-key-alias android \
-  --ks-pass pass:StockboxCRM2026 --key-pass pass:StockboxCRM2026 \
-  --out StockboxCRM.apk \
-  StockboxCRM-aligned.apk
+  --ks-pass pass:LeadCRM2026 --key-pass pass:LeadCRM2026 \
+  --out LeadCRM.apk \
+  LeadCRM-aligned.apk
 ```
 
-Drop `StockboxCRM.apk` into `lead-crm-stockbox/public/` to replace the
+Drop `LeadCRM.apk` into `lead-crm-stockbox/public/` to replace the
 old TWA APK; the in-app `📱 Get app` modal already serves it from there.
 
 ---
