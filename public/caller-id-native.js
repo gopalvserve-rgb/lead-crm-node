@@ -31,6 +31,7 @@
   // ---- 1. Phone starts ringing ----------------------------------
   CallerId.addListener('callRinging', async ({ phone, ts }) => {
     console.log('[caller-id] ringing', phone);
+    if (typeof toast === 'function') toast('📞 Incoming: ' + phone);
     lastCall = { phone, leadId: null, customerId: null, startedAt: ts };
     try {
       const r = await fetch('/api', {
@@ -87,6 +88,9 @@
   // ---- 2. Call ended (or was missed) -----------------------------
   CallerId.addListener('callEnded', async ({ phone, duration_s, direction, ts }) => {
     console.log('[caller-id] call ended', phone, direction, duration_s + 's');
+    if (typeof toast === 'function') {
+      toast('📴 Call ' + (direction === 'missed' ? 'missed' : 'ended') + ': ' + phone + ' · ' + duration_s + 's');
+    }
     try {
       const r = await fetch('/api', {
         method: 'POST',
@@ -122,6 +126,7 @@
   // ---- 3. New call recording detected on disk -------------------
   CallerId.addListener('recordingAvailable', async ({ path, name, ts }) => {
     console.log('[caller-id] recording available', path);
+    if (typeof toast === 'function') toast('🎙 Recording detected: ' + name);
     if (!lastCall) {
       console.warn('[caller-id] recording with no recent call — skipping');
       return;
@@ -160,8 +165,14 @@
     }
     CallerId.start().then(r => {
       console.log('[caller-id] started', r);
+      if (typeof toast === 'function') {
+        toast('📞 Caller ID active — incoming calls will auto-log');
+      }
     }).catch(e => {
       console.warn('[caller-id] start failed', e);
+      if (typeof toast === 'function') {
+        toast('Caller ID failed — open Settings → Apps → Lead CRM → Permissions and grant Phone, Notifications, Storage', 'warn');
+      }
     });
   }
   tryStart();

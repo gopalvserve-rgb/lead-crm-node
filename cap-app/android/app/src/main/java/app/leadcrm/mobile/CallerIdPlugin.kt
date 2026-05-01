@@ -45,7 +45,16 @@ import com.getcapacitor.annotation.Permission
     permissions = [
         Permission(strings = [Manifest.permission.READ_PHONE_STATE], alias = "phoneState"),
         Permission(strings = [Manifest.permission.READ_CALL_LOG],   alias = "callLog"),
-        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")
+        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+        // Recording sync — needs storage perms. Android 13+ uses
+        // READ_MEDIA_AUDIO; older versions use READ_EXTERNAL_STORAGE.
+        Permission(
+            strings = [
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            ],
+            alias = "mediaAudio"
+        )
     ]
 )
 class CallerIdPlugin : Plugin() {
@@ -83,12 +92,24 @@ class CallerIdPlugin : Plugin() {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             needed.add("notifications")
         }
+        // Recording observer needs audio-file read access. On Android 13+
+        // ask for READ_MEDIA_AUDIO; older versions use READ_EXTERNAL_STORAGE.
+        val storagePerm = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_AUDIO
+        else
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(ctx, storagePerm) != PackageManager.PERMISSION_GRANTED) {
+            needed.add("mediaAudio")
+        }
         if (needed.isNotEmpty()) {
             requestPermissionForAliases(needed.toTypedArray(), call, "permissionCallback")
             return
         }
         beginListening()
         val ret = JSObject(); ret.put("ok", true); ret.put("listening", true)
+        ret.put("phoneState", true)
+        ret.put("notifications", true)
+        ret.put("mediaAudio", true)
         call.resolve(ret)
     }
 
