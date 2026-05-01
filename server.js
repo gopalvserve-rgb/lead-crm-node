@@ -50,7 +50,8 @@ const routes = {
   knowledge:   require('./routes/knowledgeBase'),
   announcements: require('./routes/announcements'),
   chat:        require('./routes/chat'),
-  savedFilters: require('./routes/savedFilters')
+  savedFilters: require('./routes/savedFilters'),
+  targets:     require('./routes/targets')
 };
 const webhooks = require('./routes/webhooks');
 

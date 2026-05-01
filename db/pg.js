@@ -322,6 +322,14 @@ const SCHEMA = {
   saved_filters: {
     columns: ['user_id', 'name', 'view', 'filter_json', 'is_shared', 'created_at'],
     json: ['filter_json']
+  },
+  monthly_targets: {
+    columns: [
+      'user_id', 'month', 'target_revenue', 'target_leads',
+      'target_sales', 'target_calls', 'notes',
+      'created_by', 'created_at', 'updated_at'
+    ],
+    json: []
   }
 };
 

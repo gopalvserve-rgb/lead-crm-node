@@ -512,6 +512,7 @@ const NAV = [
   { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
   { id: 'calendar',   label: 'Calendar',     icon: '📅' },
+  { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
@@ -6086,6 +6087,288 @@ async function openWbActivityDetailModal(id) {
  *   - Active violation list (escalation level, age, assignee)
  * Filters by date range + user.
  */
+/* ===========================================================
+ * Monthly Target dashboard — every metric requested by product:
+ *   - Revenue Achieved        - Required Daily Target (Auto)
+ *   - Target Remaining         - Conversion Rate
+ *   - Days Left                - Forecasted Revenue
+ *   - Achievement %            - Funnel Conversion
+ *   - Weekly Trend             - Lead vs Sale Conversion Rate
+ *   - Revenue Left (= Target Remaining alias)
+ * Admins/managers can set targets per rep + org-wide.
+ * Reps see their own scope by default.
+ * =========================================================== */
+
+function _tInr(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return '—';
+  if (n >= 10000000) return '₹' + (n / 10000000).toFixed(2) + ' Cr';
+  if (n >= 100000)   return '₹' + (n / 100000).toFixed(2) + ' L';
+  if (n >= 1000)     return '₹' + (n / 1000).toFixed(1) + 'k';
+  return '₹' + n.toFixed(0);
+}
+function _tPct(v) { return v == null ? '—' : (Math.round(v * 10) / 10) + '%'; }
+
+VIEWS.targets = async (view) => {
+  const isAdmin = ['admin', 'manager'].includes(CRM.user.role);
+  const isManagerOrUp = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const filtersState = JSON.parse(localStorage.getItem('crm_targets_view') || '{}');
+  const monthInput = filtersState.month || new Date().toISOString().slice(0, 7);
+  const scopeState = filtersState.scope || (isAdmin ? '' : String(CRM.user.id));
+
+  view.innerHTML = '';
+
+  // ---- Toolbar -------------------------------------------------------
+  const monthSel = h('input', { type: 'month', value: monthInput, style: { width: '160px' } });
+  const scopeSel = h('select', { id: 'tg-scope' });
+  scopeSel.appendChild(h('option', { value: '' }, '🏢 Org-wide'));
+  (CRM.cache.users || []).filter(u => isManagerOrUp || Number(u.id) === Number(CRM.user.id)).forEach(u => {
+    scopeSel.appendChild(h('option', { value: String(u.id), selected: String(u.id) === scopeState ? 'selected' : null }, u.name));
+  });
+  if (scopeState) scopeSel.value = scopeState;
+
+  monthSel.addEventListener('change', () => {
+    filtersState.month = monthSel.value;
+    localStorage.setItem('crm_targets_view', JSON.stringify(filtersState));
+    refresh();
+  });
+  scopeSel.addEventListener('change', () => {
+    filtersState.scope = scopeSel.value;
+    localStorage.setItem('crm_targets_view', JSON.stringify(filtersState));
+    refresh();
+  });
+
+  const toolbar = h('div', { class: 'toolbar' },
+    h('label', { class: 'muted', style: { marginRight: '4px' } }, 'Month'),
+    monthSel,
+    h('label', { class: 'muted', style: { marginLeft: '8px', marginRight: '4px' } }, 'Scope'),
+    scopeSel,
+    h('button', { class: 'btn', onclick: refresh }, '🔄'),
+    isAdmin ? h('button', { class: 'btn primary', onclick: () => openSetTargetModal(monthSel.value, scopeSel.value, refresh) }, '🎯 Set target') : null
+  );
+  view.appendChild(toolbar);
+
+  const body = h('div', {});
+  view.appendChild(body);
+
+  async function refresh() {
+    body.innerHTML = '';
+    body.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'Crunching numbers…'));
+    let r;
+    try {
+      r = await api('api_targets_dashboard', monthSel.value, scopeSel.value || null);
+    } catch (e) { body.innerHTML = ''; return body.appendChild(h('div', { class: 'error' }, e.message)); }
+    body.innerHTML = '';
+    renderDashboard(body, r);
+  }
+  refresh();
+};
+
+function renderDashboard(body, r) {
+  const isAdmin = ['admin', 'manager'].includes(CRM.user.role);
+
+  // ---- Header strip --------------------------------------------------
+  body.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' } },
+    h('h2', { style: { margin: 0 } }, '🎯 ' + r.month + ' · ' + r.scope.label),
+    h('div', { class: 'muted', style: { fontSize: '.85rem' } },
+      r.days_passed + ' of ' + r.days_in_month + ' days passed · ',
+      h('strong', { style: { color: 'var(--brand-dark)' } }, r.days_left + ' days left')
+    )
+  ));
+
+  // ---- Big KPI grid (the metrics product asked for) -----------------
+  const kpi = (label, value, sub, color) => h('div', { style: {
+    background: color || 'var(--bg-alt)',
+    padding: '14px 16px',
+    borderRadius: '10px',
+    minWidth: '0'
+  } },
+    h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 } }, label),
+    h('div', { style: { fontSize: '1.7rem', fontWeight: 600, marginTop: '4px', lineHeight: '1.1' } }, value),
+    sub ? h('div', { class: 'muted', style: { fontSize: '.72rem', marginTop: '4px' } }, sub) : null
+  );
+
+  body.appendChild(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' } },
+    kpi('Target', _tInr(r.target_revenue),
+      r.target_revenue ? null : 'Not set yet — admin can set above',
+      'var(--brand-soft)'),
+    kpi('Revenue Achieved', _tInr(r.revenue_achieved), r.won_leads + ' deals closed', 'var(--ok-soft)'),
+    kpi('Target Remaining', _tInr(r.target_remaining), 'a.k.a. Revenue Left', 'var(--warn-soft)'),
+    kpi('Days Left', r.days_left, r.days_in_month + '-day month'),
+    kpi('Required Daily', _tInr(r.required_daily_target), r.days_left > 0 ? 'to hit target' : 'month closed'),
+    kpi('Achievement %',
+      r.achievement_pct == null ? '—' : (r.achievement_pct + '%'),
+      r.achievement_pct == null ? 'set a target to see' : null,
+      r.achievement_pct == null ? 'var(--bg-alt)' : (r.achievement_pct >= 100 ? 'var(--ok-soft)' : r.achievement_pct >= 60 ? 'var(--warn-soft)' : 'var(--err-soft)')),
+    kpi('Forecasted Revenue', _tInr(r.forecast_revenue),
+      r.forecast_vs_target_pct != null ? (r.forecast_vs_target_pct + '% of target') : 'pace × days in month'),
+    kpi('Conversion Rate', _tPct(r.conversion_rate),
+      r.new_leads + ' new · ' + r.won_leads + ' won', 'var(--brand-soft)')
+  ));
+
+  // ---- Achievement progress bar -------------------------------------
+  if (r.achievement_pct != null) {
+    const pct = Math.min(100, Math.max(0, r.achievement_pct));
+    body.appendChild(h('div', { style: { marginBottom: '18px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '.8rem', marginBottom: '4px' } },
+        h('span', { class: 'muted' }, _tInr(r.revenue_achieved) + ' of ' + _tInr(r.target_revenue)),
+        h('span', {}, h('strong', {}, _tPct(r.achievement_pct)))
+      ),
+      h('div', { style: { height: '14px', background: 'var(--bg-alt)', borderRadius: '7px', overflow: 'hidden' } },
+        h('div', { style: {
+          width: pct + '%', height: '100%',
+          background: r.achievement_pct >= 100 ? 'var(--ok)' : r.achievement_pct >= 60 ? 'var(--warn)' : 'var(--err)',
+          transition: 'width .4s'
+        } })
+      )
+    ));
+  }
+
+  // ---- Weekly Trend chart -------------------------------------------
+  if (r.weekly_trend && r.weekly_trend.length) {
+    body.appendChild(h('h3', { style: { marginTop: '12px', marginBottom: '6px' } }, 'Weekly trend'));
+    const wrap = h('div', { class: 'chart-wrap', style: { height: '220px', marginBottom: '20px' } });
+    const canvas = h('canvas');
+    wrap.appendChild(canvas);
+    body.appendChild(wrap);
+    setTimeout(() => {
+      // eslint-disable-next-line no-undef
+      const ctx = canvas.getContext('2d');
+      // eslint-disable-next-line no-undef
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: r.weekly_trend.map(w => w.week_start),
+          datasets: [
+            { label: 'Revenue', data: r.weekly_trend.map(w => Math.round(w.revenue)), backgroundColor: '#10b981', yAxisID: 'y' },
+            { label: 'Leads in', data: r.weekly_trend.map(w => w.leads), backgroundColor: '#6366f1', type: 'line', borderColor: '#6366f1', tension: .3, yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            y:  { beginAtZero: true, position: 'left', ticks: { callback: v => _tInr(v) } },
+            y1: { beginAtZero: true, position: 'right', grid: { display: false }, title: { display: true, text: 'Leads' } }
+          }
+        }
+      });
+    }, 10);
+  }
+
+  // ---- Funnel conversion --------------------------------------------
+  if (r.funnel && r.funnel.length) {
+    body.appendChild(h('h3', { style: { marginTop: '12px', marginBottom: '6px' } }, 'Funnel conversion'));
+    body.appendChild(h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: 0, marginBottom: '8px' } },
+      'Leads created in ' + r.month + ', currently in each stage. Drop-off is computed against the previous stage.'));
+    const fTable = h('table', { class: 'leads-table', style: { fontSize: '.85rem' } },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Stage'),
+        h('th', { style: { textAlign: 'right' } }, 'Count'),
+        h('th', { style: { textAlign: 'right' } }, '% of total'),
+        h('th', { style: { textAlign: 'right' } }, 'Drop-off vs previous')
+      )),
+      h('tbody', {}, ...r.funnel.map(f => h('tr', {},
+        h('td', {}, h('span', { class: 'tag', style: { background: f.color || 'var(--bg-alt)', color: '#fff' } }, f.name)),
+        h('td', { style: { textAlign: 'right', fontWeight: 500 } }, f.count),
+        h('td', { style: { textAlign: 'right' } }, _tPct(f.pct_of_total)),
+        h('td', { style: { textAlign: 'right', color: f.drop_pct != null && f.drop_pct > 0 ? 'var(--err)' : 'var(--text-soft)' } },
+          f.drop_pct == null ? '—' : ('-' + Math.round(f.drop_pct) + '%'))
+      )))
+    );
+    body.appendChild(fTable);
+  }
+
+  // ---- Per-rep breakdown (org-wide view only) -----------------------
+  if (r.rep_breakdown && r.rep_breakdown.length) {
+    body.appendChild(h('h3', { style: { marginTop: '20px', marginBottom: '6px' } }, 'Per-rep performance'));
+    const repTable = h('table', { class: 'leads-table', style: { fontSize: '.85rem' } },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Rep'),
+        h('th', { style: { textAlign: 'right' } }, 'Revenue'),
+        h('th', { style: { textAlign: 'right' } }, 'Target'),
+        h('th', { style: { textAlign: 'right' } }, 'Achievement'),
+        h('th', { style: { textAlign: 'right' } }, 'New'),
+        h('th', { style: { textAlign: 'right' } }, 'Won'),
+        h('th', { style: { textAlign: 'right' } }, 'Conv. %')
+      )),
+      h('tbody', {}, ...r.rep_breakdown.map(rep => h('tr', {},
+        h('td', {}, rep.name),
+        h('td', { style: { textAlign: 'right', fontWeight: 500 } }, _tInr(rep.revenue_achieved)),
+        h('td', { style: { textAlign: 'right' } }, rep.target_revenue ? _tInr(rep.target_revenue) : '—'),
+        h('td', { style: { textAlign: 'right' } },
+          rep.achievement_pct == null
+            ? h('span', { class: 'muted' }, '—')
+            : h('span', { class: 'tag', style: {
+                background: rep.achievement_pct >= 100 ? 'var(--ok-soft)' : rep.achievement_pct >= 60 ? 'var(--warn-soft)' : 'var(--err-soft)',
+                color:      rep.achievement_pct >= 100 ? 'var(--ok)'      : rep.achievement_pct >= 60 ? 'var(--warn)'      : 'var(--err)'
+              } }, _tPct(rep.achievement_pct))
+        ),
+        h('td', { style: { textAlign: 'right' } }, rep.new_leads),
+        h('td', { style: { textAlign: 'right' } }, rep.won_leads),
+        h('td', { style: { textAlign: 'right' } }, _tPct(rep.conversion_rate))
+      )))
+    );
+    body.appendChild(repTable);
+  }
+}
+
+/**
+ * Modal for admin/manager to set / edit a monthly target. user_id = ''
+ * means org-wide; a numeric value means a specific rep.
+ */
+async function openSetTargetModal(month, userId, onDone) {
+  let existing = null;
+  try { existing = await api('api_targets_get', month, userId || null); }
+  catch (e) { /* ignore */ }
+  const e = existing || {};
+  const userField = h('select', { id: 'tg-user' });
+  userField.appendChild(h('option', { value: '', selected: !userId ? 'selected' : null }, '🏢 Org-wide target'));
+  (CRM.cache.users || []).forEach(u => userField.appendChild(h('option', { value: String(u.id), selected: String(u.id) === String(userId) ? 'selected' : null }, u.name)));
+
+  const monthField = h('input', { type: 'month', value: month || new Date().toISOString().slice(0, 7) });
+  const revInput = h('input', { type: 'number', step: '0.01', min: '0', value: e.target_revenue || '' });
+  const leadsInput = h('input', { type: 'number', min: '0', value: e.target_leads || '' });
+  const salesInput = h('input', { type: 'number', min: '0', value: e.target_sales || '' });
+  const callsInput = h('input', { type: 'number', min: '0', value: e.target_calls || '' });
+  const notesInput = h('textarea', { rows: 2 }, e.notes || '');
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '🎯 Set monthly target'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('div', { class: 'form-grid' },
+      h('div', { class: 'f-row' }, h('label', {}, 'Month'), monthField),
+      h('div', { class: 'f-row' }, h('label', {}, 'Scope'), userField),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target revenue (₹)'), revInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target new leads'), leadsInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target sales count'), salesInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target calls'), callsInput),
+      h('div', { class: 'f-row full' }, h('label', {}, 'Notes'), notesInput)
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        try {
+          await api('api_targets_save', {
+            month: monthField.value,
+            user_id: userField.value || null,
+            target_revenue: Number(revInput.value) || 0,
+            target_leads:   Number(leadsInput.value) || 0,
+            target_sales:   Number(salesInput.value) || 0,
+            target_calls:   Number(callsInput.value) || 0,
+            notes: notesInput.value
+          });
+          toast('Target saved');
+          modal.remove();
+          if (onDone) onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save target')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
 VIEWS.tatreport = async (view) => {
   view.innerHTML = '';
   const { users = [] } = CRM.cache;

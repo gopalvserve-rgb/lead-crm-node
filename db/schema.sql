@@ -718,3 +718,23 @@ CREATE TABLE IF NOT EXISTS saved_filters (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_saved_filters_user ON saved_filters(user_id);
+
+-- ---- v13: monthly targets per user (or org-wide) -----------------------
+-- One row per (user_id, month). user_id = NULL → org-wide target.
+-- Used by the Monthly Target dashboard to compute Achievement %,
+-- Required Daily Target, Forecast etc.
+CREATE TABLE IF NOT EXISTS monthly_targets (
+  id              SERIAL PRIMARY KEY,
+  user_id         INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  month           TEXT NOT NULL,           -- 'YYYY-MM'
+  target_revenue  NUMERIC(14,2) DEFAULT 0,
+  target_leads    INTEGER DEFAULT 0,
+  target_sales    INTEGER DEFAULT 0,
+  target_calls    INTEGER DEFAULT 0,
+  notes           TEXT,
+  created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_monthly_targets_unique ON monthly_targets(COALESCE(user_id, 0), month);
+CREATE INDEX IF NOT EXISTS idx_monthly_targets_month ON monthly_targets(month);
