@@ -137,9 +137,247 @@ async function api_call_hasRecentEvent(token, phone, withinMinutes) {
   return { matched: true, recent_event_id: rows[0].id, lead_id: rows[0].lead_id };
 }
 
+/**
+ * Caller-ID lookup — called by the native Android app the instant a phone
+ * rings. Returns a compact summary the notification card can render.
+ * Read-only (no DB writes), so it's safe to fire on every ring.
+ *
+ * Returns either a customer record (preferred — post-sale context is
+ * richer) or a lead record, plus a few derived fields the notification
+ * needs.
+ */
+async function api_call_lookup(token, phone) {
+  const me = await authUser(token);
+  if (!phone) return { match: false };
+
+  // Try customers table first (richer context post-sale)
+  let customer = null;
+  try {
+    const digits = String(phone).replace(/\D/g, '').slice(-10);
+    if (digits) {
+      const { rows } = await db.query(
+        `SELECT * FROM customers WHERE
+           regexp_replace(phone, '[^0-9]', '', 'g') LIKE $1 OR
+           regexp_replace(whatsapp, '[^0-9]', '', 'g') LIKE $1 OR
+           regexp_replace(alt_phone, '[^0-9]', '', 'g') LIKE $1
+         LIMIT 1`,
+        ['%' + digits]
+      );
+      customer = rows[0] || null;
+    }
+  } catch (_) { /* customers table may not exist on Celeste */ }
+
+  if (customer) {
+    return {
+      match: true,
+      kind: 'customer',
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone,
+      email: customer.email,
+      status: customer.status,
+      assigned_to: customer.assigned_to,
+      lifetime_value: Number(customer.lifetime_value) || 0,
+      total_purchases: Number(customer.total_purchases) || 0,
+      last_purchase_at: customer.last_purchase_at,
+      next_renewal_at: customer.next_renewal_at,
+      tags: customer.tags || '',
+      // Last 3 remarks — gives the rep the most recent context
+      recent_remarks: await _recentCustomerRemarks(customer.id, 3),
+      url: '/#/customers/' + customer.id
+    };
+  }
+
+  const lead = await _findLeadByPhone(phone);
+  if (!lead) {
+    // Bonus context for the rep: was there a previous call/lead from this
+    // number that's been deleted, or a stale unassigned lead?
+    return { match: false, phone };
+  }
+
+  // Hydrate lead with status + assignee names + last few remarks
+  const status = lead.status_id ? await db.findById('statuses', lead.status_id).catch(() => null) : null;
+  const owner  = lead.assigned_to ? await db.findById('users', lead.assigned_to).catch(() => null) : null;
+  return {
+    match: true,
+    kind: 'lead',
+    id: lead.id,
+    name: lead.name,
+    phone: lead.phone,
+    email: lead.email,
+    status: status ? status.name : '',
+    status_color: status ? status.color : '#6b7280',
+    assigned_to: lead.assigned_to,
+    assigned_name: owner ? owner.name : '',
+    value: Number(lead.value) || 0,
+    next_followup_at: lead.next_followup_at,
+    qualified: Number(lead.qualified) === 1,
+    tags: lead.tags || '',
+    is_mine: Number(lead.assigned_to) === Number(me.id),
+    recent_remarks: await _recentLeadRemarks(lead.id, 3),
+    url: '/#/leads?id=' + lead.id
+  };
+}
+
+async function _recentLeadRemarks(leadId, n) {
+  const { rows } = await db.query(
+    `SELECT r.remark, r.created_at, u.name AS user_name
+       FROM remarks r LEFT JOIN users u ON u.id = r.user_id
+      WHERE r.lead_id = $1
+      ORDER BY r.created_at DESC LIMIT $2`,
+    [Number(leadId), Number(n)]
+  ).catch(() => ({ rows: [] }));
+  return rows;
+}
+async function _recentCustomerRemarks(customerId, n) {
+  const { rows } = await db.query(
+    `SELECT r.remark, r.created_at, r.remark_type, u.name AS user_name
+       FROM customer_remarks r LEFT JOIN users u ON u.id = r.user_id
+      WHERE r.customer_id = $1
+      ORDER BY r.created_at DESC LIMIT $2`,
+    [Number(customerId), Number(n)]
+  ).catch(() => ({ rows: [] }));
+  return rows;
+}
+
+/**
+ * End-of-call handler — called by the native Android app when the phone
+ * call ends (answered or missed). Persists a call_event row, and if the
+ * number doesn't match an existing lead AND the call was answered for
+ * ≥5 seconds, auto-creates a "fresh inbound" lead so the rep doesn't
+ * have to type one in.
+ *
+ * payload:
+ *   phone:       caller's number
+ *   direction:   'in' | 'out' | 'missed'
+ *   duration_s:  seconds (0 for missed)
+ *   started_at:  ISO timestamp of when the ring/dial started
+ *
+ * Behaviour matrix:
+ *
+ *   direction        match    duration   action
+ *   ──────────       ─────    ─────────  ────────────────────────────────
+ *   in (answered)    yes      any        log event only
+ *   in (answered)    no       <5s        log event only (likely misdial)
+ *   in (answered)    no       ≥5s        log event + auto-create lead
+ *                                        with source='Inbound Call'
+ *   missed           yes      0          log event + create follow-up
+ *                                        for tomorrow + auto-WA template
+ *   missed           no       0          log event only (don't fill CRM
+ *                                        with every spam ring)
+ *   out              any      any        log event only (rep initiated,
+ *                                        we're not auto-creating leads
+ *                                        from outbound dials they made)
+ */
+async function api_call_handleEnded(token, payload) {
+  const me = await authUser(token);
+  const p = payload || {};
+  if (!p.phone) throw new Error('phone required');
+
+  const direction = p.direction || 'in';
+  const duration = Number(p.duration_s) || 0;
+  const event = direction === 'missed' ? 'missed' : (duration > 0 ? 'ended' : 'no_answer');
+
+  const lead = await _findLeadByPhone(p.phone);
+  let createdLeadId = null;
+  let createdFollowupId = null;
+
+  // Auto-create lead: answered inbound, ≥5s, no existing match
+  if (direction === 'in' && duration >= 5 && !lead) {
+    try {
+      const _newStatusId = await (async () => {
+        const s = await db.findOneBy('statuses', 'name', 'New');
+        return s ? s.id : null;
+      })();
+      const phoneClean = String(p.phone).replace(/^'/, '').trim();
+      createdLeadId = await db.insert('leads', {
+        name:        phoneClean,                  // placeholder, rep edits
+        phone:       phoneClean,
+        whatsapp:    phoneClean,
+        source:      'Inbound Call',
+        source_ref:  'auto-created from caller-id',
+        status_id:   _newStatusId,
+        assigned_to: me.id,
+        notes:       'Auto-created from inbound call · ' +
+                     Math.round(duration) + 's · ' +
+                     new Date(p.started_at || Date.now()).toLocaleString('en-IN'),
+        created_by:  me.id,
+        created_at:  db.nowIso(),
+        updated_at:  db.nowIso(),
+        last_status_change_at: db.nowIso()
+      });
+      // First remark for context
+      await db.insert('remarks', {
+        lead_id: createdLeadId, user_id: me.id,
+        remark: '📞 Inbound call · ' + Math.round(duration) + 's · auto-created lead',
+        status_id: _newStatusId
+      });
+    } catch (e) { console.warn('[caller-id] auto-create lead failed:', e.message); }
+  }
+
+  // Missed inbound from a known lead → schedule callback follow-up + WA
+  if (direction === 'missed' && lead) {
+    try {
+      const tomorrow10 = (() => {
+        const d = new Date(); d.setDate(d.getDate() + 1);
+        d.setHours(10, 0, 0, 0);
+        return d.toISOString();
+      })();
+      createdFollowupId = await db.insert('followups', {
+        lead_id: lead.id, user_id: me.id, due_at: tomorrow10,
+        note: 'Auto-scheduled callback after missed inbound call',
+        is_done: 0, created_at: db.nowIso()
+      });
+      await db.update('leads', lead.id, { next_followup_at: tomorrow10, updated_at: db.nowIso() });
+      await db.insert('remarks', {
+        lead_id: lead.id, user_id: me.id,
+        remark: '⚠ Missed inbound call · auto-scheduled callback for tomorrow 10 AM',
+        status_id: ''
+      });
+      // Optional: fire the missed-call WhatsApp template via the existing
+      // automation engine. Only if a 'missed_call_followup' template
+      // exists in wa_templates. Silent fail otherwise.
+      try {
+        const tpl = await db.findOneBy('wa_templates', 'name', 'missed_call_followup');
+        if (tpl) {
+          const wb = require('./whatsbot');
+          await wb._sendTemplate({
+            to: lead.whatsapp || lead.phone,
+            templateName: tpl.name,
+            language: tpl.language || 'en_US',
+            variables: [{ value: (lead.name || '').split(' ')[0] || 'there' }],
+            leadId: lead.id, userId: me.id
+          });
+        }
+      } catch (_) {}
+    } catch (e) { console.warn('[caller-id] missed-call followup failed:', e.message); }
+  }
+
+  // Always log the call_event row — gives reports the complete picture
+  await db.insert('call_events', {
+    lead_id: lead ? lead.id : (createdLeadId || null),
+    user_id: me.id,
+    phone: p.phone,
+    direction,
+    event,
+    duration_s: duration,
+    recording_id: null,
+    created_at: db.nowIso()
+  });
+
+  return {
+    ok: true,
+    lead_id: lead ? lead.id : (createdLeadId || null),
+    auto_created: !!createdLeadId,
+    followup_scheduled: !!createdFollowupId
+  };
+}
+
 module.exports = {
   api_call_logEvent,
   api_call_hasRecentEvent,
+  api_call_lookup,
+  api_call_handleEnded,
   api_leads_recordings,
   api_call_history,
   api_my_recordings,
