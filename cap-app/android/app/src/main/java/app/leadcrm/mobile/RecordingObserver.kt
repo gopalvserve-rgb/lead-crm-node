@@ -87,7 +87,7 @@ object RecordingObserver {
         data.put("ts", System.currentTimeMillis())
         // Fan out to JS, which has the rep's auth token + most-recent-call
         // metadata to associate the file with the right lead.
-        CallerIdPlugin.instance?.notifyListeners("recordingAvailable", data)
+        CallerIdPlugin.instance?.fire("recordingAvailable", data)
     }
 
     private fun isAudioFile(name: String): Boolean {

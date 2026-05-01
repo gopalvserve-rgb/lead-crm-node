@@ -65,6 +65,13 @@ class CallerIdPlugin : Plugin() {
         ensureNotificationChannel()
     }
 
+    // Public wrapper so sibling classes (RecordingObserver,
+    // PhoneStateReceiver) can fire JS events. notifyListeners is
+    // protected on Plugin so we have to expose it explicitly.
+    fun fire(event: String, data: JSObject) {
+        notifyListeners(event, data)
+    }
+
     @PluginMethod
     fun start(call: PluginCall) {
         val needed = mutableListOf<String>()
@@ -92,7 +99,7 @@ class CallerIdPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    @com.getcapacitor.PermissionCallback
+    @com.getcapacitor.annotation.PermissionCallback
     private fun permissionCallback(call: PluginCall) {
         val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
         if (granted) beginListening()
