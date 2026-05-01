@@ -61,14 +61,22 @@ jobs:
           mkdir -p cap-app/android/app
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > cap-app/android/app/release.keystore
 
+      - name: Configure release-signing.properties
+        run: |
+          # The committed build.gradle reads signing config from this file.
+          # Overwrite it with the CI-decoded keystore + secret passwords so
+          # the local sandbox path that's checked in does not leak into CI.
+          cat > cap-app/android/app/release-signing.properties <<EOF
+          storeFile=release.keystore
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=android
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+
       - name: Gradle assembleRelease (signed)
         working-directory: cap-app/android
         run: |
-          ./gradlew assembleRelease --no-daemon \
-            -PstoreFile=$(pwd)/app/release.keystore \
-            -PstorePassword='${{ secrets.ANDROID_KEYSTORE_PASSWORD }}' \
-            -PkeyAlias=android \
-            -PkeyPassword='${{ secrets.ANDROID_KEY_PASSWORD }}'
+          ./gradlew assembleRelease --no-daemon
 
       - name: Locate APK
         id: locate
