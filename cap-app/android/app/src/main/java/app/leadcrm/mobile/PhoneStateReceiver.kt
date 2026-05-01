@@ -7,61 +7,76 @@ import android.telephony.TelephonyManager
 import android.util.Log
 
 /**
- * Fires when a call state changes:
- *   - RINGING      -> incoming call, unknown -> prompt "Save as lead?"
- *   - OFFHOOK      -> call answered
- *   - IDLE         -> call ended -> prompt after-call modal
+ * Catches the phone-state changes Android broadcasts to all eligible
+ * receivers. Forwards them to CallerIdPlugin which bridges to JS.
  *
- * Broadcasts a local Intent the MainActivity picks up, then forwards to the
- * webview via JavaScript so the CRM UI can react.
+ * State machine:
+ *   IDLE → RINGING        : an inbound call started
+ *   RINGING → OFFHOOK     : the rep answered (call connected)
+ *   RINGING → IDLE        : the rep didn't answer = MISSED CALL
+ *   OFFHOOK → IDLE        : the call ended (we know duration from this)
+ *   IDLE → OFFHOOK        : an outbound dial started (no number in this
+ *                           broadcast — captured separately via
+ *                           NEW_OUTGOING_CALL action)
+ *
+ * NEW_OUTGOING_CALL is deprecated on API 29+ but the kernel still
+ * delivers it on all current devices we care about. If Google ever
+ * actually removes it, we fall back to InCallService.
  */
 class PhoneStateReceiver : BroadcastReceiver() {
+
     companion object {
-        private const val TAG = "LeadCRM/PhoneState"
-        var lastNumber: String? = null
-        var lastState: String = TelephonyManager.EXTRA_STATE_IDLE
+        private const val TAG = "PhoneStateReceiver"
+        private var lastState: String = TelephonyManager.EXTRA_STATE_IDLE
+        private var lastNumber: String = ""
+        private var ringStartMs: Long = 0
+        private var offhookStartMs: Long = 0
     }
 
-    override fun onReceive(context: Context, intent: Intent) {
-        val action = intent.action
-        Log.d(TAG, "onReceive action=$action")
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val action = intent.action ?: return
 
-        if (action == Intent.ACTION_NEW_OUTGOING_CALL) {
-            val number = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER)
-            lastNumber = number
-            broadcast(context, "outgoing_call", number ?: "")
+        if (action == "android.intent.action.NEW_OUTGOING_CALL") {
+            // Outbound dial — capture the dialled number for later
+            val n = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: ""
+            if (n.isNotEmpty()) lastNumber = n
             return
         }
 
-        if (action == TelephonyManager.ACTION_PHONE_STATE_CHANGED) {
-            val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
-            val incoming = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+        if (action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
 
-            when (state) {
-                TelephonyManager.EXTRA_STATE_RINGING -> {
-                    if (!incoming.isNullOrEmpty()) {
-                        lastNumber = incoming
-                        broadcast(context, "incoming_ringing", incoming)
-                    }
-                }
-                TelephonyManager.EXTRA_STATE_OFFHOOK -> {
-                    broadcast(context, "call_answered", lastNumber ?: "")
-                }
-                TelephonyManager.EXTRA_STATE_IDLE -> {
-                    if (lastState != TelephonyManager.EXTRA_STATE_IDLE) {
-                        broadcast(context, "call_ended", lastNumber ?: "")
-                    }
+        val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE) ?: return
+        val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER) ?: lastNumber
+        val now = System.currentTimeMillis()
+
+        when (state) {
+            TelephonyManager.EXTRA_STATE_RINGING -> {
+                ringStartMs = now
+                lastNumber = number
+                if (number.isNotEmpty()) {
+                    Log.i(TAG, "RINGING from $number")
+                    CallerIdPlugin.instance?.emitRinging(number)
                 }
             }
-            lastState = state
+            TelephonyManager.EXTRA_STATE_OFFHOOK -> {
+                offhookStartMs = now
+                // No emit — the JS layer will still see the previous
+                // 'callRinging' event. We surface duration on IDLE.
+            }
+            TelephonyManager.EXTRA_STATE_IDLE -> {
+                if (lastState == TelephonyManager.EXTRA_STATE_RINGING) {
+                    // RINGING → IDLE without OFFHOOK = missed call
+                    Log.i(TAG, "MISSED call from $lastNumber")
+                    CallerIdPlugin.instance?.emitEnded(lastNumber, 0, missed = true)
+                } else if (lastState == TelephonyManager.EXTRA_STATE_OFFHOOK) {
+                    val dur = (now - offhookStartMs) / 1000
+                    Log.i(TAG, "ENDED call with $lastNumber after ${dur}s")
+                    CallerIdPlugin.instance?.emitEnded(lastNumber, dur, missed = false)
+                }
+                ringStartMs = 0
+                offhookStartMs = 0
+            }
         }
-    }
-
-    private fun broadcast(ctx: Context, event: String, number: String) {
-        val local = Intent("app.leadcrm.mobile.CALL_EVENT")
-        local.putExtra("event", event)
-        local.putExtra("number", number)
-        ctx.sendBroadcast(local)
-        Log.d(TAG, "local broadcast: $event for $number")
+        lastState = state
     }
 }
