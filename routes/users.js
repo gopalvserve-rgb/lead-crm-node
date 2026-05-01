@@ -15,7 +15,9 @@ async function api_users_list(token) {
       parent_name: byId[Number(u.parent_id)]?.name || '',
       department: u.department, monthly_salary: u.monthly_salary,
       joining_date: u.joining_date, photo_url: u.photo_url,
-      is_active: u.is_active, created_at: u.created_at
+      is_active: u.is_active, created_at: u.created_at,
+      daily_lead_cap:   Number(u.daily_lead_cap)   || 0,
+      monthly_lead_cap: Number(u.monthly_lead_cap) || 0
     }));
 }
 
