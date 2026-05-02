@@ -105,10 +105,53 @@ async function api_projectStages_advanceLead(token, leadId, notes) {
   return api_projectStages_setForLead(token, leadId, nextStage.id, notes);
 }
 
+/**
+ * Board: every lead currently mid-delivery, grouped by stage.
+ * Surfaces stalled leads (sat at a stage longer than expected_days).
+ */
+async function api_projectStages_board(token) {
+  const me = await authUser(token);
+  const visible = (await require('../utils/auth').getVisibleUserIds(me)) || [];
+  const stages = (await db.getAll('project_stages'))
+    .filter(s => Number(s.is_active) === 1)
+    .sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
+  const leads = (await db.getAll('leads')).filter(l => l.project_stage_id);
+  const users = await db.getAll('users');
+  const usersById = {};
+  users.forEach(u => { usersById[Number(u.id)] = u; });
+  const filtered = leads.filter(l => {
+    if (me.role === 'admin' || me.role === 'manager') return true;
+    return visible.includes(Number(l.assigned_to));
+  });
+  const now = Date.now();
+  const byStage = {};
+  stages.forEach(s => { byStage[s.id] = { stage: s, leads: [] }; });
+  filtered.forEach(l => {
+    const sid = Number(l.project_stage_id);
+    if (!byStage[sid]) return;
+    const startedAt = l.project_stage_started_at ? new Date(l.project_stage_started_at).getTime() : null;
+    const days = startedAt ? Math.floor((now - startedAt) / (1000 * 60 * 60 * 24)) : null;
+    const stalled = days != null && days > Number(byStage[sid].stage.expected_days || 7);
+    byStage[sid].leads.push({
+      id: l.id,
+      name: l.name,
+      phone: l.phone,
+      assigned_to: l.assigned_to,
+      assigned_name: l.assigned_to ? (usersById[Number(l.assigned_to)]?.name || '') : '',
+      value: Number(l.value) || 0,
+      project_stage_started_at: l.project_stage_started_at,
+      days_at_stage: days,
+      stalled
+    });
+  });
+  return { stages, board: stages.map(s => byStage[s.id]) };
+}
+
 module.exports = {
   api_projectStages_list,
   api_projectStages_save,
   api_projectStages_delete,
   api_projectStages_setForLead,
-  api_projectStages_advanceLead
+  api_projectStages_advanceLead,
+  api_projectStages_board
 };

@@ -514,6 +514,7 @@ const NAV = [
   { id: 'calendar',   label: 'Calendar',     icon: '📅' },
   { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
   { id: 'inventory',  label: 'Inventory',    icon: '📦' },
+  { id: 'projects',   label: 'Projects',     icon: '🚚' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
@@ -6654,6 +6655,75 @@ function openInventoryEditModal(r, onSaved) {
   ));
   document.body.appendChild(modal);
 }
+
+/* ---------------- Projects (post-sale stage board) ---------------- */
+VIEWS.projects = async (view) => {
+  view.innerHTML = '';
+  view.appendChild(h('div', { class: 'card', style: { padding: '1rem', display: 'flex', alignItems: 'center', gap: '.75rem', flexWrap: 'wrap', marginBottom: '1rem' } },
+    h('h3', { style: { margin: 0, flex: 1 } }, '🚚 Projects in delivery'),
+    h('span', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Every lead that has entered the post-sale stage tracker, grouped by stage. Stalled cards are flagged.'),
+    ['admin'].includes(CRM.user.role)
+      ? h('a', { class: 'btn', href: '#/admin', onclick: () => setTimeout(() => showAdminTab('projstages'), 100) }, '⚙ Edit stages')
+      : null
+  ));
+
+  const listEl = h('div', { id: 'proj-board' }, h('div', { class: 'loading' }, 'Loading…'));
+  view.appendChild(listEl);
+
+  let board;
+  try { board = await api('api_projectStages_board'); }
+  catch (e) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+    return;
+  }
+
+  if (!board.stages.length) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('p', { class: 'muted' },
+      'No stages defined yet. Admin: head to Settings → 🚚 Project stages to create your delivery workflow.'));
+    return;
+  }
+
+  const totalLeads = board.board.reduce((n, col) => n + col.leads.length, 0);
+  if (!totalLeads) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('p', { class: 'muted' },
+      'No leads are in delivery yet. Open a won/closed lead → "🚚 Post-sale delivery" → Start delivery tracker.'));
+    return;
+  }
+
+  const wrap = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '.75rem' } });
+  board.board.forEach(col => {
+    const stalledCount = col.leads.filter(l => l.stalled).length;
+    const head = h('div', { style: { display: 'flex', alignItems: 'center', gap: '.4rem', padding: '.5rem .75rem', background: '#f3f4f6', borderRadius: '6px 6px 0 0', borderBottom: '2px solid #3b82f6' } },
+      h('span', { style: { fontWeight: 600, flex: 1 } }, col.stage.name),
+      h('span', { class: 'tag', style: { background: '#dbeafe', color: '#1e40af' } }, col.leads.length),
+      stalledCount ? h('span', { class: 'tag', style: { background: '#fef2f2', color: '#991b1b' }, title: stalledCount + ' lead(s) stuck longer than expected' }, '⚠ ' + stalledCount) : null
+    );
+    const colWrap = h('div', { class: 'card', style: { padding: 0, display: 'flex', flexDirection: 'column', gap: 0 } });
+    colWrap.appendChild(head);
+    if (col.leads.length === 0) {
+      colWrap.appendChild(h('p', { class: 'muted', style: { padding: '.75rem', margin: 0, fontSize: '.85rem' } }, 'No leads here.'));
+    }
+    col.leads.forEach(l => {
+      colWrap.appendChild(h('div', {
+        class: 'card', style: { margin: '.4rem .5rem', padding: '.6rem .75rem', cursor: 'pointer', borderLeft: l.stalled ? '3px solid #ef4444' : '3px solid #e5e7eb' },
+        onclick: () => openLeadModal(l.id)
+      },
+        h('div', { style: { fontWeight: 600 } }, l.name),
+        l.value ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '₹ ' + Number(l.value).toLocaleString('en-IN')) : null,
+        l.assigned_name ? h('div', { class: 'muted', style: { fontSize: '.78rem' } }, '👤 ' + l.assigned_name) : null,
+        l.days_at_stage != null ? h('div', { class: 'muted', style: { fontSize: '.78rem', color: l.stalled ? '#dc2626' : '#6b7280' } },
+          '⏱ ' + l.days_at_stage + 'd' + (l.stalled ? ' · STALLED (>' + col.stage.expected_days + 'd)' : '')) : null
+      ));
+    });
+    wrap.appendChild(colWrap);
+  });
+  listEl.innerHTML = '';
+  listEl.appendChild(wrap);
+};
 
 VIEWS.targets = async (view) => {
   const isAdmin = ['admin', 'manager'].includes(CRM.user.role);

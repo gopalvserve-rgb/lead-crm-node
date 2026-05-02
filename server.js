@@ -310,7 +310,11 @@ app.get('/api/sample.csv', async (req, res) => {
     'value', 'currency', 'qualified', 'tags',
     // 5. Activity
     'next_followup_at', 'notes',
-    // 6. Marketing attribution (Google Ads / UTM)
+    // 6. Migration timestamps — accepted only when imported by an admin.
+    //    Use ISO 8601 (2024-03-15 14:30) or any Date.parse'able string.
+    //    Empty values fall back to "now".
+    'created_at', 'last_status_change_at',
+    // 7. Marketing attribution (Google Ads / UTM)
     'gclid', 'gad_campaignid',
     'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'
   ];
@@ -324,6 +328,7 @@ app.get('/api/sample.csv', async (req, res) => {
       address: '', city: '', state: '', pincode: '', country: '', company: '',
       value: '', currency: '', qualified: '', tags: '',
       next_followup_at: '', notes: '',
+      created_at: '', last_status_change_at: '',
       gclid: '', gad_campaignid: '',
       utm_source: '', utm_medium: '', utm_campaign: '', utm_term: '', utm_content: ''
     };
@@ -346,6 +351,11 @@ app.get('/api/sample.csv', async (req, res) => {
       value: '50000', currency: 'INR', qualified: '1',
       tags: 'hot,vip',
       next_followup_at: '2026-05-01 10:00',
+      // Migration columns: when importing from another CRM, fill these
+      // so the lead's age + status TAT match the source system. Leave
+      // blank for new leads — defaults to "now".
+      created_at: '2025-12-15 09:30',
+      last_status_change_at: '2026-04-22 11:45',
       notes: 'Demo requested — interested in premium tier'
     }),
     sampleRow({

@@ -194,6 +194,33 @@ async function _junkStatusId() {
  *
  * Pass an empty/falsy raw to fall back to the default "New" status.
  */
+/**
+ * Parse a date string from a CSV cell into ISO. Accepts ISO 8601,
+ * "YYYY-MM-DD HH:MM", "DD/MM/YYYY", and several common variants.
+ * Returns the original input if it's already a Date or if parsing
+ * fails (so the DB layer can decide). Returns "" for blank.
+ */
+function _parseDate(raw) {
+  if (raw == null || raw === '') return '';
+  if (raw instanceof Date && !isNaN(raw)) return raw.toISOString();
+  const s = String(raw).trim();
+  if (!s) return '';
+  // Already ISO-ish
+  let d = new Date(s);
+  if (!isNaN(d)) return d.toISOString();
+  // DD/MM/YYYY or DD-MM-YYYY
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m) {
+    const [, dd, mm, yyyy, hh, mi, ss] = m;
+    const year = yyyy.length === 2 ? '20' + yyyy : yyyy;
+    d = new Date(`${year}-${mm.padStart(2,'0')}-${dd.padStart(2,'0')}T${(hh||'00').padStart(2,'0')}:${mi||'00'}:${ss||'00'}`);
+    if (!isNaN(d)) return d.toISOString();
+  }
+  // Last resort — return input so the DB rejects it loudly rather than
+  // silently corrupting the row.
+  return s;
+}
+
 async function _resolveStatusIdByName(raw) {
   const name = String(raw || '').trim();
   if (!name) return await _newStatusId();
@@ -339,7 +366,25 @@ async function api_leads_get(token, id) {
 
 async function api_leads_create(token, payload) {
   const me = await authUser(token);
-  const p = payload || {};
+  const p = Object.assign({}, payload || {});
+  // CSV-friendly aliasing — accept common header spellings for the
+  // migration timestamp columns. Lookup is case-insensitive across the
+  // raw payload keys; the first match wins. Empty values are ignored
+  // so a blank cell falls back to the default ("now").
+  if (!p.created_at) {
+    for (const k of Object.keys(p)) {
+      if (/^(lead_?)?created[_\s]?(at|date|on)$/i.test(k.replace(/[^a-z_]/gi, ''))) {
+        if (p[k] && !p.created_at) p.created_at = p[k];
+      }
+    }
+  }
+  if (!p.last_status_change_at) {
+    for (const k of Object.keys(p)) {
+      if (/^(last[_\s]?)?status[_\s]?(change|changed|update|updated)[_\s]?(at|date|on)?$/i.test(k.replace(/[^a-z_]/gi, ''))) {
+        if (p[k] && !p.last_status_change_at) p.last_status_change_at = p[k];
+      }
+    }
+  }
   if (!p.name) throw new Error('name required');
 
   // Mobile number is required — leads without a contact phone are essentially
@@ -489,7 +534,12 @@ async function api_leads_create(token, payload) {
     utm_term:       p.utm_term || '',
     utm_content:    p.utm_content || '',
     next_followup_at: p.next_followup_at || '',
-    last_status_change_at: db.nowIso(),
+    // Migration support — admins can override last_status_change_at when
+    // importing leads from another CRM so TAT calculations reflect the
+    // source system. Non-admins (or empty values) get "now".
+    last_status_change_at: (me.role === 'admin' && p.last_status_change_at)
+      ? _parseDate(p.last_status_change_at)
+      : db.nowIso(),
     created_by: me.id,
     // Qualified flag — the form's checkbox sends 0/1; previously dropped
     // by the create path so the lead saved as "not qualified" even if the
@@ -522,6 +572,14 @@ async function api_leads_create(token, payload) {
   // Block a rep from scheduling two follow-ups at the same minute.
   if (base.next_followup_at) {
     await _assertFollowupSlotFree(me, base.assigned_to || me.id, base.next_followup_at, null);
+  }
+
+  // Migration: admins can backdate created_at when importing from
+  // another CRM. The DB column has DEFAULT NOW(), so leaving the key
+  // off the insert keeps that behaviour for everyone else.
+  if (me.role === 'admin' && p.created_at) {
+    const parsed = _parseDate(p.created_at);
+    if (parsed) base.created_at = parsed;
   }
 
   const id = await db.insert('leads', base);
