@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -45,7 +46,16 @@ import com.getcapacitor.annotation.Permission
     permissions = [
         Permission(strings = [Manifest.permission.READ_PHONE_STATE], alias = "phoneState"),
         Permission(strings = [Manifest.permission.READ_CALL_LOG],   alias = "callLog"),
-        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications")
+        Permission(strings = [Manifest.permission.POST_NOTIFICATIONS], alias = "notifications"),
+        // Recording sync — needs storage perms. Android 13+ uses
+        // READ_MEDIA_AUDIO; older versions use READ_EXTERNAL_STORAGE.
+        Permission(
+            strings = [
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+            ],
+            alias = "mediaAudio"
+        )
     ]
 )
 class CallerIdPlugin : Plugin() {
@@ -65,6 +75,13 @@ class CallerIdPlugin : Plugin() {
         ensureNotificationChannel()
     }
 
+    // Public wrapper so sibling classes (RecordingObserver,
+    // PhoneStateReceiver) can fire JS events. notifyListeners is
+    // protected on Plugin so we have to expose it explicitly.
+    fun fire(event: String, data: JSObject) {
+        notifyListeners(event, data)
+    }
+
     @PluginMethod
     fun start(call: PluginCall) {
         val needed = mutableListOf<String>()
@@ -76,12 +93,24 @@ class CallerIdPlugin : Plugin() {
             ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             needed.add("notifications")
         }
+        // Recording observer needs audio-file read access. On Android 13+
+        // ask for READ_MEDIA_AUDIO; older versions use READ_EXTERNAL_STORAGE.
+        val storagePerm = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_AUDIO
+        else
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        if (ContextCompat.checkSelfPermission(ctx, storagePerm) != PackageManager.PERMISSION_GRANTED) {
+            needed.add("mediaAudio")
+        }
         if (needed.isNotEmpty()) {
             requestPermissionForAliases(needed.toTypedArray(), call, "permissionCallback")
             return
         }
         beginListening()
         val ret = JSObject(); ret.put("ok", true); ret.put("listening", true)
+        ret.put("phoneState", true)
+        ret.put("notifications", true)
+        ret.put("mediaAudio", true)
         call.resolve(ret)
     }
 
@@ -92,11 +121,25 @@ class CallerIdPlugin : Plugin() {
         call.resolve(ret)
     }
 
-    @com.getcapacitor.PermissionCallback
+    @com.getcapacitor.annotation.PermissionCallback
     private fun permissionCallback(call: PluginCall) {
-        val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
-        if (granted) beginListening()
-        val ret = JSObject(); ret.put("ok", granted); ret.put("listening", granted)
+        val ctx = context
+        val phoneOk = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        val notifOk = if (Build.VERSION.SDK_INT >= 33)
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        else true
+        val storagePerm = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_AUDIO
+        else
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        val storageOk = ContextCompat.checkSelfPermission(ctx, storagePerm) == PackageManager.PERMISSION_GRANTED
+        if (phoneOk) beginListening()
+        val ret = JSObject()
+        ret.put("ok", phoneOk)
+        ret.put("listening", phoneOk)
+        ret.put("phone", phoneOk)
+        ret.put("notifications", notifOk)
+        ret.put("storage", storageOk)
         call.resolve(ret)
     }
 
@@ -136,6 +179,51 @@ class CallerIdPlugin : Plugin() {
         val deeplink = call.getString("deeplink") ?: "/"
         NotificationHelper.showRich(context, title, body, deeplink)
         call.resolve()
+    }
+
+    /**
+     * Open the system "App info" screen for our package so the user can
+     * grant Phone / Notifications / Storage permissions in one tap. Used
+     * by the dashboard's "Caller ID failed → Open Settings" banner so the
+     * rep doesn't have to dig through Android Settings → Apps manually.
+     */
+    @PluginMethod
+    fun openAppSettings(call: PluginCall) {
+        try {
+            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:" + context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            call.resolve()
+        } catch (e: Exception) {
+            call.reject("Could not open settings: " + e.message)
+        }
+    }
+
+    /**
+     * Lightweight permission probe — JS calls this to decide whether to
+     * show the "missing permission" banner without re-triggering the
+     * permission dialogs.
+     */
+    @PluginMethod
+    fun checkPermissions(call: PluginCall) {
+        val ctx = context
+        val phoneOk = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
+        val notifOk = if (Build.VERSION.SDK_INT >= 33)
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        else true
+        val storagePerm = if (Build.VERSION.SDK_INT >= 33)
+            Manifest.permission.READ_MEDIA_AUDIO
+        else
+            Manifest.permission.READ_EXTERNAL_STORAGE
+        val storageOk = ContextCompat.checkSelfPermission(ctx, storagePerm) == PackageManager.PERMISSION_GRANTED
+        val ret = JSObject()
+        ret.put("phone", phoneOk)
+        ret.put("notifications", notifOk)
+        ret.put("storage", storageOk)
+        ret.put("ok", phoneOk && notifOk && storageOk)
+        call.resolve(ret)
     }
 
     private fun beginListening() {
