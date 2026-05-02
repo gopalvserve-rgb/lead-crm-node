@@ -23,7 +23,7 @@ import android.webkit.WebView;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.documentfile.provider.DocumentFile;
+// (DocumentFile import removed — we now use ContentResolver/DocumentsContract directly)
 
 import com.getcapacitor.BridgeActivity;
 
@@ -238,45 +238,68 @@ public class MainActivity extends BridgeActivity {
         boolean isDir;
     }
 
+    /** Resolve the document id of `parentDocUri`, or fall back to the tree's
+     *  root id. Returns null if neither can be derived (the caller treats
+     *  this as "list nothing"). */
+    private String resolveDocId(Uri parentDocUri, Uri tree) {
+        try {
+            return DocumentsContract.getDocumentId(parentDocUri);
+        } catch (Exception ignored) { }
+        try {
+            return DocumentsContract.getTreeDocumentId(tree);
+        } catch (Exception ignored) { }
+        return null;
+    }
+
     /**
      * List one folder's children using ContentResolver directly. This is
      * the function the OEM-tolerant scanner is built on — DocumentFile's
      * abstraction layer drops names/timestamps on too many devices.
      */
     private java.util.List<SafEntry> safList(Uri parentDocUri, Uri tree) {
-        java.util.List<SafEntry> out = new java.util.ArrayList<>();
-        ContentResolver cr = getContentResolver();
-        String parentDocId;
+        // EVERY path through this method must return a list — a thrown
+        // exception here would propagate up through findBestSafMatchRec /
+        // listRecursiveSaf and ultimately crash the WebView process,
+        // which the user sees as "app force-closed". Wrap the whole body.
+        java.util.List<SafEntry> out = new java.util.ArrayList<SafEntry>();
         try {
-            parentDocId = DocumentsContract.getDocumentId(parentDocUri);
-        } catch (Exception e) {
-            // Tree URI was passed → derive root document id from it
-            try { parentDocId = DocumentsContract.getTreeDocumentId(tree); }
-            catch (Exception e2) { return out; }
-        }
-        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId);
-        String[] proj = new String[] {
-                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                DocumentsContract.Document.COLUMN_MIME_TYPE,
-                DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-                DocumentsContract.Document.COLUMN_SIZE
-        };
-        try (Cursor c = cr.query(children, proj, null, null, null)) {
-            if (c == null) return out;
-            while (c.moveToNext()) {
-                SafEntry e = new SafEntry();
-                String docId = c.getString(0);
-                e.uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId);
-                e.name = c.getString(1);
-                e.mime = c.getString(2);
-                e.modified = c.isNull(3) ? 0L : c.getLong(3);
-                e.size = c.isNull(4) ? 0L : c.getLong(4);
-                e.isDir = DocumentsContract.Document.MIME_TYPE_DIR.equals(e.mime);
-                out.add(e);
+            if (tree == null) return out;
+            String parentDocId = resolveDocId(parentDocUri, tree);
+            if (parentDocId == null) return out;
+            ContentResolver cr = getContentResolver();
+            Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId);
+            String[] proj = new String[] {
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+                    DocumentsContract.Document.COLUMN_SIZE
+            };
+            try (Cursor c = cr.query(children, proj, null, null, null)) {
+                if (c == null) return out;
+                while (c.moveToNext()) {
+                    try {
+                        SafEntry e = new SafEntry();
+                        String docId = c.getString(0);
+                        if (docId == null) continue;
+                        e.uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId);
+                        e.name = c.getString(1);
+                        e.mime = c.getString(2);
+                        e.modified = c.isNull(3) ? 0L : c.getLong(3);
+                        e.size = c.isNull(4) ? 0L : c.getLong(4);
+                        e.isDir = DocumentsContract.Document.MIME_TYPE_DIR.equals(e.mime);
+                        out.add(e);
+                    } catch (Throwable rowErr) {
+                        // Bad row → skip, don't kill the whole listing
+                        Log.w(TAG, "safList row failed: " + rowErr.getMessage());
+                    }
+                }
             }
-        } catch (Exception e) {
-            Log.w(TAG, "safList query failed: " + e.getMessage());
+        } catch (Throwable t) {
+            // Catch Throwable (not just Exception) so even something like
+            // an OutOfMemoryError on a giant folder doesn't take the app
+            // down — better to return empty than crash.
+            Log.w(TAG, "safList failed hard: " + t.getMessage());
         }
         return out;
     }
@@ -292,9 +315,15 @@ public class MainActivity extends BridgeActivity {
      * on every OEM we've seen).
      */
     private SafEntry findBestSafMatch(Uri tree, String tail, long sinceMs) {
-        Uri rootDoc = DocumentsContract.buildDocumentUriUsingTree(
-                tree, DocumentsContract.getTreeDocumentId(tree));
-        return findBestSafMatchRec(rootDoc, tree, tail, sinceMs, 0, null);
+        try {
+            if (tree == null) return null;
+            Uri rootDoc = DocumentsContract.buildDocumentUriUsingTree(
+                    tree, DocumentsContract.getTreeDocumentId(tree));
+            return findBestSafMatchRec(rootDoc, tree, tail, sinceMs, 0, null);
+        } catch (Throwable t) {
+            Log.w(TAG, "findBestSafMatch failed: " + t.getMessage());
+            return null;
+        }
     }
 
     private SafEntry findBestSafMatchRec(Uri parentDoc, Uri tree, String tail,
@@ -302,27 +331,32 @@ public class MainActivity extends BridgeActivity {
         if (depth > 3) return bestSoFar;
         SafEntry best = bestSoFar;
         long bestKey = best != null ? rankKey(best) : 0;
-        for (SafEntry e : safList(parentDoc, tree)) {
-            try {
-                if (e.isDir) {
-                    SafEntry sub = findBestSafMatchRec(e.uri, tree, tail, sinceMs, depth + 1, best);
-                    if (sub != null) {
-                        long k = rankKey(sub);
-                        if (k > bestKey) { best = sub; bestKey = k; }
+        try {
+            for (SafEntry e : safList(parentDoc, tree)) {
+                try {
+                    if (e == null) continue;
+                    if (e.isDir) {
+                        SafEntry sub = findBestSafMatchRec(e.uri, tree, tail, sinceMs, depth + 1, best);
+                        if (sub != null) {
+                            long k = rankKey(sub);
+                            if (k > bestKey) { best = sub; bestKey = k; }
+                        }
+                        continue;
                     }
-                    continue;
-                }
-                if (e.name == null || e.name.isEmpty()) continue;
-                if (!isAudioFile(e.name)) continue;
-                if (e.size <= 0) continue;
-                if (sinceMs > 0 && e.modified > 0 && e.modified < sinceMs) continue;
-                if (tail != null && !tail.isEmpty()) {
-                    String fileDigits = e.name.replaceAll("[^0-9]", "");
-                    if (!fileDigits.contains(tail)) continue;
-                }
-                long k = rankKey(e);
-                if (k > bestKey) { best = e; bestKey = k; }
-            } catch (Exception ignored) {}
+                    if (e.name == null || e.name.isEmpty()) continue;
+                    if (!isAudioFile(e.name)) continue;
+                    if (e.size <= 0) continue;
+                    if (sinceMs > 0 && e.modified > 0 && e.modified < sinceMs) continue;
+                    if (tail != null && !tail.isEmpty()) {
+                        String fileDigits = e.name.replaceAll("[^0-9]", "");
+                        if (!fileDigits.contains(tail)) continue;
+                    }
+                    long k = rankKey(e);
+                    if (k > bestKey) { best = e; bestKey = k; }
+                } catch (Throwable rowErr) { /* skip row */ }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "findBestSafMatchRec failed: " + t.getMessage());
         }
         return best;
     }

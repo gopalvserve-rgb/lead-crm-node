@@ -2412,6 +2412,20 @@ function openColumnChooser() {
 
 /* --- Lead modal --- */
 async function openLeadModal(id) {
+  // Error boundary — see VIEWS.leads for rationale. A render failure
+  // here used to silently kill the WebView; now it shows a tiny error
+  // toast with the message, leaving the rest of the app responsive.
+  try {
+    return await _openLeadModalImpl(id);
+  } catch (err) {
+    console.error('[openLeadModal] failed:', err);
+    if (typeof toast === 'function') {
+      toast('Could not open lead — ' + (err && err.message ? err.message : 'unknown error'), 'err');
+    }
+  }
+}
+
+async function _openLeadModalImpl(id) {
   const { statuses, sources, products, users, customFields } = CRM.cache;
   // Lazy-load the admin-managed tag library; cached for the session.
   if (!CRM.cache.tagLibrary) {
