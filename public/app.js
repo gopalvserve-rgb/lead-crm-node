@@ -9657,6 +9657,32 @@ async function openUserModal(u) {
           h('p', { class: 'muted', style: { margin: 0, fontSize: '.82rem' } },
             'Paste your Calendly (or any scheduling) URL here. The CRM uses it as a "Send meeting link" shortcut on every lead and customer.')),
         field('calendly_url', 'Calendly link', u.calendly_url, { type: 'url', placeholder: 'https://calendly.com/yourname/30min' }),
+        // Webhook URL — visible only when editing your own profile (or
+        // admin editing someone else). Read-only display + Copy + Regen.
+        (u.id && Number(u.id) === Number(CRM.user.id)) ? h('div', { class: 'f-row full' },
+          h('label', {}, 'Calendly webhook URL'),
+          h('p', { class: 'muted', style: { margin: '0 0 .4rem', fontSize: '.78rem' } },
+            'Paste this into Calendly → Account → Integrations & apps → Webhooks → "+ Webhook" → URL. Subscribe to ',
+            h('code', {}, 'invitee.created'), ' and ', h('code', {}, 'invitee.canceled'),
+            '. Every booking will then auto-create a follow-up + remark on the matching lead.'),
+          h('div', { id: 'calendly-webhook-row', style: { display: 'flex', gap: '.5rem', alignItems: 'center' } },
+            h('input', { id: 'calendly-webhook-input', type: 'text', value: 'Loading…', readonly: 'readonly', style: { flex: 1, fontFamily: 'monospace', fontSize: '.82rem' } }),
+            h('button', { type: 'button', class: 'btn sm', onclick: async () => {
+              const inp = $('#calendly-webhook-input');
+              try { await navigator.clipboard.writeText(inp.value); toast('Copied'); }
+              catch (_) { inp.select(); document.execCommand('copy'); toast('Copied'); }
+            } }, '📋 Copy'),
+            h('button', { type: 'button', class: 'btn sm danger', onclick: async () => {
+              if (!await confirmDialog('Generate a new webhook URL? The old one will stop working — you\'ll need to update it in Calendly.')) return;
+              try {
+                const r = await api('api_users_regenerateCalendlyWebhook');
+                const url = location.origin + '/hook/calendly/' + r.token;
+                $('#calendly-webhook-input').value = url;
+                toast('New URL generated — paste it back into Calendly');
+              } catch (e) { toast(e.message, 'err'); }
+            } }, '↻ Regenerate')
+          )
+        ) : null,
 
         // Personal
         section('👤 Personal'),
@@ -9734,6 +9760,14 @@ async function openUserModal(u) {
     )
   );
   document.body.appendChild(modal);
+  // Fetch and render the Calendly webhook URL (only shown when editing
+  // your own profile — see #calendly-webhook-input above).
+  if (u.id && Number(u.id) === Number(CRM.user.id)) {
+    api('api_users_calendlyWebhook').then(r => {
+      const inp = document.getElementById('calendly-webhook-input');
+      if (inp) inp.value = location.origin + '/hook/calendly/' + r.token;
+    }).catch(() => {});
+  }
 }
 
 /**

@@ -415,8 +415,138 @@ async function _createLeadFromWebhook(lead) {
   return { id, assigned_to: lead.assigned_to || null };
 }
 
+// -------------------- Calendly inbound webhook --------------------
+/**
+ * POST /hook/calendly/:token
+ *
+ * Calendly POSTs here when an invitee creates or cancels a meeting.
+ * The :token in the URL identifies the rep — each user has a unique
+ * users.calendly_webhook_token they paste into Calendly's webhook
+ * config (Integrations → Webhooks → Add).
+ *
+ * On invitee.created: find a matching lead by email/phone (preferring
+ * one assigned to this rep), then create a follow-up at the booked
+ * start_time and add a remark "📅 Meeting confirmed for ...".
+ * If no lead matches, auto-create one with source=Calendly so the
+ * booking isn't lost.
+ *
+ * On invitee.canceled: mark the most recent open follow-up done and
+ * log a cancellation remark.
+ *
+ * Always returns 200 unless the URL token is missing/wrong, so
+ * Calendly doesn't keep retrying on benign data issues. Errors are
+ * logged for admin triage.
+ */
+async function calendlyEvent(req, res) {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'missing token' });
+    const all = await db.getAll('users');
+    const rep = all.find(u => String(u.calendly_webhook_token || '') === token);
+    if (!rep) return res.status(404).json({ error: 'unknown token' });
+
+    const ev = req.body || {};
+    const kind = ev.event || (ev.payload && ev.payload.event) || '';
+    const p = ev.payload || ev;
+
+    // Calendly's body shape varies a bit by plan / API version. Be defensive.
+    const inviteeEmail = String(p.email || (p.invitee && p.invitee.email) || '').trim().toLowerCase();
+    const inviteeName  = String(p.name  || (p.invitee && p.invitee.name)  || '').trim();
+    const qa = Array.isArray(p.questions_and_answers)
+      ? p.questions_and_answers
+      : (p.invitee && Array.isArray(p.invitee.questions_and_answers) ? p.invitee.questions_and_answers : []);
+    const phoneAnswer = qa.find(q => /phone|mobile|whatsapp|number/i.test(q.question || '')) || null;
+    const inviteePhoneRaw = String((phoneAnswer && phoneAnswer.answer) || p.text_reminder_number || '').trim();
+    const inviteePhone = inviteePhoneRaw.replace(/\D/g, '');
+
+    const sched = p.scheduled_event || p.event || {};
+    const startTime = sched.start_time || p.start_time || p.start || null;
+    const eventName = sched.name || sched.event_type || 'Calendly meeting';
+
+    const leads = await db.getAll('leads');
+    const norm = (s) => String(s || '').replace(/\D/g, '');
+    let lead = null;
+    if (inviteeEmail) {
+      lead = leads.find(l => String(l.email || '').toLowerCase() === inviteeEmail && Number(l.assigned_to) === Number(rep.id))
+          || leads.find(l => String(l.email || '').toLowerCase() === inviteeEmail);
+    }
+    if (!lead && inviteePhone) {
+      lead = leads.find(l => norm(l.phone) === inviteePhone && Number(l.assigned_to) === Number(rep.id))
+          || leads.find(l => norm(l.phone).slice(-10) === inviteePhone.slice(-10) && norm(l.phone).length >= 10);
+    }
+
+    if (kind === 'invitee.created' || kind === 'invitee_created') {
+      if (!lead) {
+        const _newStatusId = await (async () => {
+          const s = await db.findOneBy('statuses', 'name', 'New');
+          return s ? s.id : null;
+        })();
+        const newLeadId = await db.insert('leads', {
+          name: inviteeName || inviteeEmail || 'Calendly booking',
+          phone: inviteePhone || '',
+          email: inviteeEmail || '',
+          source: 'Calendly',
+          source_ref: 'webhook',
+          status_id: _newStatusId,
+          assigned_to: rep.id,
+          notes: 'Auto-created from Calendly booking · ' + eventName,
+          created_by: rep.id,
+          created_at: db.nowIso(),
+          updated_at: db.nowIso(),
+          last_status_change_at: db.nowIso(),
+          next_followup_at: startTime || null
+        });
+        lead = await db.findOneBy('leads', 'id', newLeadId);
+      } else if (startTime) {
+        await db.update('leads', lead.id, {
+          next_followup_at: startTime,
+          updated_at: db.nowIso()
+        });
+      }
+      if (startTime && lead) {
+        await db.insert('followups', {
+          lead_id: lead.id, user_id: rep.id, due_at: startTime,
+          note: '📅 Calendly: ' + eventName + (inviteeName ? ' with ' + inviteeName : ''),
+          is_done: 0, created_at: db.nowIso()
+        });
+        await db.insert('remarks', {
+          lead_id: lead.id, user_id: rep.id,
+          remark: '📅 Meeting confirmed for ' + new Date(startTime).toLocaleString('en-IN') +
+                  ' · ' + eventName + ' · via Calendly',
+          status_id: ''
+        });
+      }
+      return res.json({ ok: true, lead_id: lead ? lead.id : null });
+    }
+
+    if (kind === 'invitee.canceled' || kind === 'invitee_canceled') {
+      if (!lead) return res.json({ ok: true, ignored: 'no matching lead' });
+      const fus = (await db.getAll('followups'))
+        .filter(f => Number(f.lead_id) === Number(lead.id) && Number(f.is_done) === 0)
+        .sort((a, b) => String(b.due_at).localeCompare(String(a.due_at)));
+      if (fus.length) {
+        await db.update('followups', fus[0].id, { is_done: 1, done_at: db.nowIso() });
+      }
+      await db.insert('remarks', {
+        lead_id: lead.id, user_id: rep.id,
+        remark: '❌ Calendly meeting canceled' +
+                (startTime ? ' (was scheduled for ' + new Date(startTime).toLocaleString('en-IN') + ')' : '') +
+                (p.cancellation && p.cancellation.reason ? ' · reason: ' + p.cancellation.reason : ''),
+        status_id: ''
+      });
+      return res.json({ ok: true, lead_id: lead.id, action: 'canceled' });
+    }
+
+    return res.json({ ok: true, ignored: 'unhandled event ' + kind });
+  } catch (e) {
+    console.error('[calendly] webhook error:', e.message);
+    return res.json({ ok: false, error: String(e.message || e) });
+  }
+}
+
 module.exports = {
   metaVerify, metaEvent,
   whatsappVerify, whatsappEvent,
-  websiteHook, otherHook
+  websiteHook, otherHook,
+  calendlyEvent
 };

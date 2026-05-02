@@ -822,3 +822,13 @@ CREATE TABLE IF NOT EXISTS personal_wa_templates (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_pwa_templates_owner ON personal_wa_templates(owner_id);
+
+-- ---- Calendly per-rep webhook ----------------------------------
+-- Each rep gets a unique token used in /hook/calendly/<token>. The
+-- rep sets that URL as a webhook in their own Calendly account
+-- (Integrations → Webhooks). When a prospect books, Calendly POSTs
+-- the event here, we look up the rep by token, match the invitee
+-- email/phone to one of their leads, create a follow-up at the
+-- scheduled time, and log a remark on the lead.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS calendly_webhook_token TEXT;
+CREATE INDEX IF NOT EXISTS idx_users_calendly_token ON users(calendly_webhook_token);

@@ -237,8 +237,36 @@ async function api_users_delete(token, id) {
   return { ok: true, id: Number(target.id), reassigned_to: me.id };
 }
 
+/**
+ * Get the current user's Calendly webhook URL. Generates a token
+ * lazily on first call so existing users don't need a migration.
+ */
+async function api_users_calendlyWebhook(token) {
+  const me = await authUser(token);
+  let t = me.calendly_webhook_token;
+  if (!t) {
+    const crypto = require('crypto');
+    t = 'cal_' + crypto.randomBytes(20).toString('hex');
+    await db.update('users', me.id, { calendly_webhook_token: t });
+  }
+  return { token: t };
+}
+
+/**
+ * Generate a fresh Calendly webhook token for the current user.
+ * Use this if the existing one was leaked or compromised.
+ */
+async function api_users_regenerateCalendlyWebhook(token) {
+  const me = await authUser(token);
+  const crypto = require('crypto');
+  const t = 'cal_' + crypto.randomBytes(20).toString('hex');
+  await db.update('users', me.id, { calendly_webhook_token: t });
+  return { token: t };
+}
+
 module.exports = {
   api_users_list, api_users_create, api_users_update,
   api_users_updateSelf, api_users_save, api_users_resetPassword,
-  api_users_delete
+  api_users_delete,
+  api_users_calendlyWebhook, api_users_regenerateCalendlyWebhook
 };

@@ -188,6 +188,8 @@ app.get('/hook/whatsapp_webhook',  routes.whatsbot.expressVerify);
 app.post('/hook/whatsapp_webhook', routes.whatsbot.expressEvent);
 app.post('/hook/website',  webhooks.websiteHook);
 app.post('/hook/other',    webhooks.otherHook);
+// Calendly per-rep webhook — token in URL identifies the rep.
+app.post('/hook/calendly/:token', webhooks.calendlyEvent);
 
 // Facebook OAuth callback — server-side flow that bypasses the JS SDK.
 // User clicks Connect → redirected here with code → we fetch pages → redirect back.
