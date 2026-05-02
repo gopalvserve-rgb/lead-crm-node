@@ -7,11 +7,12 @@
 // banner so we can see exactly which line failed. Without this, a fatal
 // error in any view handler just blanks the page (and on some Capacitor
 // builds bubbles up as an Android "App keeps stopping" dialog).
-window.addEventListener('error', function (ev) {
+window.__globalErrCount = 0;
+function _renderGlobalError(msg, src) {
   try {
-    var msg = (ev && ev.message) || 'Unknown JS error';
-    var src = (ev && ev.filename) ? (ev.filename + ':' + (ev.lineno || '?')) : '';
-    console.error('[global onerror]', msg, src, ev && ev.error);
+    if (!document.body) return;
+    if (window.__globalErrCount >= 5) return; // cap so a fast loop can't bloat DOM
+    window.__globalErrCount++;
     var el = document.getElementById('global-js-err');
     if (!el) {
       el = document.createElement('div');
@@ -21,12 +22,20 @@ window.addEventListener('error', function (ev) {
       var close = document.createElement('button');
       close.textContent = '✕';
       close.style.cssText = 'float:right;background:transparent;border:0;font-size:1rem;color:#7f1d1d;cursor:pointer';
-      close.onclick = function () { el.remove(); };
+      close.onclick = function () { try { el.remove(); } catch (_) {} window.__globalErrCount = 0; };
       el.appendChild(close);
     }
     var line = document.createElement('div');
     line.textContent = '⚠ ' + msg + (src ? ' @ ' + src : '');
     el.appendChild(line);
+  } catch (_) {}
+}
+window.addEventListener('error', function (ev) {
+  try {
+    var msg = (ev && ev.message) || 'Unknown JS error';
+    var src = (ev && ev.filename) ? (ev.filename + ':' + (ev.lineno || '?')) : '';
+    console.error('[global onerror]', msg, src, ev && ev.error);
+    _renderGlobalError(msg, src);
   } catch (_) {}
 });
 window.addEventListener('unhandledrejection', function (ev) {
@@ -34,8 +43,7 @@ window.addEventListener('unhandledrejection', function (ev) {
     var reason = ev && ev.reason;
     var msg = (reason && (reason.message || reason)) || 'Unhandled promise rejection';
     console.error('[unhandledrejection]', reason);
-    var fakeEvent = { message: 'Promise: ' + String(msg).slice(0, 200), filename: '', lineno: 0, error: reason };
-    window.dispatchEvent(new ErrorEvent('error', fakeEvent));
+    _renderGlobalError('Promise: ' + String(msg).slice(0, 200), '');
   } catch (_) {}
 });
 

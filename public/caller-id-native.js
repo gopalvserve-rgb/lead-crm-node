@@ -13,6 +13,12 @@
  * even on a flaky connection.
  */
 (function(){
+  // Wrap the whole thing — one bad event listener should never crash the
+  // host APK. Errors get logged to console + the global error banner.
+  try { _setup(); } catch (e) {
+    console.error('[caller-id] setup failed:', e);
+  }
+  function _setup() {
   // Skip outside Capacitor — this is loaded by every page but only
   // means anything on the native wrapper.
   const isCap = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -157,32 +163,42 @@
   });
 
   // ---- 4. Start listening once the user is logged in -----------
+  let _starting = false;       // re-entry guard
+  let _startedOnce = false;    // already listening — don't double-start
   function tryStart() {
+    if (_starting || _startedOnce) return;
     if (!_token()) {
       // Not logged in yet — wait for it
       setTimeout(tryStart, 2000);
       return;
     }
-    CallerId.start().then(r => {
-      console.log('[caller-id] started', r);
-      // r.ok=false means at least one critical permission was denied even
-      // though Capacitor resolved (e.g. user dismissed the dialog or hit
-      // "Don't ask again"). In that case fall through to the failure UI
-      // so we surface the persistent banner instead of a silent failure.
-      if (r && r.listening) {
-        if (typeof toast === 'function') {
-          toast('📞 Caller ID active — incoming calls will auto-log');
+    _starting = true;
+    try {
+      CallerId.start().then(r => {
+        _starting = false;
+        console.log('[caller-id] started', r);
+        // r.ok=false means at least one critical permission was denied
+        // even though Capacitor resolved (e.g. user dismissed the dialog
+        // or hit "Don't ask again"). In that case fall through to the
+        // failure UI so we surface the persistent banner.
+        if (r && r.listening) {
+          _startedOnce = true;
+          try { if (typeof toast === 'function') toast('📞 Caller ID active — incoming calls will auto-log'); } catch (_) {}
+          _hidePermissionBanner();
+        } else {
+          _showPermissionBanner(r || {});
         }
-        _hidePermissionBanner();
-      } else {
-        _showPermissionBanner(r || {});
-      }
-    }).catch(e => {
-      console.warn('[caller-id] start failed', e);
-      _showPermissionBanner({ error: e && e.message });
-    });
+      }).catch(e => {
+        _starting = false;
+        console.warn('[caller-id] start failed', e);
+        _showPermissionBanner({ error: e && e.message });
+      });
+    } catch (e) {
+      _starting = false;
+      console.warn('[caller-id] CallerId.start threw synchronously', e);
+    }
   }
-  tryStart();
+  setTimeout(tryStart, 1500);  // small delay so the WebView and SPA can finish booting first
 
   /**
    * Show a persistent dismissible banner at the top of the page when the
@@ -248,14 +264,17 @@
   // visible), re-probe permissions silently. If they're now granted,
   // restart listening and remove the banner without a UI flicker.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
-    if (!CallerId || typeof CallerId.permissionStatus !== 'function') return;
-    CallerId.permissionStatus().then(p => {
-      if (p && p.ok) {
-        _hidePermissionBanner();
-        tryStart();
-      }
-    }).catch(() => {});
+    try {
+      if (document.visibilityState !== 'visible') return;
+      if (_startedOnce) return;  // already listening — nothing to retry
+      if (!CallerId || typeof CallerId.permissionStatus !== 'function') return;
+      CallerId.permissionStatus().then(p => {
+        if (p && p.ok) {
+          _hidePermissionBanner();
+          tryStart();
+        }
+      }).catch(() => {});
+    } catch (_) {}
   });
 
   // ---- helpers ------------------------------------------------
@@ -279,4 +298,5 @@
     if (lc.endsWith('.ogg')) return 'audio/ogg';
     return 'application/octet-stream';
   }
+  } // _setup
 })();
