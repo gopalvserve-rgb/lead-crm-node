@@ -2633,8 +2633,37 @@ function openNextFollowupModal(row, onSuccess) {
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
   tomorrow.setHours(10, 0, 0, 0);
   const defaultDt = isoToLocalDtInput(tomorrow.toISOString());
-  const dtInput = h('input', { type: 'datetime-local', value: defaultDt });
+
+  // Status picker — lets the rep change the lead's status while resolving the
+  // follow-up. For "dead-end" statuses (Not Picked, Not Interested, Junk,
+  // Does Not Exist, Broker) we drop the next-follow-up requirement because
+  // the lead isn't progressing, so a fresh follow-up date is pointless.
+  const statuses = (CRM.cache.statuses || []);
+  const statusSel = h('select', { class: 'status-picker' },
+    h('option', { value: '' }, '— Keep current status —'),
+    ...statuses.map(s => h('option', { value: s.id }, s.name))
+  );
+
+  const dtInput  = h('input', { type: 'datetime-local', value: defaultDt });
+  const dtLabel  = h('label', {}, 'Next follow-up date & time *');
+  const dtHint   = h('p', { class: 'muted', style: { fontSize: '.78rem', margin: '.25rem 0 0' } },
+    'When should you contact this lead next?');
+
   const remarkInput = h('textarea', { rows: 3, placeholder: 'What happened on this call / contact attempt?' });
+
+  // Toggle the required indicator + hint based on the selected status.
+  function syncFollowupRequired() {
+    const opt = statusSel.options[statusSel.selectedIndex];
+    const name = (opt ? opt.textContent : '').trim();
+    const skip = _statusSkipsRequired(name);
+    dtLabel.textContent = skip ? 'Next follow-up date & time (optional)' : 'Next follow-up date & time *';
+    dtHint.textContent  = skip
+      ? 'Optional — this status closes the lead, no further follow-up needed.'
+      : 'When should you contact this lead next?';
+  }
+  statusSel.addEventListener('change', syncFollowupRequired);
+  syncFollowupRequired();
+
   m.appendChild(h('div', { class: 'modal' },
     h('div', { class: 'modal-head' },
       h('h3', {}, '⏰ Next follow-up'),
@@ -2642,29 +2671,56 @@ function openNextFollowupModal(row, onSuccess) {
     ),
     h('p', { class: 'muted', style: { marginTop: 0 } },
       `For lead: ${row.lead_name || '—'}${row.lead_phone ? ' · ' + row.lead_phone : ''}`),
+    h('div', { class: 'f-row full' }, h('label', {}, 'Update status'), statusSel),
     h('div', { class: 'f-row full' }, h('label', {}, 'Remark *'), remarkInput),
-    h('div', { class: 'f-row full' }, h('label', {}, 'Next follow-up date & time'), dtInput),
+    h('div', { class: 'f-row full' }, dtLabel, dtInput, dtHint),
     h('div', { class: 'actions', style: { marginTop: '1rem' } },
       h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
       h('button', { class: 'btn primary', onclick: async () => {
         const remark = String(remarkInput.value || '').trim();
         if (!remark) { toast('Remark is required', 'err'); remarkInput.focus(); return; }
+
+        const newStatusId = statusSel.value ? Number(statusSel.value) : null;
+        const newStatusOpt = newStatusId ? statusSel.options[statusSel.selectedIndex] : null;
+        const newStatusName = newStatusOpt ? newStatusOpt.textContent.trim() : '';
+        const skipFollowup = newStatusName ? _statusSkipsRequired(newStatusName) : false;
         const nextIso = localDtInputToIso(dtInput.value);
+
+        // Validate: for non-dead-end statuses, require a next-follow-up date.
+        // Dead-end statuses (Not Picked, Not Interested, Junk, Does Not Exist,
+        // Broker) skip this gate so the rep can close the lead in one click.
+        if (!skipFollowup && !nextIso) {
+          toast('Pick a next follow-up date & time, or set a closing status (Junk / Not Interested / etc.)', 'err');
+          dtInput.focus();
+          return;
+        }
+
         try {
-          // Add remark + set next followup. addRemark already creates a new
-          // followup row when next_followup_at is provided; we then close the
-          // current open followup so it disappears from "Overdue / Due today".
+          // 1. Update the lead's status if a new one was picked
+          if (newStatusId) {
+            try {
+              await api('api_leads_update', row.lead_id, { status_id: newStatusId });
+            } catch (e) {
+              toast('Status update failed: ' + e.message, 'err');
+              return;
+            }
+          }
+          // 2. Add the remark and (optionally) set the next followup
           await api('api_leads_addRemark', row.lead_id, {
-            remark, next_followup_at: nextIso
+            remark,
+            next_followup_at: nextIso || null
           });
+          // 3. Close the current open followup so it leaves Overdue / Due today
           if (row.id) {
             try { await api('api_followup_done', row.id); } catch (_) {}
           }
-          toast('Saved & next follow-up scheduled');
+          toast(skipFollowup
+            ? 'Lead updated · status closed'
+            : (nextIso ? 'Saved & next follow-up scheduled' : 'Saved'));
           m.remove();
           if (typeof onSuccess === 'function') onSuccess();
         } catch (e) { toast(e.message, 'err'); }
-      } }, 'Save & schedule')
+      } }, 'Save')
     )
   ));
   document.body.appendChild(m);
