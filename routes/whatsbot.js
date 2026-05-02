@@ -21,6 +21,18 @@ const { authUser } = require('../utils/auth');
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
 
+// ---------- Platform-wide Facebook credentials -----------------------
+// These are the SAME for every tenant/client on the platform — they are the
+// CRM vendor's Meta Developer App, not the client's. Clients only press
+// "Connect with Facebook" and pick their WABA / phone number; they never see
+// or input App ID / Secret / Config ID.
+//
+// Override via env vars on Railway if you ever need to rotate them without
+// a redeploy.
+const PLATFORM_FB_APP_ID     = process.env.PLATFORM_FB_APP_ID     || '965594974738358';
+const PLATFORM_FB_APP_SECRET = process.env.PLATFORM_FB_APP_SECRET || '3d04f767b437f9083ee45533e97d3c18';
+const PLATFORM_FB_CONFIG_ID  = process.env.PLATFORM_FB_CONFIG_ID  || '678267295315635';
+
 // ---------- shared helpers ----------------------------------------
 
 async function _cfg() {
@@ -113,11 +125,8 @@ async function api_wb_settings_get(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
   const cfg = await _cfg();
-  const [verifyToken, fbAppId, fbAppSecretSet, fbConfigId] = await Promise.all([
-    db.getConfig('WHATSAPP_VERIFY_TOKEN', ''),
-    db.getConfig('WB_FB_APP_ID', ''),
-    db.getConfig('WB_FB_APP_SECRET', '').then(v => !!(v && v.length)),
-    db.getConfig('WB_FB_CONFIG_ID', '')
+  const [verifyToken] = await Promise.all([
+    db.getConfig('WHATSAPP_VERIFY_TOKEN', '')
   ]);
   const baseUrl = (process.env.BASE_URL || '').replace(/\/+$/, '');
   return {
@@ -131,10 +140,13 @@ async function api_wb_settings_get(token) {
     default_user_id: cfg.defaultUser,
     default_status_id: cfg.defaultStatus,
     default_country_code: cfg.defaultCC || '91',
-    // Embedded Signup config
-    fb_app_id: fbAppId,
-    fb_app_secret_set: fbAppSecretSet,
-    fb_config_id: fbConfigId
+    // Embedded Signup — platform credentials. The App ID & Config ID are
+    // exposed because the FB JS SDK needs them in the browser to launch the
+    // dialog. The App SECRET stays on the server only.
+    fb_app_id: PLATFORM_FB_APP_ID,
+    fb_app_secret_set: true,
+    fb_config_id: PLATFORM_FB_CONFIG_ID,
+    fb_platform_managed: true
   };
 }
 
@@ -151,10 +163,8 @@ async function api_wb_settings_save(token, payload) {
   if ('default_user_id' in p)     await db.setConfig('WB_DEFAULT_USER_ID', String(p.default_user_id || ''));
   if ('default_status_id' in p)   await db.setConfig('WB_DEFAULT_STATUS_ID', String(p.default_status_id || ''));
   if ('default_country_code' in p) await db.setConfig('WB_DEFAULT_COUNTRY_CODE', String(p.default_country_code || '91').replace(/\D/g, '') || '91');
-  // Embedded Signup config — set once by the admin
-  if ('fb_app_id' in p)        await db.setConfig('WB_FB_APP_ID', String(p.fb_app_id || '').trim());
-  if ('fb_app_secret' in p && p.fb_app_secret) await db.setConfig('WB_FB_APP_SECRET', String(p.fb_app_secret).trim());
-  if ('fb_config_id' in p)     await db.setConfig('WB_FB_CONFIG_ID', String(p.fb_config_id || '').trim());
+  // NOTE: fb_app_id / fb_app_secret / fb_config_id are platform-managed
+  // constants now — silently ignored if a stale client tries to send them.
   return { ok: true };
 }
 
@@ -175,13 +185,9 @@ async function api_wb_emb_signin(token, code, phoneNumberId, wabaId) {
   if (!phoneNumberId || !wabaId) {
     throw new Error('Did not receive phone_number_id / waba_id from the dialog. Make sure your Login-for-Business config has WhatsApp asset selection enabled.');
   }
-  const [appId, appSecret] = await Promise.all([
-    db.getConfig('WB_FB_APP_ID', ''),
-    db.getConfig('WB_FB_APP_SECRET', '')
-  ]);
-  if (!appId || !appSecret) {
-    throw new Error('Set Facebook App ID + Secret in settings first.');
-  }
+  // Platform-managed FB credentials — same for every tenant.
+  const appId = PLATFORM_FB_APP_ID;
+  const appSecret = PLATFORM_FB_APP_SECRET;
 
   // Exchange code → access token
   const exchangeUrl = `${GRAPH}/oauth/access_token?client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}&code=${encodeURIComponent(code)}`;

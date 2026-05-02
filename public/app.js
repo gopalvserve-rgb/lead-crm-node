@@ -5119,67 +5119,23 @@ async function wbConnect() {
 
   if (embOn) {
     // ============ EMBEDDED SIGNIN MODE ============
-    // Card: Facebook developer account information
-    const fbCard = h('div', { class: 'card wb-fb-card' });
-    fbCard.appendChild(h('div', { class: 'wb-card-title' }, 'Facebook developer account information'));
-    const fbForm = h('form', { class: 'wb-fb-form', onsubmit: async ev => {
-      ev.preventDefault();
-      const fd = new FormData(ev.target);
-      try {
-        await api('api_wb_settings_save', {
-          fb_app_id: fd.get('fb_app_id'),
-          fb_app_secret: fd.get('fb_app_secret') || undefined,
-          fb_config_id: fd.get('fb_config_id')
-        });
-        toast('Saved'); showWbTab('connect');
-      } catch (e) { toast(e.message, 'err'); }
-    }});
-    fbForm.appendChild(h('div', { class: 'wb-row' },
-      h('label', {},
-        h('span', { class: 'help-q' }, '?'), ' Facebook App ID ',
-        h('a', { href: 'https://developers.facebook.com/apps/', target: '_blank', class: 'wb-help-link' }, 'HELP')
-      ),
-      h('input', { name: 'fb_app_id', value: s.fb_app_id || '', placeholder: 'e.g. 1234567890123456' })
+    // Platform-managed Facebook credentials — clients never see App ID,
+    // Secret or Config ID. They just click one button and pick their
+    // WABA / phone number inside Meta's dialog.
+    const introCard = h('div', { class: 'card wb-fb-card', style: { textAlign: 'center', padding: '2rem 1.5rem' } });
+    introCard.appendChild(h('h3', { style: { marginTop: 0 } }, 'Connect your WhatsApp Business account'));
+    introCard.appendChild(h('p', { class: 'muted', style: { maxWidth: '460px', margin: '.25rem auto 1.25rem' } },
+      'Click the button below to link your WhatsApp Business Account. You\'ll be asked to log into Facebook, pick the business and phone number you want to use, and Meta will send everything back to us automatically — no API keys to copy or paste.'));
+    introCard.appendChild(h('button', {
+      class: 'btn-fb-meta',
+      onclick: () => startEmbeddedSignup(s.fb_app_id, s.fb_config_id)
+    },
+      h('span', { class: 'fb-icon' }, '🅵'),
+      ' Connect with Facebook'
     ));
-    fbForm.appendChild(h('div', { class: 'wb-row' },
-      h('label', {}, 'Facebook App Secret',
-        s.fb_app_secret_set ? h('span', { class: 'muted', style: { fontSize: '.7rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null
-      ),
-      h('input', { name: 'fb_app_secret', type: 'password', autocomplete: 'new-password',
-        placeholder: s.fb_app_secret_set ? '••••••••••••••••••••••••••••••••' : 'paste from Meta App Dashboard' })
-    ));
-    fbForm.appendChild(h('div', { class: 'wb-row' },
-      h('label', {},
-        h('span', { class: 'help-q' }, '?'), ' Facebook Config ID ',
-        h('a', { href: 'https://developers.facebook.com/docs/whatsapp/embedded-signup/implementation#step-2--create-facebook-login-for-business-configuration', target: '_blank', class: 'wb-help-link' }, 'HELP')
-      ),
-      h('input', { name: 'fb_config_id', value: s.fb_config_id || '', placeholder: 'e.g. 678267295315635' })
-    ));
-    fbForm.appendChild(h('div', { class: 'wb-row' },
-      h('button', { type: 'submit', class: 'btn ok' }, 'Update Details')
-    ));
-    fbCard.appendChild(fbForm);
-    wrap.appendChild(fbCard);
-
-    // Connect with Facebook (Meta) — big blue button below the card
-    const connectWrap = h('div', { class: 'wb-connect-fb' });
-    if (fbReady) {
-      connectWrap.appendChild(h('button', {
-        class: 'btn-fb-meta',
-        onclick: () => startEmbeddedSignup(s.fb_app_id, s.fb_config_id)
-      },
-        h('span', { class: 'fb-icon' }, '🅵'),
-        ' Connect with Facebook'
-      ));
-    } else {
-      connectWrap.appendChild(h('button', { class: 'btn-fb-meta disabled', disabled: 'disabled' },
-        h('span', { class: 'fb-icon' }, '🅵'),
-        ' Connect with Facebook'
-      ));
-      connectWrap.appendChild(h('p', { class: 'muted', style: { textAlign: 'center', marginTop: '.5rem', fontSize: '.85rem' } },
-        'Fill in the Facebook App ID, Secret, and Config ID above and click Update Details first.'));
-    }
-    wrap.appendChild(connectWrap);
+    introCard.appendChild(h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '1rem', marginBottom: 0 } },
+      '🔒 You stay in control — Meta only shares the WABA and phone number you select.'));
+    wrap.appendChild(introCard);
     return wrap;
   }
 
