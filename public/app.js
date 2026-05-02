@@ -9685,6 +9685,35 @@ function buildCustomFieldForm(initial, onSave, submitLabel, onCancel) {
   return form;
 }
 async function adminRules() {
+  const wrap = h('div', {});
+
+  // ---- Auto-dial toggle (push "📞 tap to call" to assignee on new lead) ----
+  try {
+    const cfg = await api('api_admin_getConfig');
+    const autoOn = String(cfg.LEAD_AUTODIAL_ON || '1') === '1';
+    const adCard = h('div', { class: 'card', style: { marginBottom: '1rem' } });
+    adCard.appendChild(h('h4', { style: { marginTop: 0 } }, '📞 Auto-dial on new lead'));
+    adCard.appendChild(h('p', { class: 'muted' },
+      'When a new lead lands (from any source — webhook, manual entry, CSV upload), push a ',
+      h('b', {}, 'Tap to call'),
+      ' notification to the assignee\'s mobile. Tapping the notification opens the dialer with the lead\'s number pre-filled. Skipped for leads moved to Junk.'));
+    adCard.appendChild(h('label', { class: 'toggle-row', style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
+      h('input', { type: 'checkbox', checked: autoOn ? 'checked' : null,
+        onchange: async ev => {
+          try {
+            await api('api_admin_setConfig', { LEAD_AUTODIAL_ON: ev.target.checked ? '1' : '0' });
+            toast(ev.target.checked ? 'Auto-dial ON' : 'Auto-dial OFF');
+          } catch (e) {
+            toast(e.message, 'err');
+            ev.target.checked = !ev.target.checked;
+          }
+        }
+      }),
+      h('span', {}, 'Auto-dial enabled — assignee gets a tap-to-call push for every new lead')
+    ));
+    wrap.appendChild(adCard);
+  } catch (_) { /* config endpoint missing — older deploy, skip silently */ }
+
   const rules = await api('api_rules_list');
   const card = h('div', { class: 'card' }, h('h4', {}, 'Auto-assign rules'));
   card.appendChild(h('p', { class: 'muted' }, 'First matching rule (by lowest priority number) wins. Assigning multiple users enables round-robin.'));
@@ -9711,7 +9740,8 @@ async function adminRules() {
   card.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
     h('button', { class: 'btn primary', onclick: () => openRuleModal() }, '+ New rule')
   ));
-  return card;
+  wrap.appendChild(card);
+  return wrap;
 }
 function openRuleModal(existing) {
   const { users } = CRM.cache;

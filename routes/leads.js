@@ -680,6 +680,38 @@ async function api_leads_create(token, payload) {
       }
     } catch (e) { console.warn('[push] lead_assigned failed:', e.message); }
 
+    // ---- Auto-dial: send a "📞 Tap to call" push to the assignee in
+    // addition to the generic "new lead assigned" notification above.
+    // Tapping the notification opens /#/dial?phone=… on the APK which
+    // auto-fires tel: and launches the dialer with the number pre-filled.
+    // Toggle via config row LEAD_AUTODIAL_ON (default '1'/on). Skipped
+    // when the lead has no phone, no assignee, or is auto-junk.
+    try {
+      const autodialOn = await db.getConfig('LEAD_AUTODIAL_ON', '1');
+      if (String(autodialOn) === '1' && resolvedAssignee && base.phone && !_autoJunk) {
+        const push = require('./push');
+        let digits = String(base.phone).replace(/\D/g, '');
+        if (digits.length === 10 && /^[6-9]/.test(digits)) digits = '91' + digits;
+        const dial = '+' + digits;
+        await push.sendPushToUser(resolvedAssignee, {
+          title: '📞 Auto-dial: ' + (base.name || 'New lead'),
+          body:  base.phone + (base.source ? '\n' + base.source : '') + '\nTap to call now',
+          url:   '/#/dial?phone=' + encodeURIComponent(dial) + '&lead=' + id,
+          tag:   'autodial-' + id,
+          sticky: false
+        });
+        // Log a call_events row so the recording-sync pipeline (if used)
+        // has a reference point to match against. Mirrors api_call_via_mobile.
+        try {
+          await db.insert('call_events', {
+            lead_id: id, user_id: resolvedAssignee, phone: base.phone,
+            direction: 'out', event: 'autodial_requested', duration_s: 0,
+            recording_id: null, created_at: db.nowIso()
+          });
+        } catch (_) {}
+      }
+    } catch (e) { console.warn('[push] autodial failed:', e.message); }
+
     // ---- TAT — log the lead-created action and the initial stage entry ----
     try {
       const tat = require('./tat');
