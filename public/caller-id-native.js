@@ -249,8 +249,8 @@
   // restart listening and remove the banner without a UI flicker.
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    if (!CallerId || typeof CallerId.checkPermissions !== 'function') return;
-    CallerId.checkPermissions().then(p => {
+    if (!CallerId || typeof CallerId.permissionStatus !== 'function') return;
+    CallerId.permissionStatus().then(p => {
       if (p && p.ok) {
         _hidePermissionBanner();
         tryStart();

@@ -204,10 +204,11 @@ class CallerIdPlugin : Plugin() {
     /**
      * Lightweight permission probe — JS calls this to decide whether to
      * show the "missing permission" banner without re-triggering the
-     * permission dialogs.
+     * permission dialogs. Named permissionStatus (not checkPermissions)
+     * because Capacitor's base Plugin class reserves checkPermissions().
      */
     @PluginMethod
-    fun checkPermissions(call: PluginCall) {
+    fun permissionStatus(call: PluginCall) {
         val ctx = context
         val phoneOk = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED
         val notifOk = if (Build.VERSION.SDK_INT >= 33)
