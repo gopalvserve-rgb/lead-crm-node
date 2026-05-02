@@ -560,6 +560,7 @@ function renderShell() {
           <div class="topbar-right">
             <a class="btn ghost topbar-chip" href="#/newleads" title="New leads"><span>✨</span><span class="topbar-chip-label">New</span><span class="nav-count" data-count-key="new_today" hidden>0</span></a>
             <a class="btn ghost topbar-chip" href="#/overdue"  title="Overdue follow-ups"><span>⚠️</span><span class="topbar-chip-label">Overdue</span><span class="nav-count" data-count-key="overdue" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/duetoday" title="Follow-ups due today"><span>📅</span><span class="topbar-chip-label">Due today</span><span class="nav-count" data-count-key="due_today" hidden>0</span></a>
             <a class="btn ghost topbar-chip" href="#/upcoming" title="Upcoming follow-ups"><span>⏰</span><span class="topbar-chip-label">Upcoming</span><span class="nav-count" data-count-key="upcoming" hidden>0</span></a>
             <button class="btn ghost" id="btn-getapp" title="Install / Download the app"><span>📱</span><span class="topbar-getapp-text">Get app</span></button>
             <button class="btn ghost" id="btn-notif" title="Notifications">🔔<span class="badge" id="notif-count" hidden>0</span></button>
@@ -578,7 +579,7 @@ function renderShell() {
   // shortcuts (newleads / overdue / upcoming) are hidden by default
   // since they now live as chips in the topbar; admin can re-enable
   // them in Settings if they prefer the sidebar links.
-  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,upcoming,dialer')
+  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,duetoday,upcoming,dialer')
     .split(',').map(s => s.trim()).filter(Boolean);
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
@@ -8159,7 +8160,7 @@ function openProjectStageEditModal(s, onSaved) {
  */
 async function adminMenuVisibility() {
   const cfg = await api('api_admin_getConfig');
-  const hidden = new Set(String(cfg.HIDDEN_NAV_IDS || 'newleads,overdue,upcoming,dialer')
+  const hidden = new Set(String(cfg.HIDDEN_NAV_IDS || 'newleads,overdue,duetoday,upcoming,dialer')
     .split(',').map(s => s.trim()).filter(Boolean));
   const wrap = h('div', {});
   wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '🧭 Sidebar menu visibility'));
