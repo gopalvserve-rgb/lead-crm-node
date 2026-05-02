@@ -5119,6 +5119,22 @@ async function wbConnect() {
 
   if (embOn) {
     // ============ EMBEDDED SIGNIN MODE ============
+    // Already connected → don't show the Connect button again, just an
+    // unobtrusive "Connect a different account" link at the bottom.
+    if (isConnected) {
+      const reconnectWrap = h('div', { style: { textAlign: 'center', marginTop: '1rem' } });
+      reconnectWrap.appendChild(h('a', {
+        href: '#', style: { fontSize: '.85rem', color: 'var(--text-muted, #64748b)' },
+        onclick: ev => { ev.preventDefault();
+          if (confirm('Connect a different WhatsApp Business account? Current connection will be replaced.')) {
+            startEmbeddedSignup(s.fb_app_id, s.fb_config_id);
+          }
+        }
+      }, 'Connect a different WhatsApp account'));
+      wrap.appendChild(reconnectWrap);
+      return wrap;
+    }
+
     // Platform-managed Facebook credentials — clients never see App ID,
     // Secret or Config ID. They just click one button and pick their
     // WABA / phone number inside Meta's dialog.
@@ -5135,6 +5151,13 @@ async function wbConnect() {
     ));
     introCard.appendChild(h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '1rem', marginBottom: 0 } },
       '🔒 You stay in control — Meta only shares the WABA and phone number you select.'));
+    // Self-recovery: if the user already finished the dialog but the page
+    // never refreshed, this re-fetches and reloads.
+    introCard.appendChild(h('p', { style: { fontSize: '.8rem', marginTop: '.85rem', marginBottom: 0 } },
+      h('a', { href: '#', style: { color: 'var(--text-muted, #64748b)' },
+        onclick: ev => { ev.preventDefault(); location.reload(); }
+      }, 'Already finished on Facebook? Click here to refresh status'),
+    ));
     wrap.appendChild(introCard);
     return wrap;
   }
@@ -5542,7 +5565,10 @@ function startEmbeddedSignup(appId, configId) {
         if (r.templates_synced > 0) msg += ` · ${r.templates_synced} templates synced`;
         if (!r.subscribed && r.subscribe_error) msg += ` · ⚠ webhook subscribe failed: ${r.subscribe_error}`;
         toast(msg);
-        setTimeout(() => showWbTab('connect'), 500);
+        // Hard reload so the post-connect cards (banner / webhook / phones)
+        // render with a fully fresh fetch — a tab re-render alone has been
+        // observed to occasionally miss the freshly-saved config rows.
+        setTimeout(() => { location.hash = '#/whatsbot/connect'; location.reload(); }, 800);
       } catch (e) { toast(e.message, 'err'); }
     })();
   }, {
