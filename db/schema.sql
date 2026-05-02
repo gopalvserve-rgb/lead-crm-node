@@ -745,3 +745,10 @@ CREATE INDEX IF NOT EXISTS idx_monthly_targets_month ON monthly_targets(month);
 -- assignment rules, website webhook). Admin manual assigns bypass.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_lead_cap   INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_lead_cap INTEGER NOT NULL DEFAULT 0;
+
+-- ---- Calendly scheduling --------------------------------------
+-- Per-rep Calendly link: when a rep clicks "📅 Send meeting link"
+-- on a lead/customer, the CRM opens WhatsApp with this URL
+-- pre-filled. Phase 2 will add a webhook that auto-creates
+-- follow-ups when the prospect books.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS calendly_url TEXT;

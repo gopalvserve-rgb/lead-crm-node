@@ -90,7 +90,8 @@ async function api_me(token) {
     id: user.id, name: user.name, email: user.email,
     role: user.role, parent_id: user.parent_id,
     department: user.department, photo_url: user.photo_url,
-    totp_enabled: Number(user.totp_enabled) === 1
+    totp_enabled: Number(user.totp_enabled) === 1,
+    calendly_url: user.calendly_url || ''
   };
 }
 

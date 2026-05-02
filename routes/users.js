@@ -17,7 +17,8 @@ async function api_users_list(token) {
       joining_date: u.joining_date, photo_url: u.photo_url,
       is_active: u.is_active, created_at: u.created_at,
       daily_lead_cap:   Number(u.daily_lead_cap)   || 0,
-      monthly_lead_cap: Number(u.monthly_lead_cap) || 0
+      monthly_lead_cap: Number(u.monthly_lead_cap) || 0,
+      calendly_url: u.calendly_url || ''
     }));
 }
 
@@ -76,7 +77,9 @@ async function api_users_update(token, id, patch) {
    'father_name', 'personal_email', 'address', 'aadhaar_number', 'pan_number', 'last_company',
    'emergency_contact_name', 'emergency_contact_phone',
    'reference_1_name', 'reference_1_phone', 'reference_1_relation',
-   'reference_2_name', 'reference_2_phone', 'reference_2_relation'
+   'reference_2_name', 'reference_2_phone', 'reference_2_relation',
+   // Scheduling
+   'calendly_url'
   ].forEach(k => {
     if (k in p) allowed[k] = p[k];
   });
@@ -107,7 +110,7 @@ async function api_users_update(token, id, patch) {
 async function api_users_updateSelf(token, patch) {
   const me = await authUser(token);
   const allowed = {};
-  ['name', 'phone', 'photo_url'].forEach(k => {
+  ['name', 'phone', 'photo_url', 'calendly_url'].forEach(k => {
     if (k in patch) allowed[k] = patch[k];
   });
   await db.update('users', me.id, allowed);

@@ -1582,7 +1582,14 @@ function renderCell(col, l, statuses) {
         digits ? h('button', {
           class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template',
           onclick: ev => { ev.stopPropagation(); openInitiateChatModal(l); }
-        }, '🟢') : null
+        }, '🟢') : null,
+        // Calendly meeting link — opens WhatsApp with the rep's
+        // booking page pre-filled. Only shows if the rep has set
+        // a Calendly URL on their profile.
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send Calendly meeting link via WhatsApp',
+          onclick: ev => { ev.stopPropagation(); sendCalendlyLink(l); }
+        }, '📅') : null
       );
     }
     case 'email':    return h('td', {}, l.email || '');
@@ -5060,6 +5067,35 @@ async function callViaMobile(lead) {
       toast('📱 Sent to your phone — tap the notification to open the dialer.');
     }
   } catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * Send a Calendly meeting link via WhatsApp.
+ *
+ * Reads the rep's calendly_url from CRM.user (set by api_me at login).
+ * If unset, prompts the rep to paste it in their profile first. Otherwise
+ * opens wa.me with a pre-filled message including the lead's name and
+ * the booking URL — the rep just hits Send.
+ *
+ * Phase 2 will add a Calendly webhook that auto-creates a follow-up in
+ * CRM the moment the prospect picks a slot.
+ */
+function sendCalendlyLink(lead) {
+  const url = (CRM.user && CRM.user.calendly_url) || '';
+  if (!url) {
+    toast('Set your Calendly link in My Profile (top-right avatar → Edit profile) first.', 'warn');
+    return;
+  }
+  const phone = String(lead?.phone || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  const dial = phone.length === 10 && /^[6-9]/.test(phone) ? '91' + phone : phone;
+  const name = (lead?.name || 'there').split(/\s+/)[0]; // first name only
+  const me = (CRM.user && CRM.user.name) ? (' — ' + CRM.user.name) : '';
+  const text = `Hi ${name}, please pick a time that works for a quick call: ${url}${me}`;
+  const waUrl = 'https://wa.me/' + dial + '?text=' + encodeURIComponent(text);
+  // Best-effort: log a remark so the team knows a meeting link went out.
+  try { api('api_leads_addRemark', lead.id, { remark: '📅 Calendly meeting link sent via WhatsApp' }).catch(() => {}); } catch (_) {}
+  window.open(waUrl, '_blank');
 }
 
 function openRegisterPhoneModal(phoneIdOverride) {
@@ -8871,6 +8907,15 @@ async function openUserModal(u) {
         field('daily_lead_cap',   'Daily cap (leads/day)',    u.daily_lead_cap   || 0, { type: 'number', min: 0 }),
         field('monthly_lead_cap', 'Monthly cap (leads/month)', u.monthly_lead_cap || 0, { type: 'number', min: 0 }),
 
+        // Scheduling — when set, "📅 Send meeting link" buttons on
+        // leads/customers prefill WhatsApp with this URL so prospects
+        // pick a time directly.
+        section('📅 Scheduling'),
+        h('div', { class: 'f-row full' },
+          h('p', { class: 'muted', style: { margin: 0, fontSize: '.82rem' } },
+            'Paste your Calendly (or any scheduling) URL here. The CRM uses it as a "Send meeting link" shortcut on every lead and customer.')),
+        field('calendly_url', 'Calendly link', u.calendly_url, { type: 'url', placeholder: 'https://calendly.com/yourname/30min' }),
+
         // Personal
         section('👤 Personal'),
         field('father_name', 'Father\'s name', u.father_name),
@@ -8936,7 +8981,8 @@ async function openUserModal(u) {
             reference_2_phone:       fd.get('reference_2_phone')       || '',
             reference_2_relation:    fd.get('reference_2_relation')    || '',
             daily_lead_cap:          Number(fd.get('daily_lead_cap'))   || 0,
-            monthly_lead_cap:        Number(fd.get('monthly_lead_cap')) || 0
+            monthly_lead_cap:        Number(fd.get('monthly_lead_cap')) || 0,
+            calendly_url:            fd.get('calendly_url')            || ''
           };
           if (!u.id) payload.password = fd.get('password');
           try { await api('api_users_save', payload); toast('Saved'); modal.remove(); await warmCache(); navigateTo('users'); }
