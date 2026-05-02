@@ -2369,6 +2369,26 @@ async function openLeadModal(id) {
     Number(lead.qualified) === 1 ? h('span', { class: 'qual-pill ok' }, '✓ Qualified') : null,
     h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
   ));
+
+  // Quick actions row — front-and-centre Call / personal WA / Cloud-API
+  // template / Calendly buttons so reps don't have to hunt for them in
+  // the leads table. Only shows on existing leads with a phone number.
+  if (id && lead.phone) {
+    const _digits = String(lead.phone || '').replace(/\D/g, '');
+    const _intl = _digits.length === 10 && /^[6-9]/.test(_digits) ? '91' + _digits : _digits;
+    body.appendChild(h('div', { class: 'card', style: { padding: '.6rem .8rem', margin: '0 0 .75rem', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center' } },
+      h('span', { class: 'muted', style: { fontSize: '.78rem', marginRight: '.25rem' } }, 'Quick actions:'),
+      _digits ? h('button', { type: 'button', class: 'btn sm btn-call', onclick: () => callLead(lead) }, '📞 Call') : null,
+      _digits ? h('a', {
+        class: 'btn sm', href: 'https://wa.me/' + _intl,
+        target: '_blank', rel: 'noopener', title: 'Open WhatsApp from MY number'
+      }, '💬 My WhatsApp') : null,
+      _digits ? h('button', { type: 'button', class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(lead) }, '🟢 WA Template') : null,
+      _digits ? h('button', { type: 'button', class: 'btn sm', onclick: () => sendCalendlyLink(lead) }, '📅 Send Calendly') : null,
+      lead.email ? h('a', { class: 'btn sm', href: 'mailto:' + lead.email }, '✉ Email') : null
+    ));
+  }
+
   const form = h('form', { id: 'lead-form', class: 'form-grid' });
   form.append(
     field('name', 'Name *', lead.name, { required: true }),
