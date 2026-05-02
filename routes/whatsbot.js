@@ -221,11 +221,26 @@ async function api_wb_emb_signin(token, code, phoneNumberId, wabaId) {
     templatesSynced = tr.count || 0;
   } catch (e) { templateErr = e.message; }
 
+  // Auto-register with the central forwarder on smartcrmsolution.com so it
+  // knows where to route Meta webhooks for this phone_number_id. Without
+  // this, the admin would have to manually add a row to wa_connections.json
+  // every time a client connected. Best-effort: failure is logged but
+  // doesn't break the connect flow.
+  let registerOk = false; let registerErr = '';
+  try {
+    const r = await _registerWithCentralForwarder({
+      phoneNumberId, wabaId,
+      tenantName: (await db.getConfig('COMPANY_NAME', '')) || 'Lead CRM',
+      baseUrl: (process.env.BASE_URL || '').replace(/\/+$/, '') || ''
+    });
+    registerOk = r.ok; registerErr = r.error || '';
+  } catch (e) { registerErr = e.message; }
+
   await _logActivity({
     category: 'template_sync', name: 'embedded_signup',
     response_code: 200,
     request: { phoneNumberId, wabaId },
-    response: { subscribed: subscribeOk, templatesSynced, subscribeErr, templateErr }
+    response: { subscribed: subscribeOk, templatesSynced, subscribeErr, templateErr, registerOk, registerErr }
   });
 
   return {
@@ -235,8 +250,46 @@ async function api_wb_emb_signin(token, code, phoneNumberId, wabaId) {
     subscribed: subscribeOk,
     subscribe_error: subscribeErr,
     templates_synced: templatesSynced,
-    template_error: templateErr
+    template_error: templateErr,
+    forwarder_registered: registerOk,
+    forwarder_error: registerErr
   };
+}
+
+/**
+ * POST {phone_number_id, business_account_id, tenant_name, webhook_url}
+ * to the central forwarder's registration endpoint. Skipped silently
+ * when FORWARDER_REGISTER_URL or FORWARDER_REGISTER_SECRET env vars
+ * aren't set (e.g. local dev). Used immediately after a successful
+ * embedded sign-in so the forwarder learns about the new tenant
+ * automatically.
+ */
+async function _registerWithCentralForwarder({ phoneNumberId, wabaId, tenantName, baseUrl }) {
+  const url    = process.env.FORWARDER_REGISTER_URL || '';
+  const secret = process.env.FORWARDER_REGISTER_SECRET || '';
+  if (!url) return { ok: false, error: 'FORWARDER_REGISTER_URL not configured' };
+  if (!secret) return { ok: false, error: 'FORWARDER_REGISTER_SECRET not configured' };
+  if (!baseUrl) return { ok: false, error: 'BASE_URL not configured (cannot derive webhook_url)' };
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Register-Secret': secret
+      },
+      body: JSON.stringify({
+        phone_number_id:     String(phoneNumberId),
+        business_account_id: String(wabaId),
+        tenant_name:         String(tenantName || ''),
+        webhook_url:         baseUrl + '/hook/whatsapp_webhook'
+      })
+    });
+    const txt = await r.text();
+    if (r.status >= 200 && r.status < 300) return { ok: true };
+    return { ok: false, error: 'HTTP ' + r.status + ' · ' + (txt || '').slice(0, 300) };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
 }
 
 async function api_wb_connect_verify(token) {
