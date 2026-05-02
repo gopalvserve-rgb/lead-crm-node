@@ -576,7 +576,7 @@ function renderShell() {
   // shortcuts (newleads / overdue / upcoming) are hidden by default
   // since they now live as chips in the topbar; admin can re-enable
   // them in Settings if they prefer the sidebar links.
-  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,upcoming')
+  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,upcoming,dialer')
     .split(',').map(s => s.trim()).filter(Boolean);
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
@@ -1368,6 +1368,7 @@ function renderLeadsMobile(rows) {
       h('div', { class: 'lc-actions' },
         digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
         digits ? h('button', { class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(l) }, '🟢 WA') : null,
+        digits ? h('button', { class: 'btn sm', onclick: () => sendCalendlyLink(l) }, '📅 Meet') : null,
         h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
         h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎ Edit')
       )
@@ -7492,7 +7493,7 @@ async function showAdminTab(id) {
  */
 async function adminMenuVisibility() {
   const cfg = await api('api_admin_getConfig');
-  const hidden = new Set(String(cfg.HIDDEN_NAV_IDS || 'newleads,overdue,upcoming')
+  const hidden = new Set(String(cfg.HIDDEN_NAV_IDS || 'newleads,overdue,upcoming,dialer')
     .split(',').map(s => s.trim()).filter(Boolean));
   const wrap = h('div', {});
   wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '🧭 Sidebar menu visibility'));
