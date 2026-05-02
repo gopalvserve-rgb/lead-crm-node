@@ -2412,7 +2412,19 @@ async function openLeadModal(id) {
     field('notes', 'Notes', lead.notes, { type: 'textarea', full: true })
   );
 
+  // Hide any custom field that collides with a hardcoded built-in field key —
+  // otherwise the user sees Budget / Requirement type / Requirement notes
+  // twice (once as the inventory-matching inputs above, once as the custom
+  // field they originally created in Admin). The hardcoded version wins
+  // because it's what api_inventory_match reads from.
+  const RESERVED_FIELD_KEYS = new Set([
+    'budget_max', 'requirement_type', 'requirement_notes',
+    'name', 'phone', 'email', 'city', 'notes', 'tags',
+    'status_id', 'assigned_to', 'next_followup_at', 'qualified',
+    'source_id', 'product_id'
+  ]);
   (customFields || []).forEach(cf => {
+    if (RESERVED_FIELD_KEYS.has(String(cf.key || '').toLowerCase())) return;
     const extra = lead.extra || {};
     form.appendChild(customFieldInput(cf, extra[cf.key]));
   });
