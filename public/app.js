@@ -8069,7 +8069,8 @@ VIEWS.admin = async (view) => {
     { id: 'chatperm',     label: '💬 Chat permissions' },
     { id: 'menu',         label: '🧭 Menu visibility' },
     { id: 'projstages',   label: '🚚 Project stages' },
-    { id: 'integrations', label: '🔌 Integrations' }
+    { id: 'integrations', label: '🔌 Integrations' },
+    { id: 'dangerzone',   label: '🛑 Danger zone' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -8103,7 +8104,77 @@ async function showAdminTab(id) {
     if (id === 'menu')     body.replaceChildren(await adminMenuVisibility());
     if (id === 'projstages') body.replaceChildren(await adminProjectStages());
     if (id === 'integrations') body.replaceChildren(await adminIntegrations());
+    if (id === 'dangerzone') body.replaceChildren(await adminDangerZone());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+/**
+ * Admin → Danger zone tab. Currently hosts the "Wipe HR data" tool.
+ *
+ * Lets the admin permanently delete all rows in the Leaves, Tasks,
+ * Attendance, and/or Salary tables. Lead/customer/user data is NOT
+ * touched. Requires the admin to type "WIPE-NOW" exactly into the
+ * confirmation field — anything else is rejected server-side.
+ */
+async function adminDangerZone() {
+  const wrap = h('div', {});
+  const card = h('div', { class: 'card', style: { borderLeft: '4px solid #dc2626' } });
+  card.appendChild(h('h4', { style: { marginTop: 0, color: '#dc2626' } }, '🛑 Wipe HR data'));
+  card.appendChild(h('p', { class: 'muted' },
+    'Permanently delete all rows in the selected categories. ',
+    h('b', {}, 'This cannot be undone.'),
+    ' Lead, customer, and user accounts are not touched — only HR-side data.'
+  ));
+
+  const cats = [
+    { key: 'leaves',     label: 'Leaves data',     desc: 'Every applied/approved/rejected leave record' },
+    { key: 'tasks',      label: 'Tasks data',      desc: 'All tasks created in the Tasks module' },
+    { key: 'attendance', label: 'Attendance data', desc: 'Daily check-in/check-out logs + the linked location pings' },
+    { key: 'salary',     label: 'Salary data',     desc: 'Monthly salary records (the user.monthly_salary base figure on each user is preserved)' }
+  ];
+  const checks = {};
+  cats.forEach(c => {
+    checks[c.key] = h('input', { type: 'checkbox', value: c.key });
+    card.appendChild(h('label', { style: { display: 'flex', gap: '.5rem', alignItems: 'flex-start', padding: '.4rem 0' } },
+      checks[c.key],
+      h('span', {},
+        h('b', {}, c.label),
+        h('div', { class: 'muted', style: { fontSize: '.78rem' } }, c.desc)
+      )
+    ));
+  });
+
+  const confirmInput = h('input', { type: 'text', placeholder: 'Type WIPE-NOW to confirm', autocomplete: 'off',
+    style: { fontFamily: 'monospace', letterSpacing: '.05em' } });
+  card.appendChild(h('div', { class: 'f-row full', style: { marginTop: '1rem' } },
+    h('label', {}, 'Confirmation phrase'),
+    confirmInput
+  ));
+  card.appendChild(h('div', { class: 'actions', style: { marginTop: '.5rem' } },
+    h('button', { class: 'btn danger', onclick: async () => {
+      const picked = cats.filter(c => checks[c.key].checked).map(c => c.key);
+      if (!picked.length) { toast('Pick at least one category to wipe', 'err'); return; }
+      const phrase = confirmInput.value;
+      if (phrase !== 'WIPE-NOW') {
+        toast('Type WIPE-NOW exactly to confirm — case + dash matter', 'err');
+        confirmInput.focus();
+        return;
+      }
+      if (!await confirmDialog(`Permanently delete: ${picked.join(', ')}? This cannot be undone.`)) return;
+      try {
+        const r = await api('api_admin_wipeHrData', picked, phrase);
+        const msg = Object.entries(r.deleted || {})
+          .map(([k, v]) => `${k}: ${v}`)
+          .join(' · ');
+        toast('Wiped — ' + (msg || 'done'));
+        confirmInput.value = '';
+        cats.forEach(c => { checks[c.key].checked = false; });
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '🗑️ Wipe selected data')
+  ));
+
+  wrap.appendChild(card);
+  return wrap;
 }
 
 /**

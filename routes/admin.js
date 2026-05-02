@@ -246,6 +246,76 @@ async function api_admin_testWhatsApp(token) {
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
+/**
+ * api_admin_wipeHrData — one-shot data deletion for HR-side categories.
+ * Lets the admin wipe Leaves / Tasks / Attendance / Salary data when they
+ * want a clean slate (e.g. starting a new fiscal year, decommissioning a
+ * test environment, GDPR right-to-erasure, etc.) without needing direct
+ * database access.
+ *
+ * Args:
+ *   - categories: subset of ['leaves','tasks','attendance','salary']
+ *   - confirm:    must equal 'WIPE-NOW' (typed by the admin in the UI)
+ *
+ * Returns:  { ok: true, deleted: { leaves: N, tasks: N, ... } }
+ *
+ * Behaviour notes:
+ *   - DELETE statements run inside a single transaction so a failure
+ *     anywhere rolls everything back.
+ *   - When 'attendance' is selected, location_pings is wiped first
+ *     (FK references attendance.id ON DELETE CASCADE — but we delete
+ *     explicitly so the result count is reported transparently).
+ *   - Lead data, user accounts, leads/customers, etc. are NEVER touched
+ *     by this endpoint. Only the four HR categories.
+ */
+async function api_admin_wipeHrData(token, categories, confirm) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  if (String(confirm || '').trim() !== 'WIPE-NOW') {
+    throw new Error('Confirmation phrase must be exactly: WIPE-NOW');
+  }
+  const cats = Array.isArray(categories) ? categories : [];
+  const allowed = new Set(['leaves', 'tasks', 'attendance', 'salary']);
+  const picked = cats.filter(c => allowed.has(String(c).toLowerCase()));
+  if (!picked.length) throw new Error('Pick at least one category to wipe');
+
+  const deleted = {};
+  // Run inside a transaction so partial failures don't leave half-wiped
+  // state. db.query already uses a pooled client; for transactionality
+  // we acquire one client and run BEGIN / COMMIT manually.
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const cat of picked) {
+      if (cat === 'attendance') {
+        // location_pings has a FK to attendance(id). Delete it first so
+        // the count we report is accurate; the CASCADE would handle it
+        // but explicit DELETE makes the audit trail clearer.
+        const lp = await client.query('DELETE FROM location_pings');
+        deleted.location_pings = lp.rowCount || 0;
+        const at = await client.query('DELETE FROM attendance');
+        deleted.attendance = at.rowCount || 0;
+      } else if (cat === 'leaves') {
+        const r = await client.query('DELETE FROM leaves');
+        deleted.leaves = r.rowCount || 0;
+      } else if (cat === 'tasks') {
+        const r = await client.query('DELETE FROM tasks');
+        deleted.tasks = r.rowCount || 0;
+      } else if (cat === 'salary') {
+        const r = await client.query('DELETE FROM salaries');
+        deleted.salaries = r.rowCount || 0;
+      }
+    }
+    await client.query('COMMIT');
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    throw new Error('Wipe failed: ' + e.message);
+  } finally {
+    client.release();
+  }
+  return { ok: true, deleted };
+}
+
 module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
@@ -255,5 +325,6 @@ module.exports = {
   api_admin_emailTemplatesList, api_admin_emailTemplateSave,
   api_admin_emailTestSend, api_admin_emailTriggerCron,
   api_admin_urls,
-  api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp
+  api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp,
+  api_admin_wipeHrData
 };
