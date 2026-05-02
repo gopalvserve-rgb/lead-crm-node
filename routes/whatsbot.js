@@ -1130,17 +1130,38 @@ async function expressVerify(req, res) {
 async function expressEvent(req, res) {
   res.status(200).send('ok'); // Always 200 fast — process async
   try {
-    const body = req.body || {};
+    // Be lenient about body shape — many setups put a forwarder /
+    // proxy in front of Meta's webhook (one central URL → many
+    // tenants), and the forwarder may wrap, rename, or strip the
+    // top-level `object` field. We accept any of:
+    //   { object: 'whatsapp_business_account', entry: [...] }
+    //   { entry: [...] }
+    //   { payload: { object: ..., entry: [...] } }   // wrapped
+    //   { data: { entry: [...] } }                    // wrapped
+    //   "<json string>"                              // text/plain body
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch (_) { body = {}; }
+    }
+    // Unwrap one common nesting level
+    if (!body.entry && body.payload && body.payload.entry) body = body.payload;
+    if (!body.entry && body.data && body.data.entry) body = body.data;
+
     // Always log the raw inbound payload so the user can review every webhook
-    // hit Meta sends us, regardless of whether we end up acting on it.
+    // hit, regardless of whether we end up acting on it.
     try {
       await _logActivity({
-        category: 'webhook_in', name: body.object || 'unknown',
-        response_code: 200, request: { headers: { 'user-agent': req.get('user-agent') } },
+        category: 'webhook_in', name: body.object || 'forwarded',
+        response_code: 200,
+        request: { headers: { 'user-agent': req.get('user-agent'), 'content-type': req.get('content-type') } },
         response: body
       });
     } catch (_) {}
-    if (body.object !== 'whatsapp_business_account') return;
+
+    // Process any payload that has the right SHAPE (entry[].changes[].value
+    // with messages or statuses). object is no longer a hard gate — your
+    // forwarder may strip it. The shape itself is unique to WA Cloud API.
+    if (!Array.isArray(body.entry)) return;
     for (const entry of body.entry || []) {
       for (const change of entry.changes || []) {
         const value = change.value || {};

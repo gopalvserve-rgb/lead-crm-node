@@ -71,6 +71,10 @@ Object.values(routes).forEach(module => {
 
 const app = express();
 app.use(bodyParser.json({ limit: '10mb' }));
+// Some forwarders / Postman-default-Body-raw send the WhatsApp webhook
+// body as text/plain. Catch those too — the webhook handler attempts
+// JSON.parse on string bodies. Empty content-type also lands here.
+app.use(bodyParser.text({ type: ['text/plain', 'application/octet-stream'], limit: '10mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
