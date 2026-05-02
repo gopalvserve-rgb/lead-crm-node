@@ -378,6 +378,9 @@ app.get('/config.json', async (req, res) => {
   res.json({
     company_name:     cfg.COMPANY_NAME     || process.env.COMPANY_NAME     || 'Lead CRM',
     company_logo_url: cfg.COMPANY_LOGO_URL || process.env.COMPANY_LOGO_URL || '',
+    // CSV of NAV item IDs the admin has hidden for everyone in this tenant.
+    // The frontend filters NAV by this list. Empty = show everything.
+    hidden_nav_ids:   cfg.HIDDEN_NAV_IDS   || '',
     base_url: (req.protocol + '://' + req.get('host'))
   });
 });

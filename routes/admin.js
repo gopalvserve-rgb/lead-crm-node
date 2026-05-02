@@ -19,7 +19,15 @@ const CONFIG_KEYS = [
   'DUPLICATE_POLICY', 'DUPLICATE_WINDOW_HOURS', 'DUPLICATE_MATCH_FIELDS', 'DEFAULT_LEAD_COLUMNS',
   'EMAIL_NOTIFY_ENABLED', 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD',
   'EMAIL_NOTIFY_FROM', 'EMAIL_NOTIFY_SUBJECT_PREFIX', 'FOLLOWUP_REMIND_MIN',
-  'SHOW_LEADS_HEADER'
+  // SMTP (new)
+  'SMTP_FROM', 'SMTP_ENCRYPTION', 'EMAIL_CHARSET', 'EMAIL_BCC', 'EMAIL_SIGNATURE', 'EMAIL_SUPPORT_TEXT', 'BASE_URL',
+  // Per-event notification toggles
+  'NOTIFY_NEW_LEAD', 'NOTIFY_LEAD_ASSIGNED', 'NOTIFY_NEW_DEVICE_LOGIN',
+  'NOTIFY_MORNING_FOLLOWUPS', 'NOTIFY_DAY_END',
+  'SHOW_LEADS_HEADER',
+  // CSV of NAV item IDs the admin has hidden in the sidebar for this tenant.
+  // E.g. "newleads,overdue,upcoming,whatsbot" hides those four entries.
+  'HIDDEN_NAV_IDS'
 ];
 
 const SENSITIVE_KEYS = ['META_APP_SECRET', 'META_PAGE_ACCESS_TOKEN', 'WHATSAPP_ACCESS_TOKEN', 'SMTP_PASSWORD'];
@@ -112,6 +120,74 @@ async function api_admin_clearLogo(token) {
   return { ok: true };
 }
 
+/* ---------- Email templates + test send ---------- */
+async function api_admin_emailTemplatesList(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const mailer = require('../utils/mailer');
+  const events = mailer.SUPPORTED_EVENTS;
+  const rows = await db.getAll('email_templates').catch(() => []);
+  // Ensure every supported event has a row (auto-seed on demand)
+  for (const ev of events) {
+    if (!rows.find(r => r.event_type === ev.id)) {
+      const id = await db.insert('email_templates', {
+        event_type: ev.id, name: ev.label,
+        subject: ev.default_subject, body_html: ev.default_body,
+        is_active: 1, updated_at: db.nowIso()
+      });
+      rows.push({ id, event_type: ev.id, name: ev.label,
+        subject: ev.default_subject, body_html: ev.default_body, is_active: 1 });
+    }
+  }
+  // Return ordered + decorated with metadata
+  return events.map(ev => {
+    const row = rows.find(r => r.event_type === ev.id) || {};
+    return {
+      ...ev,
+      id: row.id, subject: row.subject, body_html: row.body_html,
+      is_active: row.is_active, updated_at: row.updated_at
+    };
+  });
+}
+
+async function api_admin_emailTemplateSave(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  if (!p.event_type) throw new Error('event_type required');
+  const existing = await db.findOneBy('email_templates', 'event_type', p.event_type).catch(() => null);
+  const row = {
+    event_type: p.event_type,
+    name: p.name || p.event_type,
+    subject: p.subject || '',
+    body_html: p.body_html || '',
+    is_active: p.is_active != null ? (p.is_active ? 1 : 0) : 1,
+    updated_at: db.nowIso()
+  };
+  if (existing) { await db.update('email_templates', existing.id, row); return { ok: true, id: existing.id }; }
+  const id = await db.insert('email_templates', row);
+  return { ok: true, id };
+}
+
+async function api_admin_emailTestSend(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const to = (payload && payload.to) || me.email;
+  if (!to) throw new Error('Recipient email required');
+  const mailer = require('../utils/mailer');
+  await mailer.testSmtp(to);
+  return { ok: true, sent_to: to };
+}
+
+async function api_admin_emailTriggerCron(token, which) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const mailer = require('../utils/mailer');
+  if (which === 'morning') return await mailer.sendMorningFollowups();
+  if (which === 'day_end') return await mailer.sendDayEndReport();
+  throw new Error('Unknown cron: ' + which);
+}
+
 async function api_admin_urls(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
@@ -173,6 +249,8 @@ module.exports = {
   api_admin_setConfig, api_admin_saveConfig,
   api_admin_regenerateApiKey,
   api_admin_uploadLogo, api_admin_clearLogo,
+  api_admin_emailTemplatesList, api_admin_emailTemplateSave,
+  api_admin_emailTestSend, api_admin_emailTriggerCron,
   api_admin_urls,
   api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp
 };

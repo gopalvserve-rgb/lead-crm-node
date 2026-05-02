@@ -556,6 +556,9 @@ function renderShell() {
           <button class="btn icon topbar-mobile-menu" id="btn-more" title="Menu">☰</button>
           <h2 id="page-title">Dashboard</h2>
           <div class="topbar-right">
+            <a class="btn ghost topbar-chip" href="#/newleads" title="New leads"><span>✨</span><span class="topbar-chip-label">New</span><span class="nav-count" data-count-key="new_today" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/overdue"  title="Overdue follow-ups"><span>⚠️</span><span class="topbar-chip-label">Overdue</span><span class="nav-count" data-count-key="overdue" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/upcoming" title="Upcoming follow-ups"><span>⏰</span><span class="topbar-chip-label">Upcoming</span><span class="nav-count" data-count-key="upcoming" hidden>0</span></a>
             <button class="btn ghost" id="btn-getapp" title="Install / Download the app"><span>📱</span><span class="topbar-getapp-text">Get app</span></button>
             <button class="btn ghost" id="btn-notif" title="Notifications">🔔<span class="badge" id="notif-count" hidden>0</span></button>
           </div>
@@ -568,8 +571,16 @@ function renderShell() {
   const mobileNav = $('#bottom-nav');
   // Mobile bottom bar: 4 main + More
   const mobilePrimary = ['dashboard', 'leads', 'dialer', 'followups'];
+  // Items the admin has hidden via Settings → Menu visibility (CSV in
+  // hidden_nav_ids served by /config.json). The three quick-action
+  // shortcuts (newleads / overdue / upcoming) are hidden by default
+  // since they now live as chips in the topbar; admin can re-enable
+  // them in Settings if they prefer the sidebar links.
+  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,upcoming')
+    .split(',').map(s => s.trim()).filter(Boolean);
   NAV.forEach(item => {
     if (item.roles && !item.roles.includes(CRM.user.role)) return;
+    if (hiddenNavIds.includes(item.id)) return;
     // Hide Team chat for users whose role admin has disabled chat for.
     // CRM.access.can_chat is fetched right after login.
     if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return;
@@ -7435,7 +7446,8 @@ VIEWS.admin = async (view) => {
     { id: 'duplicates',   label: 'Duplicates' },
     { id: 'smtp',         label: 'SMTP' },
     { id: 'announce',     label: '📢 Announcements' },
-    { id: 'chatperm',     label: '💬 Chat permissions' }
+    { id: 'chatperm',     label: '💬 Chat permissions' },
+    { id: 'menu',         label: '🧭 Menu visibility' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -7466,7 +7478,57 @@ async function showAdminTab(id) {
     if (id === 'smtp')     body.replaceChildren(await adminSmtp());
     if (id === 'announce') body.replaceChildren(await adminAnnouncements());
     if (id === 'chatperm') body.replaceChildren(await adminChatPermissions());
+    if (id === 'menu')     body.replaceChildren(await adminMenuVisibility());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+/**
+ * Admin → Menu visibility tab. Lets the admin tick which sidebar items
+ * are visible for everyone in this tenant. Saves to config.HIDDEN_NAV_IDS
+ * as a CSV. The frontend reads it from /config.json on next load and
+ * filters NAV accordingly. Three quick-action items (newleads, overdue,
+ * upcoming) live as chips in the topbar regardless — hiding them just
+ * removes the duplicate sidebar entries.
+ */
+async function adminMenuVisibility() {
+  const cfg = await api('api_admin_getConfig');
+  const hidden = new Set(String(cfg.HIDDEN_NAV_IDS || 'newleads,overdue,upcoming')
+    .split(',').map(s => s.trim()).filter(Boolean));
+  const wrap = h('div', {});
+  wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '🧭 Sidebar menu visibility'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'Untick any item to hide it from every user in this organization. The three "quick action" items (New leads / Overdue / Upcoming) appear as chips in the topbar regardless and are hidden by default to keep the sidebar short.'));
+  const list = h('div', { class: 'card', style: { padding: '1rem', maxWidth: '560px' } });
+  NAV.forEach(item => {
+    const row = h('label', {
+      class: 'qual-toggle',
+      style: { display: 'flex', alignItems: 'center', padding: '.4rem 0', cursor: 'pointer' }
+    },
+      h('input', {
+        type: 'checkbox', 'data-nav-id': item.id,
+        checked: hidden.has(item.id) ? null : 'checked',
+        style: { marginRight: '.5rem' }
+      }),
+      h('span', { style: { fontSize: '1.1rem', marginRight: '.4rem' } }, item.icon || ''),
+      h('span', { style: { fontWeight: 500 } }, item.label),
+      item.roles ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' (' + item.roles.join('/') + ' only)') : null
+    );
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+  wrap.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      const newHidden = [];
+      $$('[data-nav-id]', list).forEach(cb => {
+        if (!cb.checked) newHidden.push(cb.getAttribute('data-nav-id'));
+      });
+      try {
+        await api('api_admin_setConfig', { HIDDEN_NAV_IDS: newHidden.join(',') });
+        toast('Saved — reload the page to see the change');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save')
+  ));
+  return wrap;
 }
 
 async function adminChatPermissions() {
@@ -8694,9 +8756,21 @@ function openRuleModal(existing) {
         field('value', 'Value *', r.value, { required: true }),
         field('priority', 'Priority (lower = first)', r.priority || 100, { type: 'number' }),
         h('div', { class: 'f-row full' },
-          h('label', {}, 'Assign to (hold Ctrl/Cmd to pick multiple → round-robin)'),
-          h('select', { name: 'assigned_to', multiple: true, size: Math.min(8, users.length || 4) },
-            ...users.map(u => h('option', { value: u.id, selected: assignedIds.includes(Number(u.id)) ? 'selected' : null }, `${u.name} (${u.role})`))
+          h('label', {}, 'Assign to (tick everyone you want → round-robin distributes across them)'),
+          h('div', {
+            class: 'card',
+            style: { padding: '.5rem .75rem', maxHeight: '260px', overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '.25rem' }
+          },
+            ...users.map(u => h('label', {
+              style: { display: 'flex', alignItems: 'center', gap: '.4rem', padding: '.25rem .35rem', cursor: 'pointer', borderRadius: '4px' }
+            },
+              h('input', {
+                type: 'checkbox', class: 'rule-assignee', value: u.id,
+                checked: assignedIds.includes(Number(u.id)) ? 'checked' : null
+              }),
+              h('span', {}, u.name),
+              h('span', { class: 'muted', style: { fontSize: '.75rem' } }, ' (' + u.role + ')')
+            ))
           )
         )
       ),
@@ -8704,7 +8778,7 @@ function openRuleModal(existing) {
         h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
         h('button', { class: 'btn primary', onclick: async () => {
           const f = $('#rule-form');
-          const assigned = $$('[name="assigned_to"] option:checked', f).map(o => o.value);
+          const assigned = $$('.rule-assignee:checked', f).map(cb => cb.value);
           if (!assigned.length) return toast('Pick at least one assignee', 'err');
           const payload = {
             id: r.id,
