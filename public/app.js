@@ -165,16 +165,18 @@ async function apiRaw(fn, ...args) {
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
-      // First-run onboarding (APK only) — if user has never picked a
-      // call-recordings folder, prompt them with a clear modal so they
-      // don't have to discover it via the Dialer tab.
-      setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
+      // (DISABLED) firstRunRecordingPrompt + silentBackgroundSync — these
+      // hit the native LeadCRMNative.listRecordings / syncCallRecording
+      // bridge which has been crashing the WebView on some OEM devices.
+      // Recording sync is temporarily off until the SAF reading path is
+      // proven safe. The Dialer → Recordings tab still has a manual
+      // "Sync now" button if the user wants to opt in explicitly.
+      // setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
       // If user is already checked in today (came back to app later in
       // the day), resume the 30-min location-ping loop so the trail
       // continues from where the previous session left off.
       setTimeout(() => _resumeLocationPingsIfCheckedIn().catch(() => {}), 3000);
-      // Silent background sweep: pick up any missed recordings.
-      setTimeout(() => silentBackgroundSync(), 4000);
+      // setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
   } else {
     renderLogin();
@@ -3243,13 +3245,13 @@ VIEWS.dialer = async (view) => {
 
   view.innerHTML = '';
 
-  // Always-visible banner when running on the APK and no folder is connected
-  // yet. Impossible to miss, taps directly into the picker. Hidden as soon
-  // as the user picks a folder (next render won't include it).
+  // (DISABLED) "Connect folder" auto-banner — recording sync is OFF
+  // until the SAF reading path is proven safe. Folder picker is still
+  // available in Dialer → Settings if the user wants it.
   const isApkRuntime = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
   let connectedFolder = '';
   try { connectedFolder = isApkRuntime ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
-  if (isApkRuntime && !connectedFolder) {
+  if (false /* isApkRuntime && !connectedFolder */) {
     view.appendChild(h('div', {
       style: { background: '#fef3c7', color: '#92400e', borderLeft: '4px solid #f59e0b', padding: '.7rem 1rem', borderRadius: '8px', marginBottom: '.75rem', cursor: 'pointer' },
       onclick: () => setupRecordingFolder()
@@ -3289,24 +3291,9 @@ VIEWS.dialer = async (view) => {
 
   renderDialerTab();
 
-  // Dialer-tab nudge: if the user lands on the Dialer page and still hasn't
-  // picked a folder (e.g. they dismissed the boot-time onboarding modal),
-  // open the picker once per session. The boot onboarding (firstRunRecordingPrompt)
-  // is the primary path; this is a backup so users who hit Dialer before
-  // dismissing/seeing onboarding still get prompted.
-  if (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') {
-    try {
-      const fld = LeadCRMNative.getRecordingFolder();
-      if (!fld
-          && !sessionStorage.getItem('rec_setup_dismissed')
-          && localStorage.getItem('rec_onboarding_seen_v2') !== '1') {
-        setTimeout(() => {
-          if (location.hash === '#/dialer') setupRecordingFolder();
-          sessionStorage.setItem('rec_setup_dismissed', '1');
-        }, 800);
-      }
-    } catch (_) {}
-  }
+  // (DISABLED) Dialer-tab folder-picker nudge — recording sync is off
+  // until the SAF reading path is proven safe. Picker is still
+  // accessible from Dialer → Settings → "Pick recordings folder".
 };
 
 function renderDialerSettings() {
@@ -11977,10 +11964,13 @@ window.onLeadCRMCallEvent = function (event, number) {
  */
 async function openAfterCallModalWithRecording(lead, callContext) {
   await openAfterCallModal(lead);
-  // Fire the silent background sync — runs independently while the user types.
-  if (window.LeadCRMNative && typeof LeadCRMNative.syncCallRecording === 'function') {
-    triggerBackgroundRecordingSync(lead, callContext);
-  }
+  // (DISABLED) triggerBackgroundRecordingSync — calls the native SAF
+  // reader which has been crashing the WebView on some OEM devices.
+  // The remark/status form still works; the user can manually upload a
+  // recording via the lead detail screen if they need to.
+  // if (window.LeadCRMNative && typeof LeadCRMNative.syncCallRecording === 'function') {
+  //   triggerBackgroundRecordingSync(lead, callContext);
+  // }
 }
 
 /**
