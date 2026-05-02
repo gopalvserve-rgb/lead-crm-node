@@ -9118,36 +9118,50 @@ async function adminFb() {
   wrap.appendChild(h('h3', { style: { margin: '0 0 1rem' } }, 'Facebook Leads Integration'));
 
   // ============ 1. Application Settings ============
-  const appCard = h('div', { class: 'card' });
-  appCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Facebook Application Settings'));
-  const appForm = h('form', { class: 'form-grid', onsubmit: async ev => {
-    ev.preventDefault();
-    const fd = new FormData(ev.target);
-    try {
-      await api('api_fb_settings_set', {
-        app_id: fd.get('app_id'),
-        app_secret: fd.get('app_secret')   // empty = leave existing untouched
-      });
-      toast('Application settings saved');
-      showAdminTab('fb');
-    } catch (e) { toast(e.message, 'err'); }
-  }});
-  appForm.appendChild(h('div', { class: 'f-row full' },
-    h('label', {}, 'Facebook Application ID'),
-    h('input', { name: 'app_id', value: settings.app_id || '', placeholder: 'e.g. 1234567890123456' })
-  ));
-  appForm.appendChild(h('div', { class: 'f-row full' },
-    h('label', {}, 'Facebook Application Secret',
-      settings.app_secret_present ? h('span', { class: 'muted', style: { fontSize: '.75rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null
-    ),
-    h('input', { name: 'app_secret', type: 'password', autocomplete: 'new-password',
-      placeholder: settings.app_secret_present ? '••••••••••••••' : 'paste from Meta App Dashboard' })
-  ));
-  appForm.appendChild(h('div', { class: 'f-row full' },
-    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save application settings')
-  ));
-  appCard.appendChild(appForm);
-  wrap.appendChild(appCard);
+  // Platform-managed Meta App credentials — admins never input these. The
+  // App ID + Secret are baked into the backend (same Meta Developer App as
+  // the WhatsApp Cloud API integration). Showing an info card instead of
+  // input fields keeps admins from needing to know the App ID / Secret.
+  if (settings.fb_platform_managed) {
+    const appCard = h('div', { class: 'card', style: { borderLeft: '4px solid #10b981' } });
+    appCard.appendChild(h('h4', { style: { marginTop: 0 } }, '🔒 Facebook Application — managed for you'));
+    appCard.appendChild(h('p', { class: 'muted', style: { marginBottom: 0 } },
+      'The Facebook App ID and Secret used for this integration are pre-configured by the platform. ',
+      'You only need to fill in Module Settings below and connect your Facebook pages.'
+    ));
+    wrap.appendChild(appCard);
+  } else {
+    const appCard = h('div', { class: 'card' });
+    appCard.appendChild(h('h4', { style: { marginTop: 0 } }, 'Facebook Application Settings'));
+    const appForm = h('form', { class: 'form-grid', onsubmit: async ev => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      try {
+        await api('api_fb_settings_set', {
+          app_id: fd.get('app_id'),
+          app_secret: fd.get('app_secret')   // empty = leave existing untouched
+        });
+        toast('Application settings saved');
+        showAdminTab('fb');
+      } catch (e) { toast(e.message, 'err'); }
+    }});
+    appForm.appendChild(h('div', { class: 'f-row full' },
+      h('label', {}, 'Facebook Application ID'),
+      h('input', { name: 'app_id', value: settings.app_id || '', placeholder: 'e.g. 1234567890123456' })
+    ));
+    appForm.appendChild(h('div', { class: 'f-row full' },
+      h('label', {}, 'Facebook Application Secret',
+        settings.app_secret_present ? h('span', { class: 'muted', style: { fontSize: '.75rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null
+      ),
+      h('input', { name: 'app_secret', type: 'password', autocomplete: 'new-password',
+        placeholder: settings.app_secret_present ? '••••••••••••••' : 'paste from Meta App Dashboard' })
+    ));
+    appForm.appendChild(h('div', { class: 'f-row full' },
+      h('button', { type: 'submit', class: 'btn primary' }, '💾 Save application settings')
+    ));
+    appCard.appendChild(appForm);
+    wrap.appendChild(appCard);
+  }
 
   // ============ 2. Module Settings ============
   const modCard = h('div', { class: 'card' });

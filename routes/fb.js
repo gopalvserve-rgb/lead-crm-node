@@ -25,13 +25,27 @@ const { authUser } = require('../utils/auth');
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
 
+// ---------- Platform-managed Meta App credentials ----------
+// Same Meta Developer App as the WhatsApp Cloud API integration (a single
+// FB app can have WhatsApp Business + Facebook Login + Pages enabled). Baked
+// in here so every tenant uses the platform's app — admins never see or
+// type these values. Override via env vars on Railway if you ever rotate.
+const PLATFORM_FB_APP_ID     = process.env.PLATFORM_FB_APP_ID     || '965594974738358';
+const PLATFORM_FB_APP_SECRET = process.env.PLATFORM_FB_APP_SECRET || '3d04f767b437f9083ee45533e97d3c18';
+
 // ---------- helpers ----------
 
 async function _appCreds() {
-  // DB config wins; env vars are the fallback (and bootstrap for fresh deploys).
-  const app_id = await db.getConfig('META_APP_ID', '');
-  const app_secret = await db.getConfig('META_APP_SECRET', '');
-  return { app_id, app_secret };
+  // Platform-managed: always return the bundled credentials. We still check
+  // DB config first so that if a tenant ever needs to point at a different
+  // Meta App (rare), they can set META_APP_ID / META_APP_SECRET via the
+  // /api/api_fb_settings_set endpoint and that takes precedence.
+  const dbAppId = await db.getConfig('META_APP_ID', '');
+  const dbAppSecret = await db.getConfig('META_APP_SECRET', '');
+  return {
+    app_id: dbAppId || PLATFORM_FB_APP_ID,
+    app_secret: dbAppSecret || PLATFORM_FB_APP_SECRET
+  };
 }
 
 async function _gget(url) {
@@ -175,17 +189,18 @@ async function _subscribePage(pageId, pageAccessToken, subscribe) {
 async function api_fb_settings_get(token) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
-  const [app_id, app_secret_present, verify_token, default_user_id, default_source, default_status_id] = await Promise.all([
-    db.getConfig('META_APP_ID', ''),
-    db.getConfig('META_APP_SECRET', '').then(v => !!(v && v.length)),
+  const [verify_token, default_user_id, default_source, default_status_id] = await Promise.all([
     db.getConfig('META_VERIFY_TOKEN', ''),
     db.getConfig('META_DEFAULT_USER_ID', ''),
     db.getConfig('META_DEFAULT_SOURCE', 'Facebook'),
     db.getConfig('META_DEFAULT_STATUS_ID', '')
   ]);
   return {
-    app_id,
-    app_secret_present,         // never return the secret itself; just whether it's set
+    // Platform-managed Meta App. Surface the App ID so the FB JS SDK can
+    // launch login dialogs from the browser, but never leak the secret.
+    app_id: PLATFORM_FB_APP_ID,
+    app_secret_present: true,
+    fb_platform_managed: true,
     verify_token,
     default_user_id, default_source, default_status_id
   };
@@ -195,12 +210,8 @@ async function api_fb_settings_set(token, payload) {
   const me = await authUser(token);
   if (me.role !== 'admin') throw new Error('Admin only');
   const p = payload || {};
-  if ('app_id' in p) await db.setConfig('META_APP_ID', String(p.app_id || '').trim());
-  if ('app_secret' in p && String(p.app_secret || '').trim()) {
-    // Only overwrite the secret when a non-empty value is supplied — avoids
-    // wiping it accidentally when the form re-submits with the masked field empty.
-    await db.setConfig('META_APP_SECRET', String(p.app_secret).trim());
-  }
+  // app_id / app_secret are platform-managed constants now — silently
+  // ignore if a stale client tries to send them.
   if ('verify_token' in p) await db.setConfig('META_VERIFY_TOKEN', String(p.verify_token || '').trim());
   if ('default_user_id' in p) await db.setConfig('META_DEFAULT_USER_ID', String(p.default_user_id || '').trim());
   if ('default_source' in p) await db.setConfig('META_DEFAULT_SOURCE', String(p.default_source || '').trim());
