@@ -1017,6 +1017,25 @@ async function api_wb_activity_clear(token) {
   return { ok: true };
 }
 
+/**
+ * Background trim: drop wa_activity_log rows older than 24 h.
+ * Called every 60 min by a setInterval in server.js. The table grows
+ * fast (every Meta delivery / read receipt / inbound message + every
+ * outbound send all log here), so without this it bloats and slows
+ * the Activity Log render. 24 h of recent data is plenty for
+ * troubleshooting; longer history was never useful in practice.
+ */
+async function trimActivityLog() {
+  try {
+    const r = await db.query(
+      `DELETE FROM wa_activity_log WHERE recorded_on < NOW() - INTERVAL '24 hours'`
+    );
+    if (r && r.rowCount) console.log('[wb] activity-log trim: deleted', r.rowCount, 'rows older than 24h');
+  } catch (e) {
+    console.error('[wb] activity-log trim failed:', e.message);
+  }
+}
+
 // ---------- Campaign worker ---------------------------------------
 
 let _campaignWorkerStarted = false;
@@ -1355,6 +1374,7 @@ module.exports = {
   api_wb_webhook_logs_text,
   // Express
   expressVerify, expressEvent,
-  // Worker
-  startCampaignWorker
+  // Worker + scheduled tasks
+  startCampaignWorker,
+  trimActivityLog
 };
