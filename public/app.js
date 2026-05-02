@@ -513,6 +513,7 @@ const NAV = [
   { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
   { id: 'calendar',   label: 'Calendar',     icon: '📅' },
   { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
+  { id: 'inventory',  label: 'Inventory',    icon: '📦' },
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
@@ -2368,6 +2369,12 @@ async function openLeadModal(id) {
     field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local', id: 'lead-fu' }),
     field('city', 'City', lead.city),
     qualifiedToggle(lead),
+    // Inventory matching inputs — used by api_inventory_match. Reps fill
+    // these on the lead form so the "Matching inventory" panel below can
+    // suggest items the prospect's actually likely to buy.
+    field('budget_max', 'Budget (max ₹)', lead.budget_max, { type: 'number', min: 0, step: 1 }),
+    field('requirement_type', 'Requirement type (e.g. 2BHK, Plot, Premium plan)', lead.requirement_type),
+    field('requirement_notes', 'Requirement notes', lead.requirement_notes, { type: 'textarea', full: true }),
     field('notes', 'Notes', lead.notes, { type: 'textarea', full: true })
   );
 
@@ -2402,6 +2409,7 @@ async function openLeadModal(id) {
     });
   }
 
+  if (id) body.appendChild(matchingInventoryBlock(id));
   if (id) body.appendChild(actionTimelineBlock(id));
   if (id) body.appendChild(remarksBlock(remarks, id));
   if (id) body.appendChild(recordingsBlock(id));
@@ -2497,6 +2505,10 @@ async function openLeadModal(id) {
       next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
       city: fd.get('city'), notes: fd.get('notes'),
       qualified: form.querySelector('[name="qualified"]')?.checked ? 1 : 0,
+      // Inventory matching inputs
+      budget_max:        Number(fd.get('budget_max')) || null,
+      requirement_type:  fd.get('requirement_type') || '',
+      requirement_notes: fd.get('requirement_notes') || '',
       extra
     };
     try {
@@ -2746,6 +2758,66 @@ function customFieldInput(cf, val) {
  * Always renders a placeholder while loading; on failure, hides itself
  * silently so the modal remains usable on older deploys.
  */
+/**
+ * Inventory matches block — fetches api_inventory_match(leadId) and renders
+ * up to 8 ranked suggestions inline on the lead detail. Each card shows
+ * the item, price, type and a "Recommend" button that adds a remark
+ * "📦 Recommended <name>" so the team sees what was suggested.
+ *
+ * The match algorithm filters by status=available, lead.budget_max
+ * (with 10% headroom) and lead.requirement_type. Blank inputs = no
+ * filter on that axis.
+ */
+function matchingInventoryBlock(leadId) {
+  const wrap = h('div', { class: 'card', style: { marginTop: '1rem', padding: '1rem' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0, flex: 1 } }, '📦 Matching inventory'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Auto-suggested based on budget + requirement type')
+    ),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  (async () => {
+    try {
+      const matches = await api('api_inventory_match', leadId);
+      const body = wrap.lastChild;
+      if (!matches.length) {
+        body.replaceWith(h('p', { class: 'muted', style: { margin: 0 } },
+          'No matching inventory yet. Add items under 📦 Inventory or set a budget / requirement type on this lead.'));
+        return;
+      }
+      const grid = h('div', { class: 'cards', style: { gap: '.5rem', marginTop: '.25rem' } });
+      matches.forEach(m => {
+        grid.appendChild(h('div', {
+          class: 'card', style: { padding: '.75rem', border: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: '.35rem' }
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', justifyContent: 'space-between' } },
+            h('strong', {}, m.name),
+            h('span', { class: 'tag', style: { background: '#dcfce7', color: '#166534' } }, '★ ' + m.score)
+          ),
+          h('div', { style: { fontSize: '.95rem' } }, '₹ ' + Number(m.price).toLocaleString('en-IN')),
+          m.item_type ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '📁 ' + m.item_type) : null,
+          m.location ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '📍 ' + m.location) : null,
+          h('button', { class: 'btn sm primary', onclick: async () => {
+            try {
+              await api('api_leads_addRemark', leadId, {
+                remark: '📦 Recommended ' + m.name +
+                        ' · ₹' + Number(m.price).toLocaleString('en-IN') +
+                        (m.item_type ? ' · ' + m.item_type : '') +
+                        (m.location ? ' · ' + m.location : '')
+              });
+              toast('Recommendation logged on lead');
+            } catch (e) { toast(e.message, 'err'); }
+          } }, '+ Recommend')
+        ));
+      });
+      body.replaceWith(grid);
+    } catch (e) {
+      wrap.lastChild.replaceWith(h('div', { class: 'error-box' }, e.message));
+    }
+  })();
+  return wrap;
+}
+
 function actionTimelineBlock(leadId) {
   const wrap = h('div', { class: 'timeline-block' },
     h('div', { class: 'timeline-head' },
@@ -6156,6 +6228,148 @@ function _tInr(v) {
   return '₹' + n.toFixed(0);
 }
 function _tPct(v) { return v == null ? '—' : (Math.round(v * 10) / 10) + '%'; }
+
+/* ---------------- Inventory ---------------- */
+VIEWS.inventory = async (view) => {
+  const isAdminMgr = ['admin', 'manager'].includes(CRM.user.role);
+  view.innerHTML = '';
+  let q = '';
+  let statusFilter = 'available';
+  let typeFilter = '';
+
+  const head = h('div', { class: 'card', style: { padding: '1rem', display: 'flex', flexWrap: 'wrap', gap: '.75rem', alignItems: 'center', marginBottom: '1rem' } });
+  head.appendChild(h('h3', { style: { margin: 0, flex: 1 } }, '📦 Inventory'));
+  const searchInput = h('input', { type: 'search', placeholder: '🔍 Name, location, description…', style: { minWidth: '220px' } });
+  const statusSel = h('select', {},
+    h('option', { value: '' }, 'All statuses'),
+    h('option', { value: 'available', selected: 'selected' }, 'Available'),
+    h('option', { value: 'blocked' }, 'Blocked'),
+    h('option', { value: 'sold' }, 'Sold'),
+    h('option', { value: 'inactive' }, 'Inactive')
+  );
+  const typeInput = h('input', { type: 'text', placeholder: 'Type filter (e.g. Flat, Plot)', style: { minWidth: '160px' } });
+  head.appendChild(searchInput);
+  head.appendChild(statusSel);
+  head.appendChild(typeInput);
+  if (isAdminMgr) {
+    head.appendChild(h('button', { class: 'btn primary', onclick: () => openInventoryEditModal(null, refresh) }, '+ Add item'));
+  }
+  view.appendChild(head);
+
+  const listEl = h('div', { id: 'inventory-list' });
+  view.appendChild(listEl);
+
+  let _t;
+  const debounced = () => { clearTimeout(_t); _t = setTimeout(refresh, 250); };
+  searchInput.oninput = () => { q = searchInput.value || ''; debounced(); };
+  statusSel.onchange = () => { statusFilter = statusSel.value; refresh(); };
+  typeInput.oninput  = () => { typeFilter = typeInput.value || ''; debounced(); };
+
+  async function refresh() {
+    listEl.innerHTML = '<div class="loading">Loading…</div>';
+    try {
+      const filters = { q };
+      if (statusFilter) filters.status = statusFilter;
+      if (typeFilter)   filters.item_type = typeFilter;
+      const rows = await api('api_inventory_list', filters);
+      listEl.innerHTML = '';
+      if (!rows.length) {
+        listEl.appendChild(h('p', { class: 'muted' }, 'No matching inventory.'));
+        return;
+      }
+      const grid = h('div', { class: 'cards', style: { gap: '.75rem' } });
+      rows.forEach(r => grid.appendChild(inventoryCard(r, refresh, isAdminMgr)));
+      listEl.appendChild(grid);
+    } catch (e) {
+      listEl.innerHTML = '';
+      listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+    }
+  }
+  await refresh();
+};
+
+function inventoryCard(r, refresh, isAdminMgr) {
+  const statusColors = { available: '#10b981', blocked: '#f59e0b', sold: '#6b7280', inactive: '#9ca3af' };
+  const card = h('div', { class: 'card', style: { padding: '1rem', display: 'flex', flexDirection: 'column', gap: '.5rem', minWidth: '260px' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', justifyContent: 'space-between' } },
+      h('h4', { style: { margin: 0 } }, r.name),
+      h('span', {
+        style: { background: statusColors[r.status] || '#6b7280', color: '#fff', padding: '.15rem .55rem', borderRadius: '999px', fontSize: '.72rem', fontWeight: 600 }
+      }, String(r.status).toUpperCase())
+    ),
+    r.item_type ? h('div', { class: 'muted', style: { fontSize: '.85rem' } }, '📁 ' + r.item_type) : null,
+    h('div', { style: { fontSize: '1.1rem', fontWeight: 600 } }, '₹ ' + Number(r.price).toLocaleString('en-IN')),
+    r.location ? h('div', { class: 'muted', style: { fontSize: '.85rem' } }, '📍 ' + r.location) : null,
+    r.description ? h('div', { class: 'muted', style: { fontSize: '.8rem' } },
+      String(r.description).slice(0, 140) + (String(r.description).length > 140 ? '…' : '')
+    ) : null,
+    isAdminMgr ? h('div', { class: 'actions', style: { marginTop: '.25rem' } },
+      h('button', { class: 'btn sm', onclick: () => openInventoryEditModal(r, refresh) }, '✎ Edit'),
+      h('button', { class: 'btn sm danger', onclick: async () => {
+        if (!await confirmDialog('Mark "' + r.name + '" inactive? It stops appearing in match suggestions.')) return;
+        try { await api('api_inventory_delete', r.id); toast('Marked inactive'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🗑')
+    ) : null
+  );
+  return card;
+}
+
+function openInventoryEditModal(r, onSaved) {
+  r = r || {};
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const f = (name, label, val, opts) => {
+    opts = opts || {};
+    return h('div', { class: 'f-row' + (opts.full ? ' full' : '') },
+      h('label', {}, label),
+      h('input', Object.assign({ name, value: val == null ? '' : val }, opts.attrs || { type: opts.type || 'text' }))
+    );
+  };
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, r.id ? 'Edit inventory item' : '+ New inventory item'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('form', { id: 'inv-form', class: 'form-grid' },
+      f('name', 'Name *', r.name, { attrs: { type: 'text', required: 'required' } }),
+      f('item_type', 'Type (Flat / Plot / Plan / Product)', r.item_type),
+      f('price', 'Price (₹)', r.price, { attrs: { type: 'number', min: 0, step: 1 } }),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Status'),
+        h('select', { name: 'status' },
+          ...['available', 'blocked', 'sold', 'inactive'].map(s =>
+            h('option', { value: s, selected: (r.status || 'available') === s ? 'selected' : null }, s)
+          )
+        )
+      ),
+      f('location', 'Location / Address', r.location, { full: true }),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Description'),
+        h('textarea', { name: 'description', rows: 3 }, r.description || '')
+      )
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const form = $('#inv-form');
+        const fd = new FormData(form);
+        const payload = {
+          id: r.id,
+          name:        fd.get('name'),
+          item_type:   fd.get('item_type'),
+          price:       Number(fd.get('price')) || 0,
+          status:      fd.get('status') || 'available',
+          location:    fd.get('location'),
+          description: fd.get('description')
+        };
+        if (!payload.name) return toast('Name is required', 'err');
+        try { await api('api_inventory_save', payload); toast('Saved'); modal.remove(); onSaved && onSaved(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
+}
 
 VIEWS.targets = async (view) => {
   const isAdmin = ['admin', 'manager'].includes(CRM.user.role);

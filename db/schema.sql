@@ -752,3 +752,33 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_lead_cap INTEGER NOT NULL DEF
 -- pre-filled. Phase 2 will add a webhook that auto-creates
 -- follow-ups when the prospect books.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS calendly_url TEXT;
+
+-- ---- Inventory ------------------------------------------------
+-- Stock of saleable items the org has on hand: flats / plots / SKUs /
+-- subscription plans. The CRM matches each lead's requirements
+-- (budget_max, requirement_type) against this list and surfaces the
+-- top matches on the lead detail page.
+--
+-- attributes JSONB holds per-tenant custom fields the admin defines
+-- in inventory_attributes (Phase 2 — read but not yet edited from UI).
+CREATE TABLE IF NOT EXISTS inventory (
+  id              SERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  item_type       TEXT,
+  price           NUMERIC(14,2) DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'available',  -- available|blocked|sold|inactive
+  location        TEXT,
+  description     TEXT,
+  attributes      JSONB DEFAULT '{}'::jsonb,
+  created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_status ON inventory(status);
+CREATE INDEX IF NOT EXISTS idx_inventory_type   ON inventory(item_type);
+CREATE INDEX IF NOT EXISTS idx_inventory_price  ON inventory(price);
+
+-- Lead requirement columns — used by the match algorithm.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS budget_max        NUMERIC(14,2);
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS requirement_type  TEXT;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS requirement_notes TEXT;

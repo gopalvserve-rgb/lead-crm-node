@@ -75,7 +75,8 @@ const SCHEMA = {
               'reference_2_name', 'reference_2_phone', 'reference_2_relation',
               'is_active', 'created_at',
               'totp_secret', 'totp_enabled', 'totp_verified_at',
-              'daily_lead_cap', 'monthly_lead_cap'],
+              'daily_lead_cap', 'monthly_lead_cap',
+              'calendly_url'],
     json: []
   },
   leads: {
@@ -87,8 +88,15 @@ const SCHEMA = {
               'last_status_change_at', 'next_followup_at',
               'is_duplicate', 'duplicate_of', 'tags', 'notes',
               'address', 'city', 'state', 'pincode', 'country', 'company',
-              'value', 'currency', 'meta_json', 'extra_json'],
+              'value', 'currency', 'meta_json', 'extra_json',
+              'budget_max', 'requirement_type', 'requirement_notes'],
     json: ['meta_json', 'extra_json']
+  },
+  inventory: {
+    columns: ['name', 'item_type', 'price', 'status', 'location',
+              'description', 'attributes',
+              'created_by', 'created_at', 'updated_at'],
+    json: ['attributes']
   },
   remarks: {
     columns: ['lead_id', 'user_id', 'remark', 'status_id', 'created_at'],

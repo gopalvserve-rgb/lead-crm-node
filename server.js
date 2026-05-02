@@ -51,7 +51,8 @@ const routes = {
   announcements: require('./routes/announcements'),
   chat:        require('./routes/chat'),
   savedFilters: require('./routes/savedFilters'),
-  targets:     require('./routes/targets')
+  targets:     require('./routes/targets'),
+  inventory:   require('./routes/inventory')
 };
 const webhooks = require('./routes/webhooks');
 

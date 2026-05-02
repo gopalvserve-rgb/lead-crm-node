@@ -686,6 +686,8 @@ async function api_leads_update(token, id, patch) {
    'city', 'state', 'pincode', 'country', 'company', 'address',
    'notes', 'next_followup_at', 'tags', 'source', 'source_ref',
    'value', 'currency', 'qualified',
+   // Inventory match inputs (used by api_inventory_match)
+   'budget_max', 'requirement_type', 'requirement_notes',
    // Attribution / Google Ads columns
    'gclid', 'gad_campaignid', 'utm_source', 'utm_medium',
    'utm_campaign', 'utm_term', 'utm_content']
