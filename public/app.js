@@ -1369,6 +1369,11 @@ function renderLeadsMobile(rows) {
       h('div', { class: 'lc-actions' },
         digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
         digits ? h('button', { class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(l) }, '🟢 WA') : null,
+        digits ? h('a', {
+          class: 'btn sm',
+          href: 'https://wa.me/' + (digits.length === 10 && /^[6-9]/.test(digits) ? '91' + digits : digits),
+          target: '_blank', rel: 'noopener'
+        }, '💬 My WA') : null,
         digits ? h('button', { class: 'btn sm', onclick: () => sendCalendlyLink(l) }, '📅 Meet') : null,
         h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
         h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎ Edit')
@@ -1593,9 +1598,18 @@ function renderCell(col, l, statuses) {
         // the user pick an approved template, fill variables, preview and
         // send. Replaces the old wa.me deep link.
         digits ? h('button', {
-          class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template',
+          class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template (from business number via Cloud API)',
           onclick: ev => { ev.stopPropagation(); openInitiateChatModal(l); }
         }, '🟢') : null,
+        // Personal WhatsApp — opens wa.me on phone (or WA Desktop / Web
+        // on PC) so the rep can type and send from their OWN number.
+        // Distinct icon (💬) from the green Cloud-API one.
+        digits ? h('a', {
+          class: 'btn icon', title: 'Open WhatsApp chat from my number',
+          href: 'https://wa.me/' + (digits.length === 10 && /^[6-9]/.test(digits) ? '91' + digits : digits),
+          target: '_blank', rel: 'noopener',
+          onclick: ev => ev.stopPropagation()
+        }, '💬') : null,
         // Calendly meeting link — opens WhatsApp with the rep's
         // booking page pre-filled. Only shows if the rep has set
         // a Calendly URL on their profile.
@@ -2409,6 +2423,7 @@ async function openLeadModal(id) {
     });
   }
 
+  if (id) body.appendChild(projectStageBlock(id, lead));
   if (id) body.appendChild(matchingInventoryBlock(id));
   if (id) body.appendChild(actionTimelineBlock(id));
   if (id) body.appendChild(remarksBlock(remarks, id));
@@ -2758,6 +2773,100 @@ function customFieldInput(cf, val) {
  * Always renders a placeholder while loading; on failure, hides itself
  * silently so the modal remains usable on older deploys.
  */
+/**
+ * Post-sale project stage tracker block. Shown on every lead detail —
+ * if no stages defined yet, shows a hint pointing admin to Settings.
+ * If stages exist and the lead has no current stage, shows a "Start
+ * delivery tracker" button that sets the first stage. If the lead is
+ * mid-flow, shows a horizontal progress strip with the current step
+ * highlighted, and an "Advance to next" button.
+ */
+function projectStageBlock(leadId, lead) {
+  const wrap = h('div', { class: 'card', style: { marginTop: '1rem', padding: '1rem' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0, flex: 1 } }, '🚚 Post-sale delivery'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Stage tracker for what happens after the sale')
+    ),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  (async () => {
+    try {
+      const stages = await api('api_projectStages_list');
+      const body = wrap.lastChild;
+      if (!stages.length) {
+        body.replaceWith(h('p', { class: 'muted', style: { margin: 0 } },
+          'No stages defined yet. Admin can set them up under Settings → 🚚 Project stages.'));
+        return;
+      }
+      const currentId = Number(lead.project_stage_id) || 0;
+      const idx = stages.findIndex(s => Number(s.id) === currentId);
+      const isLast = idx === stages.length - 1;
+      // Progress strip
+      const strip = h('div', {
+        style: { display: 'flex', flexWrap: 'wrap', gap: '.35rem', marginBottom: '.75rem' }
+      });
+      stages.forEach((s, i) => {
+        const isPast = idx > i;
+        const isCurrent = idx === i;
+        strip.appendChild(h('span', {
+          style: {
+            padding: '.3rem .6rem', borderRadius: '999px', fontSize: '.75rem', fontWeight: 600,
+            background: isCurrent ? '#3b82f6' : (isPast ? '#10b981' : '#e5e7eb'),
+            color: isCurrent || isPast ? '#fff' : '#6b7280'
+          },
+          title: s.description || ''
+        }, (isPast ? '✓ ' : (isCurrent ? '▶ ' : '')) + s.name));
+      });
+      const advanceBtn = (idx < stages.length - 1) ? h('button', {
+        class: 'btn primary', onclick: async () => {
+          const notes = prompt('Optional notes for this transition (e.g. cheque #, doc reference):', '') || '';
+          try {
+            const r = await api('api_projectStages_advanceLead', leadId, notes);
+            toast('Advanced to: ' + r.stage_name);
+            // Re-render the modal so the new stage shows. Easiest path: close and reopen.
+            const modal = document.querySelector('.modal-backdrop');
+            if (modal) modal.remove();
+            openLeadModal(leadId);
+          } catch (e) { toast(e.message, 'err'); }
+        }
+      }, idx < 0 ? '▶ Start delivery tracker' : '➡ Advance to next stage') : null;
+      const setBtn = h('button', {
+        class: 'btn', onclick: () => {
+          const choices = stages.map(s => '#' + s.sort_order + ' — ' + s.name).join('\n');
+          const ans = prompt('Jump to stage by typing its number (#):\n\n' + choices, '');
+          if (!ans) return;
+          const num = Number(ans.replace(/[^\d]/g, ''));
+          const target = stages.find(s => Number(s.sort_order) === num);
+          if (!target) return toast('Unknown stage number', 'err');
+          const notes = prompt('Optional notes:', '') || '';
+          api('api_projectStages_setForLead', leadId, target.id, notes)
+            .then(r => {
+              toast('Set to: ' + r.stage_name);
+              const modal = document.querySelector('.modal-backdrop');
+              if (modal) modal.remove();
+              openLeadModal(leadId);
+            })
+            .catch(e => toast(e.message, 'err'));
+        }
+      }, '↪ Jump to specific stage');
+      const summary = h('div', { class: 'muted', style: { fontSize: '.85rem', marginBottom: '.6rem' } },
+        idx < 0 ? 'Tracker not started yet — click below to enter the first stage.'
+        : isLast ? '✅ On the final stage (' + stages[idx].name + ').'
+        : '▶ Currently at: ' + stages[idx].name +
+          (lead.project_stage_started_at ? ' · since ' + fmtDate(lead.project_stage_started_at, 'relative') : '')
+      );
+      const actionsRow = h('div', { class: 'actions', style: { gap: '.5rem' } });
+      if (advanceBtn) actionsRow.appendChild(advanceBtn);
+      actionsRow.appendChild(setBtn);
+      const newBody = h('div', {}, strip, summary, actionsRow);
+      body.replaceWith(newBody);
+    } catch (e) {
+      wrap.lastChild.replaceWith(h('div', { class: 'error-box' }, e.message));
+    }
+  })();
+  return wrap;
+}
+
 /**
  * Inventory matches block — fetches api_inventory_match(leadId) and renders
  * up to 8 ranked suggestions inline on the lead detail. Each card shows
@@ -7662,7 +7771,8 @@ VIEWS.admin = async (view) => {
     { id: 'smtp',         label: 'SMTP' },
     { id: 'announce',     label: '📢 Announcements' },
     { id: 'chatperm',     label: '💬 Chat permissions' },
-    { id: 'menu',         label: '🧭 Menu visibility' }
+    { id: 'menu',         label: '🧭 Menu visibility' },
+    { id: 'projstages',   label: '🚚 Project stages' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -7694,7 +7804,104 @@ async function showAdminTab(id) {
     if (id === 'announce') body.replaceChildren(await adminAnnouncements());
     if (id === 'chatperm') body.replaceChildren(await adminChatPermissions());
     if (id === 'menu')     body.replaceChildren(await adminMenuVisibility());
+    if (id === 'projstages') body.replaceChildren(await adminProjectStages());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+/**
+ * Admin → Project stages tab. Lists every stage in sort order with edit /
+ * delete actions, plus a "+ New stage" button. Stages are the post-sale
+ * delivery workflow (Token → Agreement → Loan → ... → Possession).
+ * Reps advance leads through these stages from the lead detail modal.
+ */
+async function adminProjectStages() {
+  const stages = await api('api_projectStages_list');
+  const wrap = h('div', {});
+  wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '🚚 Post-sale project stages'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'Define the delivery workflow your team follows after a sale. Reps advance each lead through these stages from the lead detail page; every transition logs a remark on the lead.'));
+  const list = h('div', { class: 'card', style: { padding: '.5rem 0' } });
+  if (!stages.length) {
+    list.appendChild(h('p', { class: 'muted', style: { padding: '1rem' } }, 'No stages yet — click "+ New stage" to create the first.'));
+  }
+  stages.forEach(s => {
+    list.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '.75rem', padding: '.6rem .9rem', borderBottom: '1px solid #f3f4f6' } },
+      h('span', { class: 'tag', style: { background: '#e0f2fe', color: '#075985', fontWeight: 600 } }, '#' + s.sort_order),
+      h('div', { style: { flex: 1 } },
+        h('div', { style: { fontWeight: 600 } }, s.name),
+        s.description ? h('div', { class: 'muted', style: { fontSize: '.78rem' } }, s.description) : null
+      ),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, '⏱ ' + s.expected_days + 'd'),
+      s.assignee_role ? h('span', { class: 'tag' }, '👤 ' + s.assignee_role) : null,
+      h('button', { class: 'btn sm', onclick: () => openProjectStageEditModal(s, () => showAdminTab('projstages')) }, '✎'),
+      h('button', { class: 'btn sm danger', onclick: async () => {
+        if (!await confirmDialog('Delete stage "' + s.name + '"? Existing leads on this stage keep their reference but new advances will skip it.')) return;
+        try { await api('api_projectStages_delete', s.id); toast('Deleted'); showAdminTab('projstages'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🗑')
+    ));
+  });
+  wrap.appendChild(list);
+  wrap.appendChild(h('div', { class: 'actions', style: { marginTop: '.75rem' } },
+    h('button', { class: 'btn primary', onclick: () => openProjectStageEditModal(null, () => showAdminTab('projstages')) }, '+ New stage')
+  ));
+  return wrap;
+}
+
+function openProjectStageEditModal(s, onSaved) {
+  s = s || { sort_order: 10, expected_days: 7 };
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, s.id ? 'Edit project stage' : '+ New project stage'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('form', { id: 'pst-form', class: 'form-grid' },
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Name *'),
+        h('input', { name: 'name', value: s.name || '', required: 'required', placeholder: 'e.g. Agreement signed' })
+      ),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Description'),
+        h('textarea', { name: 'description', rows: 2, placeholder: 'What needs to happen at this stage?' }, s.description || '')
+      ),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Sort order *'),
+        h('input', { name: 'sort_order', type: 'number', min: 1, value: s.sort_order, required: 'required' })
+      ),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Expected duration (days)'),
+        h('input', { name: 'expected_days', type: 'number', min: 1, value: s.expected_days })
+      ),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Assigned role'),
+        h('select', { name: 'assignee_role' },
+          h('option', { value: '' }, '—'),
+          ...['sales', 'team_leader', 'manager', 'operations', 'finance', 'legal', 'admin']
+            .map(r => h('option', { value: r, selected: s.assignee_role === r ? 'selected' : null }, r))
+        )
+      )
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const f = $('#pst-form');
+        const fd = new FormData(f);
+        const payload = {
+          id: s.id,
+          name:          fd.get('name'),
+          description:   fd.get('description'),
+          sort_order:    Number(fd.get('sort_order')) || 10,
+          expected_days: Number(fd.get('expected_days')) || 7,
+          assignee_role: fd.get('assignee_role')
+        };
+        if (!payload.name) return toast('Name required', 'err');
+        try { await api('api_projectStages_save', payload); toast('Saved'); modal.remove(); onSaved && onSaved(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
 }
 
 /**

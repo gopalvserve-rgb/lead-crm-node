@@ -782,3 +782,25 @@ CREATE INDEX IF NOT EXISTS idx_inventory_price  ON inventory(price);
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS budget_max        NUMERIC(14,2);
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS requirement_type  TEXT;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS requirement_notes TEXT;
+
+-- ---- Post-sale project stages ---------------------------------
+-- Admin defines a stage workflow (Token received → Agreement signed →
+-- Loan sanctioned → Demand letter → Registry → Possession → Handover).
+-- After a lead converts to "Won", the rep advances it through these
+-- stages. Each transition logs a remark with the stage name + notes.
+CREATE TABLE IF NOT EXISTS project_stages (
+  id            SERIAL PRIMARY KEY,
+  name          TEXT NOT NULL,
+  description   TEXT,
+  sort_order    INTEGER NOT NULL DEFAULT 10,
+  expected_days INTEGER NOT NULL DEFAULT 7,
+  assignee_role TEXT,                        -- e.g. 'sales' | 'operations' | 'finance'
+  is_active     INTEGER NOT NULL DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_project_stages_sort ON project_stages(sort_order);
+
+-- The "project" is the lead itself (real-estate flow: same record from
+-- enquiry through possession). project_stage_id is null until the rep
+-- starts the post-sale tracker; once set, it points to the current stage.
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS project_stage_id         INTEGER REFERENCES project_stages(id) ON DELETE SET NULL;
+ALTER TABLE leads ADD COLUMN IF NOT EXISTS project_stage_started_at TIMESTAMPTZ;

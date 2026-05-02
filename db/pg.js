@@ -89,8 +89,14 @@ const SCHEMA = {
               'is_duplicate', 'duplicate_of', 'tags', 'notes',
               'address', 'city', 'state', 'pincode', 'country', 'company',
               'value', 'currency', 'meta_json', 'extra_json',
-              'budget_max', 'requirement_type', 'requirement_notes'],
+              'budget_max', 'requirement_type', 'requirement_notes',
+              'project_stage_id', 'project_stage_started_at'],
     json: ['meta_json', 'extra_json']
+  },
+  project_stages: {
+    columns: ['name', 'description', 'sort_order', 'expected_days',
+              'assignee_role', 'is_active'],
+    json: []
   },
   inventory: {
     columns: ['name', 'item_type', 'price', 'status', 'location',

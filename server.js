@@ -52,7 +52,8 @@ const routes = {
   chat:        require('./routes/chat'),
   savedFilters: require('./routes/savedFilters'),
   targets:     require('./routes/targets'),
-  inventory:   require('./routes/inventory')
+  inventory:   require('./routes/inventory'),
+  projectStages: require('./routes/projectStages')
 };
 const webhooks = require('./routes/webhooks');
 
