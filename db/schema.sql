@@ -804,3 +804,21 @@ CREATE INDEX IF NOT EXISTS idx_project_stages_sort ON project_stages(sort_order)
 -- starts the post-sale tracker; once set, it points to the current stage.
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS project_stage_id         INTEGER REFERENCES project_stages(id) ON DELETE SET NULL;
 ALTER TABLE leads ADD COLUMN IF NOT EXISTS project_stage_started_at TIMESTAMPTZ;
+
+-- ---- Personal WhatsApp templates -------------------------------
+-- Per-user reusable message snippets the rep picks from when clicking
+-- 💬 on a lead. Body supports placeholders: {name} {first_name}
+-- {phone} {company} {value} {my_name} {calendly}. The CRM substitutes
+-- them with lead/user values, opens wa.me with the full text, and the
+-- rep just taps Send in WhatsApp.
+--
+-- Per-user (owner_id), so each rep maintains their own library.
+CREATE TABLE IF NOT EXISTS personal_wa_templates (
+  id          SERIAL PRIMARY KEY,
+  owner_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  body        TEXT NOT NULL,
+  is_active   INTEGER NOT NULL DEFAULT 1,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pwa_templates_owner ON personal_wa_templates(owner_id);

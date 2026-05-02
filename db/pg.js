@@ -104,6 +104,10 @@ const SCHEMA = {
               'created_by', 'created_at', 'updated_at'],
     json: ['attributes']
   },
+  personal_wa_templates: {
+    columns: ['owner_id', 'name', 'body', 'is_active', 'created_at'],
+    json: []
+  },
   remarks: {
     columns: ['lead_id', 'user_id', 'remark', 'status_id', 'created_at'],
     json: []

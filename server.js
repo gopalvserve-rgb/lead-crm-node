@@ -53,7 +53,8 @@ const routes = {
   savedFilters: require('./routes/savedFilters'),
   targets:     require('./routes/targets'),
   inventory:   require('./routes/inventory'),
-  projectStages: require('./routes/projectStages')
+  projectStages: require('./routes/projectStages'),
+  personalWa:    require('./routes/personalWaTemplates')
 };
 const webhooks = require('./routes/webhooks');
 

@@ -1369,10 +1369,8 @@ function renderLeadsMobile(rows) {
       h('div', { class: 'lc-actions' },
         digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
         digits ? h('button', { class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(l) }, '🟢 WA') : null,
-        digits ? h('a', {
-          class: 'btn sm',
-          href: 'https://wa.me/' + (digits.length === 10 && /^[6-9]/.test(digits) ? '91' + digits : digits),
-          target: '_blank', rel: 'noopener'
+        digits ? h('button', {
+          class: 'btn sm', onclick: () => openPersonalWaPicker(l)
         }, '💬 My WA') : null,
         digits ? h('button', { class: 'btn sm', onclick: () => sendCalendlyLink(l) }, '📅 Meet') : null,
         h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
@@ -1601,14 +1599,13 @@ function renderCell(col, l, statuses) {
           class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template (from business number via Cloud API)',
           onclick: ev => { ev.stopPropagation(); openInitiateChatModal(l); }
         }, '🟢') : null,
-        // Personal WhatsApp — opens wa.me on phone (or WA Desktop / Web
-        // on PC) so the rep can type and send from their OWN number.
-        // Distinct icon (💬) from the green Cloud-API one.
-        digits ? h('a', {
-          class: 'btn icon', title: 'Open WhatsApp chat from my number',
-          href: 'https://wa.me/' + (digits.length === 10 && /^[6-9]/.test(digits) ? '91' + digits : digits),
-          target: '_blank', rel: 'noopener',
-          onclick: ev => ev.stopPropagation()
+        // Personal WhatsApp — opens a template picker. Picking a template
+        // launches WhatsApp with the message pre-filled (rep just hits
+        // Send). Truly silent sending isn't possible from a personal
+        // number — that's the 🟢 Cloud-API button's job.
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send WhatsApp from my number — pick a template',
+          onclick: ev => { ev.stopPropagation(); openPersonalWaPicker(l); }
         }, '💬') : null,
         // Calendly meeting link — opens WhatsApp with the rep's
         // booking page pre-filled. Only shows if the rep has set
@@ -2379,9 +2376,10 @@ async function openLeadModal(id) {
     body.appendChild(h('div', { class: 'card', style: { padding: '.6rem .8rem', margin: '0 0 .75rem', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center' } },
       h('span', { class: 'muted', style: { fontSize: '.78rem', marginRight: '.25rem' } }, 'Quick actions:'),
       _digits ? h('button', { type: 'button', class: 'btn sm btn-call', onclick: () => callLead(lead) }, '📞 Call') : null,
-      _digits ? h('a', {
-        class: 'btn sm', href: 'https://wa.me/' + _intl,
-        target: '_blank', rel: 'noopener', title: 'Open WhatsApp from MY number'
+      _digits ? h('button', {
+        type: 'button', class: 'btn sm',
+        onclick: () => openPersonalWaPicker(lead),
+        title: 'Pick a template — opens WhatsApp from MY number with text pre-filled'
       }, '💬 My WhatsApp') : null,
       _digits ? h('button', { type: 'button', class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(lead) }, '🟢 WA Template') : null,
       _digits ? h('button', { type: 'button', class: 'btn sm', onclick: () => sendCalendlyLink(lead) }, '📅 Send Calendly') : null,
@@ -5309,6 +5307,163 @@ function sendCalendlyLink(lead) {
   // Best-effort: log a remark so the team knows a meeting link went out.
   try { api('api_leads_addRemark', lead.id, { remark: '📅 Calendly meeting link sent via WhatsApp' }).catch(() => {}); } catch (_) {}
   window.open(waUrl, '_blank');
+}
+
+/**
+ * Substitute {placeholders} in a personal WA template body with values
+ * from the lead and current user. Unknown tokens are left in place so
+ * the rep can spot mistakes.
+ */
+function _renderPersonalWaTemplate(body, lead) {
+  const me = CRM.user || {};
+  const ctx = {
+    name:        lead?.name || '',
+    first_name:  String(lead?.name || '').split(/\s+/)[0],
+    phone:       lead?.phone || '',
+    company:     lead?.company || '',
+    value:       lead?.value ? '₹' + Number(lead.value).toLocaleString('en-IN') : '',
+    next_followup: lead?.next_followup_at ? new Date(lead.next_followup_at).toLocaleString('en-IN') : '',
+    my_name:     me.name || '',
+    calendly:    me.calendly_url || ''
+  };
+  return String(body || '').replace(/\{(\w+)\}/g, (m, k) => ctx[k] != null ? ctx[k] : m);
+}
+
+/**
+ * 💬 personal WhatsApp picker — opens a small modal with the rep's
+ * saved templates. Picking one substitutes lead/user placeholders and
+ * launches wa.me with the full message pre-filled. Includes a
+ * "Blank — just open chat" shortcut and a "Manage templates" link.
+ */
+async function openPersonalWaPicker(lead) {
+  const phone = String(lead?.phone || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  const dial = phone.length === 10 && /^[6-9]/.test(phone) ? '91' + phone : phone;
+
+  let templates = [];
+  try { templates = await api('api_personalWa_list'); } catch (_) {}
+
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const launch = (text) => {
+    const url = 'https://wa.me/' + dial + (text ? '?text=' + encodeURIComponent(text) : '');
+    try { if (lead?.id) api('api_leads_addRemark', lead.id, { remark: '💬 WhatsApp sent (personal): ' + (text || '(blank chat opened)').slice(0, 200) }).catch(() => {}); } catch (_) {}
+    window.open(url, '_blank');
+    modal.remove();
+  };
+  const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '.4rem', maxHeight: '50vh', overflowY: 'auto' } });
+  if (!templates.length) {
+    list.appendChild(h('p', { class: 'muted', style: { margin: 0, fontSize: '.88rem' } },
+      'No personal WhatsApp templates yet. Click "Manage templates" below to create your first — it saves typing on every chat.'));
+  }
+  templates.forEach(t => {
+    const rendered = _renderPersonalWaTemplate(t.body, lead);
+    list.appendChild(h('div', {
+      class: 'card', style: { padding: '.6rem .8rem', cursor: 'pointer', borderLeft: '3px solid #25D366' },
+      onclick: () => launch(rendered)
+    },
+      h('div', { style: { fontWeight: 600, marginBottom: '.2rem' } }, t.name),
+      h('div', { class: 'muted', style: { fontSize: '.8rem', whiteSpace: 'pre-wrap' } },
+        rendered.length > 180 ? rendered.slice(0, 180) + '…' : rendered)
+    ));
+  });
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '💬 Send WhatsApp from your number'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { fontSize: '.8rem', margin: '0 0 .75rem' } },
+      'Pick a template — WhatsApp opens with the message pre-filled, you tap Send. WhatsApp doesn\'t allow third-party apps to send silently from a personal number; if you need automated sending, use the 🟢 WA Template button (Cloud API, business number).'),
+    list,
+    h('div', { class: 'actions', style: { marginTop: '.75rem', flexWrap: 'wrap', gap: '.4rem' } },
+      h('button', { class: 'btn', onclick: () => launch('') }, 'Open blank chat'),
+      h('button', { class: 'btn primary', onclick: () => { modal.remove(); openPersonalWaTemplatesModal(); } }, '✎ Manage templates')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
+/**
+ * CRUD modal for the rep's personal WhatsApp templates. Per-user.
+ * Body supports placeholders documented in the help text.
+ */
+async function openPersonalWaTemplatesModal() {
+  let templates = [];
+  try { templates = await api('api_personalWa_list'); } catch (_) {}
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const listWrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '.5rem', maxHeight: '50vh', overflowY: 'auto', marginBottom: '1rem' } });
+  const renderList = () => {
+    listWrap.innerHTML = '';
+    if (!templates.length) {
+      listWrap.appendChild(h('p', { class: 'muted', style: { margin: 0 } }, 'No templates yet — add your first below.'));
+    }
+    templates.forEach(t => {
+      listWrap.appendChild(h('div', { class: 'card', style: { padding: '.6rem .8rem' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
+          h('strong', { style: { flex: 1 } }, t.name),
+          h('button', { class: 'btn sm', onclick: () => editOne(t) }, '✎'),
+          h('button', { class: 'btn sm danger', onclick: async () => {
+            if (!await confirmDialog('Delete "' + t.name + '"?')) return;
+            try { await api('api_personalWa_delete', t.id); toast('Deleted'); templates = await api('api_personalWa_list'); renderList(); }
+            catch (e) { toast(e.message, 'err'); }
+          } }, '🗑')
+        ),
+        h('div', { class: 'muted', style: { fontSize: '.78rem', whiteSpace: 'pre-wrap', marginTop: '.25rem' } }, t.body)
+      ));
+    });
+  };
+  const editOne = (t) => {
+    t = t || { name: '', body: '' };
+    const formModal = h('div', { class: 'modal-backdrop', style: { zIndex: 9999 }, onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) formModal.remove(); } },
+      h('div', { class: 'modal' },
+        h('div', { class: 'modal-head' },
+          h('h3', {}, t.id ? 'Edit template' : '+ New template'),
+          h('button', { class: 'btn icon', onclick: () => formModal.remove() }, '✕')
+        ),
+        h('form', { id: 'pwa-tpl-form', class: 'form-grid' },
+          h('div', { class: 'f-row full' },
+            h('label', {}, 'Template name'),
+            h('input', { name: 'name', value: t.name, placeholder: 'e.g. Site visit reminder', required: 'required' })
+          ),
+          h('div', { class: 'f-row full' },
+            h('label', {}, 'Message body'),
+            h('textarea', { name: 'body', rows: 6, placeholder: 'Hi {first_name}, this is {my_name} from Adbullet — just confirming our site visit tomorrow at 11 AM. Reply YES to confirm.' }, t.body || '')
+          ),
+          h('div', { class: 'f-row full' },
+            h('p', { class: 'muted', style: { margin: 0, fontSize: '.78rem' } },
+              'Placeholders auto-fill when you send: ',
+              h('code', {}, '{name}'), ', ', h('code', {}, '{first_name}'), ', ',
+              h('code', {}, '{phone}'), ', ', h('code', {}, '{company}'), ', ',
+              h('code', {}, '{value}'), ', ', h('code', {}, '{next_followup}'), ', ',
+              h('code', {}, '{my_name}'), ', ', h('code', {}, '{calendly}'))
+          )
+        ),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => formModal.remove() }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: async () => {
+            const f = $('#pwa-tpl-form');
+            const fd = new FormData(f);
+            const payload = { id: t.id, name: fd.get('name'), body: fd.get('body') };
+            if (!payload.name || !payload.body) return toast('Name and body required', 'err');
+            try { await api('api_personalWa_save', payload); toast('Saved'); formModal.remove(); templates = await api('api_personalWa_list'); renderList(); }
+            catch (e) { toast(e.message, 'err'); }
+          } }, 'Save')
+        )
+      )
+    );
+    document.body.appendChild(formModal);
+  };
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '💬 My WhatsApp templates'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    listWrap,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn primary', onclick: () => editOne(null) }, '+ New template')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderList();
 }
 
 function openRegisterPhoneModal(phoneIdOverride) {
