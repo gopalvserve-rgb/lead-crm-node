@@ -3,6 +3,42 @@
  * Full-featured SPA over POST /api.
  */
 
+// Global JS error hook — turns silent WebView crashes into a visible
+// banner so we can see exactly which line failed. Without this, a fatal
+// error in any view handler just blanks the page (and on some Capacitor
+// builds bubbles up as an Android "App keeps stopping" dialog).
+window.addEventListener('error', function (ev) {
+  try {
+    var msg = (ev && ev.message) || 'Unknown JS error';
+    var src = (ev && ev.filename) ? (ev.filename + ':' + (ev.lineno || '?')) : '';
+    console.error('[global onerror]', msg, src, ev && ev.error);
+    var el = document.getElementById('global-js-err');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'global-js-err';
+      el.style.cssText = 'position:fixed;left:.5rem;right:.5rem;top:.5rem;z-index:99999;background:#fee2e2;color:#7f1d1d;padding:.6rem .8rem;border-radius:8px;font-size:.78rem;box-shadow:0 4px 12px rgba(0,0,0,.2);max-height:40vh;overflow:auto';
+      document.body.appendChild(el);
+      var close = document.createElement('button');
+      close.textContent = '✕';
+      close.style.cssText = 'float:right;background:transparent;border:0;font-size:1rem;color:#7f1d1d;cursor:pointer';
+      close.onclick = function () { el.remove(); };
+      el.appendChild(close);
+    }
+    var line = document.createElement('div');
+    line.textContent = '⚠ ' + msg + (src ? ' @ ' + src : '');
+    el.appendChild(line);
+  } catch (_) {}
+});
+window.addEventListener('unhandledrejection', function (ev) {
+  try {
+    var reason = ev && ev.reason;
+    var msg = (reason && (reason.message || reason)) || 'Unhandled promise rejection';
+    console.error('[unhandledrejection]', reason);
+    var fakeEvent = { message: 'Promise: ' + String(msg).slice(0, 200), filename: '', lineno: 0, error: reason };
+    window.dispatchEvent(new ErrorEvent('error', fakeEvent));
+  } catch (_) {}
+});
+
 const CRM = {
   token: localStorage.getItem('crm_token') || null,
   user: null,
@@ -936,6 +972,29 @@ const LEAD_COLUMNS = [
 ];
 
 VIEWS.leads = async (view) => {
+  // Error boundary — if rendering throws below, surface a recoverable
+  // error card instead of letting the exception bubble all the way up
+  // to Capacitor (which on some devices pops a "App keeps stopping" dialog
+  // because the WebView's JS context gets blown away).
+  try {
+    return await _renderLeadsView(view);
+  } catch (err) {
+    console.error('[leads] render failed:', err);
+    view.innerHTML = '';
+    view.appendChild(h('div', { class: 'error-box', style: { margin: '1rem' } },
+      h('h4', { style: { marginTop: 0 } }, '⚠ Couldn\'t open the Leads tab'),
+      h('p', {}, 'Something went wrong while rendering this page. Try the actions below — if it keeps failing, please share the error text.'),
+      h('p', { class: 'muted', style: { fontSize: '.78rem' } }, 'Error: ', String(err && err.message || err))
+    ));
+    view.appendChild(h('div', { style: { display: 'flex', gap: '.5rem', margin: '0 1rem 1rem', flexWrap: 'wrap' } },
+      h('button', { class: 'btn', onclick: () => location.reload() }, '🔄 Reload app'),
+      h('button', { class: 'btn ghost', onclick: () => { CRM.prefs.filters = {}; location.reload(); } }, 'Reset filters & reload'),
+      h('button', { class: 'btn ghost', onclick: () => { location.hash = '#/dashboard'; } }, '← Dashboard')
+    ));
+  }
+};
+
+async function _renderLeadsView(view) {
   if (!CRM.cache.statuses) await warmCache();
   const { statuses, sources, users } = CRM.cache;
 
@@ -1035,7 +1094,7 @@ VIEWS.leads = async (view) => {
 
   CRM._leadsPage = 1;
   await loadLeads({ page: 1 });
-};
+}
 
 function toggleHeader(show) {
   CRM.prefs.showHeader = show;
