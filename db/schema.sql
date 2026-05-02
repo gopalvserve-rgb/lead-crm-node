@@ -833,6 +833,14 @@ CREATE INDEX IF NOT EXISTS idx_pwa_templates_owner ON personal_wa_templates(owne
 ALTER TABLE users ADD COLUMN IF NOT EXISTS calendly_webhook_token TEXT;
 CREATE INDEX IF NOT EXISTS idx_users_calendly_token ON users(calendly_webhook_token);
 
+-- ---- Per-user auto-dial preference -----------------------------
+-- When a new lead is assigned to this user, push a "📞 Tap to call"
+-- notification to their mobile in addition to the standard lead-assigned
+-- alert. Defaults to 1 (on) for newly created users; admins are excluded
+-- regardless of this setting (admins shouldn't get auto-dial pushes —
+-- they're not the ones working the pipeline).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS autodial_on INTEGER NOT NULL DEFAULT 1;
+
 -- ---- Google Sheet sync ----------------------------------------
 -- Admin connects a Google Sheet (set to "Anyone with link can view"),
 -- the CRM polls its CSV export every poll_interval_min and inserts

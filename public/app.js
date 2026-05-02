@@ -9696,7 +9696,9 @@ async function adminRules() {
     adCard.appendChild(h('p', { class: 'muted' },
       'When a new lead lands (from any source — webhook, manual entry, CSV upload), push a ',
       h('b', {}, 'Tap to call'),
-      ' notification to the assignee\'s mobile. Tapping the notification opens the dialer with the lead\'s number pre-filled. Skipped for leads moved to Junk.'));
+      ' notification to the assignee\'s mobile. Tapping the notification opens the dialer with the lead\'s number pre-filled. ',
+      h('b', {}, 'Skipped for admins'),
+      ' (admins don\'t work the pipeline) and any rep who has turned auto-dial off in their own profile (Users → Edit → Auto-dial preference). Also skipped for leads moved to Junk.'));
     adCard.appendChild(h('label', { class: 'toggle-row', style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
       h('input', { type: 'checkbox', checked: autoOn ? 'checked' : null,
         onchange: async ev => {
@@ -9990,6 +9992,27 @@ async function openUserModal(u) {
           h('p', { class: 'muted', style: { margin: 0, fontSize: '.82rem' } },
             'Paste your Calendly (or any scheduling) URL here. The CRM uses it as a "Send meeting link" shortcut on every lead and customer.')),
         field('calendly_url', 'Calendly link', u.calendly_url, { type: 'url', placeholder: 'https://calendly.com/yourname/30min' }),
+
+        // Auto-dial — let each rep choose whether to receive the
+        // "📞 Tap to call" push when a new lead lands assigned to them.
+        // Default ON for new users. Hidden for admins (admins are skipped
+        // server-side regardless — they're not the ones working leads).
+        u.role !== 'admin' ? section('📞 Auto-dial preference') : null,
+        u.role !== 'admin' ? h('div', { class: 'f-row full' },
+          h('label', { class: 'toggle-row', style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
+            h('input', {
+              type: 'checkbox',
+              name: 'autodial_on',
+              value: '1',
+              checked: Number(u.autodial_on != null ? u.autodial_on : 1) === 1 ? 'checked' : null
+            }),
+            h('span', {}, 'Send me a "Tap to call" push on every new lead assigned to me')
+          )
+        ) : null,
+        u.role !== 'admin' ? h('div', { class: 'f-row full' },
+          h('p', { class: 'muted', style: { margin: 0, fontSize: '.78rem' } },
+            'When this is on and the tenant-wide auto-dial is enabled, the CRM pushes a notification to your mobile every time a new lead is assigned to you. Tap the notification → dialer opens with the number ready.')
+        ) : null,
         // Webhook URL — visible only when editing your own profile (or
         // admin editing someone else). Read-only display + Copy + Regen.
         (u.id && Number(u.id) === Number(CRM.user.id)) ? h('div', { class: 'f-row full' },
@@ -10083,7 +10106,8 @@ async function openUserModal(u) {
             reference_2_relation:    fd.get('reference_2_relation')    || '',
             daily_lead_cap:          Number(fd.get('daily_lead_cap'))   || 0,
             monthly_lead_cap:        Number(fd.get('monthly_lead_cap')) || 0,
-            calendly_url:            fd.get('calendly_url')            || ''
+            calendly_url:            fd.get('calendly_url')            || '',
+            autodial_on:             fd.get('autodial_on') ? 1 : 0
           };
           if (!u.id) payload.password = fd.get('password');
           try { await api('api_users_save', payload); toast('Saved'); modal.remove(); await warmCache(); navigateTo('users'); }
