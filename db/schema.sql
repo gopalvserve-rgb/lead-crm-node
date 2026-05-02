@@ -880,3 +880,8 @@ CREATE INDEX IF NOT EXISTS idx_sheet_imported_rows_int ON sheet_imported_rows(in
 -- POSTs new rows to /hook/sheet/<token>.
 ALTER TABLE sheet_integrations ADD COLUMN IF NOT EXISTS webhook_token TEXT;
 CREATE INDEX IF NOT EXISTS idx_sheet_int_token ON sheet_integrations(webhook_token);
+-- Allow empty sheet_id so an integration can run in push-only mode
+-- (Apps Script POSTs new rows to /hook/sheet/{webhook_token}, no CSV
+-- pull required). The legacy NOT NULL constraint blocked admins from
+-- switching an existing integration over to push mode.
+ALTER TABLE sheet_integrations ALTER COLUMN sheet_id DROP NOT NULL;

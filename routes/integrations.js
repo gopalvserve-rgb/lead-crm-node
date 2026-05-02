@@ -62,6 +62,18 @@ function _csvParse(text) {
 }
 
 async function _runSheetSync(integration) {
+  // Push-only integration (no sheet_id set) — the user is using the
+  // Apps Script "push from sheet" mode, so the legacy CSV pull is
+  // skipped entirely. Clear any stale 404 error that's left over from
+  // before they switched modes.
+  if (!String(integration.sheet_id || '').trim()) {
+    if (integration.last_error) {
+      try {
+        await db.update('sheet_integrations', integration.id, { last_error: '' });
+      } catch (_) {}
+    }
+    return { imported: 0, skipped: 0, total: 0, mode: 'push' };
+  }
   const url = `https://docs.google.com/spreadsheets/d/${integration.sheet_id}/export?format=csv&gid=${integration.sheet_gid || '0'}`;
   const res = await fetch(url, { redirect: 'follow', timeout: 20000 });
   if (!res.ok) throw new Error('Sheet fetch failed: HTTP ' + res.status + ' (is the sheet shared as "Anyone with link → Viewer"?)');

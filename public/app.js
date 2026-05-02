@@ -8462,7 +8462,25 @@ function pushNewRowsToCRM() {
               try { await api('api_sheetSync_save', { id: s.id, name: s.name, sheet_url: url }); toast('Saved — sheet must be "Anyone with link"'); modal.remove(); onSaved && onSaved(); }
               catch (e) { toast(e.message, 'err'); }
             } }, 'Use public CSV mode')
-          )
+          ),
+          // Push-only mode escape hatch — when the admin has set up Apps
+          // Script in their (private) sheet, the legacy CSV pull becomes
+          // pointless. This button clears sheet_url so the poller skips
+          // this integration entirely; the only data path becomes the
+          // POST webhook that Apps Script hits.
+          sheetUrlValue ? h('div', { class: 'muted', style: { marginTop: '.6rem', fontSize: '.82rem' } },
+            'Already using Apps Script push mode (sheet stays private)? ',
+            h('a', { href: '#', onclick: async ev => {
+              ev.preventDefault();
+              if (!await confirmDialog('Switch to push-only mode? The CRM will stop trying to pull from the sheet — only Apps Script POSTs will create leads. Existing webhook URL stays the same.')) return;
+              try {
+                await api('api_sheetSync_save', { id: s.id, name: s.name, sheet_url: '' });
+                toast('Switched to push-only mode — the 404 error will clear on next sync');
+                modal.remove();
+                onSaved && onSaved();
+              } catch (e) { toast(e.message, 'err'); }
+            } }, 'Switch to push-only mode (clear sheet URL)')
+          ) : null
         )
       )
     ) : null
