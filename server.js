@@ -195,6 +195,10 @@ app.post('/hook/calendly/:token', webhooks.calendlyEvent);
 // justdial, tradeindia, 99acres, housing, generic). Auto-maps each
 // vendor's payload format to the CRM lead shape.
 app.post('/hook/leadsource/:source/:key', routes.integrations.leadSourceWebhook);
+// Sheet push webhook — Apps Script in a private sheet POSTs each new
+// row here. Token in URL identifies the integration; sheet stays
+// fully private (no "Anyone with link" sharing required).
+app.post('/hook/sheet/:token', routes.integrations.sheetPushWebhook);
 
 // Facebook OAuth callback — server-side flow that bypasses the JS SDK.
 // User clicks Connect → redirected here with code → we fetch pages → redirect back.

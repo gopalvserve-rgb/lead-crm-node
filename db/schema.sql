@@ -864,3 +864,11 @@ CREATE TABLE IF NOT EXISTS sheet_imported_rows (
   PRIMARY KEY (integration_id, row_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_sheet_imported_rows_int ON sheet_imported_rows(integration_id);
+
+-- ---- Sheet integration webhook token (push mode) ---------------
+-- Lets a private Google Sheet push rows to the CRM via Apps Script
+-- without ever being made public. Each integration gets a unique
+-- token; the user pastes a small script into their sheet that
+-- POSTs new rows to /hook/sheet/<token>.
+ALTER TABLE sheet_integrations ADD COLUMN IF NOT EXISTS webhook_token TEXT;
+CREATE INDEX IF NOT EXISTS idx_sheet_int_token ON sheet_integrations(webhook_token);

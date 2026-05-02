@@ -186,9 +186,18 @@ async function api_sheetSync_save(token, payload) {
   if (me.role !== 'admin') throw new Error('Admin only');
   const p = payload || {};
   if (!p.name) throw new Error('Name required');
-  if (!p.sheet_url && !p.sheet_id) throw new Error('Sheet URL required');
-  const { sheet_id, sheet_gid } = p.sheet_id ? { sheet_id: p.sheet_id, sheet_gid: p.sheet_gid || '0' } : _parseSheetUrl(p.sheet_url);
-  if (!sheet_id) throw new Error('Could not parse sheet ID from URL');
+  // sheet_url is now optional — if absent we assume push mode (the
+  // user will paste an Apps Script into their private sheet that
+  // POSTs rows to /hook/sheet/<token>). If present we keep CSV poll
+  // mode for users who don't mind a public sheet.
+  let sheet_id = '', sheet_gid = '0';
+  if (p.sheet_url || p.sheet_id) {
+    const parsed = p.sheet_id
+      ? { sheet_id: p.sheet_id, sheet_gid: p.sheet_gid || '0' }
+      : _parseSheetUrl(p.sheet_url);
+    sheet_id = parsed.sheet_id || '';
+    sheet_gid = parsed.sheet_gid || '0';
+  }
   const data = {
     name: String(p.name).trim(),
     sheet_id, sheet_gid,
@@ -199,12 +208,77 @@ async function api_sheetSync_save(token, payload) {
   };
   if (p.id) {
     await db.update('sheet_integrations', p.id, data);
+    // Mint a token if one doesn't exist yet (existing rows from before
+    // push mode shipped). Idempotent — only generates when missing.
+    const existing = await db.findOneBy('sheet_integrations', 'id', p.id);
+    if (!existing.webhook_token) {
+      await db.update('sheet_integrations', p.id, { webhook_token: 'sht_' + crypto.randomBytes(20).toString('hex') });
+    }
     return { id: Number(p.id), ok: true };
   }
   data.created_by = me.id;
   data.created_at = db.nowIso();
+  data.webhook_token = 'sht_' + crypto.randomBytes(20).toString('hex');
   const id = await db.insert('sheet_integrations', data);
   return { id, ok: true };
+}
+
+/**
+ * Express handler: POST /hook/sheet/:token
+ * The Apps Script in the user's private sheet posts JSON like
+ *   { name: "...", phone: "...", email: "...", city: "...", ... }
+ * for every row that hasn't been pushed yet. We match by webhook_token,
+ * apply the integration's default_source / default_assignee_id, and
+ * route through _internalCreateLead.
+ */
+async function sheetPushWebhook(req, res) {
+  try {
+    const token = String(req.params.token || '').trim();
+    if (!token) return res.status(400).json({ error: 'missing token' });
+    const all = await db.getAll('sheet_integrations');
+    const integ = all.find(i => String(i.webhook_token || '') === token);
+    if (!integ) return res.status(404).json({ error: 'unknown token' });
+    if (Number(integ.is_active) !== 1) return res.json({ ok: false, error: 'integration paused' });
+    const body = req.body || {};
+    // Accept either a single row or an array of rows
+    const rows = Array.isArray(body) ? body : (Array.isArray(body.rows) ? body.rows : [body]);
+    const results = [];
+    for (const r of rows) {
+      const obj = Object.assign({}, r);
+      // lower-case all keys for tolerance
+      const lower = {};
+      for (const k of Object.keys(obj)) lower[String(k).trim().toLowerCase()] = obj[k];
+      // Map mobile→phone if phone missing
+      if (!lower.phone && lower.mobile) lower.phone = lower.mobile;
+      if (!lower.name && !lower.phone && !lower.email) {
+        results.push({ ok: false, error: 'no name/phone/email' });
+        continue;
+      }
+      lower.source = lower.source || integ.default_source || 'Google Sheet';
+      if (!lower.assigned_to && integ.default_assignee_id) {
+        lower.assigned_to = integ.default_assignee_id;
+      }
+      try {
+        const created = await _internalCreateLead(lower, integ.created_by);
+        results.push({ ok: true, lead_id: created.id });
+      } catch (e) {
+        results.push({ ok: false, error: String(e.message || e) });
+      }
+    }
+    // Update last-synced counters so the admin tab reflects activity
+    const okCount = results.filter(r => r.ok).length;
+    if (okCount) {
+      await db.update('sheet_integrations', integ.id, {
+        last_synced_at: db.nowIso(),
+        last_synced_count: okCount,
+        last_error: ''
+      });
+    }
+    return res.json({ ok: true, processed: results.length, created: okCount, results });
+  } catch (e) {
+    console.error('[sheetPush] error:', e.message);
+    return res.status(500).json({ ok: false, error: String(e.message || e) });
+  }
 }
 
 async function api_sheetSync_delete(token, id) {
@@ -385,8 +459,9 @@ module.exports = {
   api_sheetSync_save,
   api_sheetSync_delete,
   api_sheetSync_runNow,
-  // Express handler
+  // Express handlers
   leadSourceWebhook,
+  sheetPushWebhook,
   // Background poller
   runDueSheetSyncs
 };

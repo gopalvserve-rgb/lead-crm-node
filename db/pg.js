@@ -112,7 +112,8 @@ const SCHEMA = {
     columns: ['name', 'sheet_id', 'sheet_gid', 'default_source',
               'default_assignee_id', 'poll_interval_min',
               'last_synced_at', 'last_synced_count', 'last_error',
-              'is_active', 'created_by', 'created_at'],
+              'is_active', 'created_by', 'created_at',
+              'webhook_token'],
     json: []
   },
   sheet_imported_rows: {

@@ -8202,8 +8202,49 @@ function openSheetSyncEditModal(s, onSaved) {
   s = s || { name: '', sheet_url: '', poll_interval_min: 15, default_source: 'Google Sheet', is_active: 1 };
   const sheetUrlValue = s.sheet_id ? `https://docs.google.com/spreadsheets/d/${s.sheet_id}/edit#gid=${s.sheet_gid || '0'}` : '';
   const users = (CRM.cache.users || []).filter(u => Number(u.is_active) === 1);
+  const pushUrl = s.webhook_token ? location.origin + '/hook/sheet/' + s.webhook_token : '';
+  const pushScript = pushUrl ? `// Paste this into your sheet: Extensions → Apps Script → replace the
+// default code with this → Save → Triggers (clock icon) → Add Trigger:
+//   Function = pushNewRowsToCRM, Event = Time-driven, every 5 min.
+// Add a column called "CRM_Sent" — the script writes ✓ there once a
+// row has been sent so it never sends the same row twice.
+//
+// SHEET STAYS FULLY PRIVATE — the script runs as you (the sheet owner)
+// and POSTs each new row to the unique URL below. No "Anyone with link"
+// sharing required.
+const CRM_WEBHOOK = '${pushUrl}';
+
+function pushNewRowsToCRM() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const data = sheet.getDataRange().getValues();
+  if (data.length < 2) return;
+  let headers = data[0].map(h => String(h).trim().toLowerCase());
+  let sentCol = headers.indexOf('crm_sent');
+  if (sentCol < 0) {
+    sheet.getRange(1, headers.length + 1).setValue('CRM_Sent');
+    sentCol = headers.length;
+    headers.push('crm_sent');
+  }
+  for (let r = 1; r < data.length; r++) {
+    if (data[r][sentCol]) continue;
+    const lead = {};
+    headers.forEach((h, c) => { if (h && h !== 'crm_sent') lead[h] = data[r][c]; });
+    if (!lead.name && !lead.phone) continue;
+    try {
+      const res = UrlFetchApp.fetch(CRM_WEBHOOK, {
+        method: 'post', contentType: 'application/json',
+        payload: JSON.stringify(lead), muteHttpExceptions: true
+      });
+      const ok = res.getResponseCode() === 200;
+      sheet.getRange(r + 1, sentCol + 1)
+        .setValue(ok ? '✓ ' + new Date().toLocaleString() : '✗ ' + res.getResponseCode());
+    } catch (e) {
+      sheet.getRange(r + 1, sentCol + 1).setValue('✗ ' + e.message);
+    }
+  }
+}` : '';
   const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
-  modal.appendChild(h('div', { class: 'modal' },
+  modal.appendChild(h('div', { class: 'modal modal-lg' },
     h('div', { class: 'modal-head' },
       h('h3', {}, s.id ? 'Edit sheet integration' : '+ Connect Google Sheet'),
       h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
@@ -8213,22 +8254,12 @@ function openSheetSyncEditModal(s, onSaved) {
         h('label', {}, 'Friendly name *'),
         h('input', { name: 'name', value: s.name, required: 'required', placeholder: 'e.g. IndiaMART weekly leads' })
       ),
-      h('div', { class: 'f-row full' },
-        h('label', {}, 'Google Sheet URL *'),
-        h('input', { name: 'sheet_url', value: sheetUrlValue, required: 'required', placeholder: 'https://docs.google.com/spreadsheets/d/.../edit#gid=0' }),
-        h('p', { class: 'muted', style: { margin: '.25rem 0 0', fontSize: '.78rem' } },
-          '⚠ The sheet must be shared as "Anyone with link → Viewer". The CRM only reads (never writes).')
-      ),
-      h('div', { class: 'f-row' },
-        h('label', {}, 'Poll interval (min)'),
-        h('input', { name: 'poll_interval_min', type: 'number', min: 5, value: s.poll_interval_min || 15 })
-      ),
       h('div', { class: 'f-row' },
         h('label', {}, 'Default source label'),
         h('input', { name: 'default_source', value: s.default_source || 'Google Sheet' })
       ),
-      h('div', { class: 'f-row full' },
-        h('label', {}, 'Default assignee (if "assigned_to" column blank)'),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Default assignee'),
         h('select', { name: 'default_assignee_id' },
           h('option', { value: '' }, '— Use assignment rules —'),
           ...users.map(u => h('option', { value: u.id, selected: Number(u.id) === Number(s.default_assignee_id) ? 'selected' : null }, u.name))
@@ -8237,7 +8268,7 @@ function openSheetSyncEditModal(s, onSaved) {
       h('div', { class: 'f-row full' },
         h('label', { class: 'qual-toggle' },
           h('input', { name: 'is_active', type: 'checkbox', checked: Number(s.is_active) !== 0 ? 'checked' : null }),
-          h('span', {}, ' Active (CRM polls this sheet)')
+          h('span', {}, ' Active')
         )
       )
     ),
@@ -8249,17 +8280,71 @@ function openSheetSyncEditModal(s, onSaved) {
         const payload = {
           id: s.id,
           name: fd.get('name'),
-          sheet_url: fd.get('sheet_url'),
-          poll_interval_min: Number(fd.get('poll_interval_min')) || 15,
+          // sheet_url is intentionally optional now — push mode (script
+          // in private sheet) is the recommended path.
+          sheet_url: '',
+          poll_interval_min: 15,
           default_source: fd.get('default_source'),
           default_assignee_id: fd.get('default_assignee_id') || null,
           is_active: f.querySelector('[name="is_active"]').checked ? 1 : 0
         };
-        if (!payload.name || !payload.sheet_url) return toast('Name + URL required', 'err');
-        try { await api('api_sheetSync_save', payload); toast('Saved'); modal.remove(); onSaved && onSaved(); }
-        catch (e) { toast(e.message, 'err'); }
+        if (!payload.name) return toast('Name required', 'err');
+        try {
+          const r = await api('api_sheetSync_save', payload);
+          toast('Saved');
+          modal.remove();
+          // Re-open the modal in edit mode so the user can see the
+          // freshly-generated webhook URL + script
+          if (!s.id) {
+            const fresh = (await api('api_sheetSync_list')).find(x => Number(x.id) === Number(r.id));
+            if (fresh) openSheetSyncEditModal(fresh, onSaved);
+            else onSaved && onSaved();
+          } else {
+            onSaved && onSaved();
+          }
+        } catch (e) { toast(e.message, 'err'); }
       } }, 'Save')
-    )
+    ),
+    // After save, the integration has a token — show the push setup
+    pushUrl ? h('div', { style: { padding: '1rem', borderTop: '1px solid #e5e7eb', background: '#f9fafb' } },
+      h('h4', { style: { margin: '0 0 .5rem' } }, '🔒 Recommended: Push from your sheet (sheet stays private)'),
+      h('p', { class: 'muted', style: { fontSize: '.82rem' } },
+        'Your sheet stays fully private — only you have access. Paste the script below into your sheet, set a 5-minute trigger, done. Each new row gets POSTed to the unique URL below; the CRM accepts it and creates a lead.'),
+      h('div', { style: { display: 'flex', gap: '.5rem', alignItems: 'center', marginBottom: '.5rem' } },
+        h('strong', { style: { fontSize: '.82rem' } }, 'Webhook URL:'),
+        h('input', { type: 'text', readonly: 'readonly', value: pushUrl, style: { flex: 1, fontFamily: 'monospace', fontSize: '.75rem' } }),
+        h('button', { class: 'btn sm', onclick: ev => {
+          const inp = ev.target.parentNode.querySelector('input');
+          navigator.clipboard.writeText(inp.value).then(() => toast('Copied'), () => { inp.select(); document.execCommand('copy'); toast('Copied'); });
+        } }, '📋 Copy URL')
+      ),
+      h('div', { style: { fontWeight: 600, fontSize: '.85rem', marginBottom: '.25rem' } }, 'Apps Script (paste into Sheet → Extensions → Apps Script):'),
+      h('textarea', { id: 'sheet-push-script', readonly: 'readonly', rows: 12,
+        style: { width: '100%', fontFamily: 'monospace', fontSize: '.72rem' } }, pushScript),
+      h('button', { class: 'btn sm', onclick: () => {
+        const ta = $('#sheet-push-script');
+        ta.select();
+        navigator.clipboard.writeText(pushScript).then(() => toast('Script copied'), () => { document.execCommand('copy'); toast('Copied'); });
+      } }, '📋 Copy script'),
+      h('details', { style: { marginTop: '1rem' } },
+        h('summary', { class: 'muted', style: { cursor: 'pointer', fontSize: '.82rem' } }, 'Or use public-CSV polling instead (sheet must be "Anyone with link → Viewer" — less secure)'),
+        h('div', { style: { padding: '.75rem 0' } },
+          h('p', { class: 'muted', style: { fontSize: '.8rem' } },
+            'Less secure but simpler if you don\'t mind a public sheet. The CRM polls the public CSV export every 15 min.'),
+          h('div', { style: { display: 'flex', gap: '.5rem' } },
+            h('input', { id: 'csv-sheet-url', type: 'text', value: sheetUrlValue,
+              placeholder: 'https://docs.google.com/spreadsheets/d/.../edit#gid=0',
+              style: { flex: 1 } }),
+            h('button', { class: 'btn sm', onclick: async () => {
+              const url = $('#csv-sheet-url').value;
+              if (!url) return toast('Paste sheet URL first', 'err');
+              try { await api('api_sheetSync_save', { id: s.id, name: s.name, sheet_url: url }); toast('Saved — sheet must be "Anyone with link"'); modal.remove(); onSaved && onSaved(); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, 'Use public CSV mode')
+          )
+        )
+      )
+    ) : null
   ));
   document.body.appendChild(modal);
 }
