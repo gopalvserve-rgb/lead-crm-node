@@ -3253,6 +3253,7 @@ function renderDialerSettings() {
           h('div', { class: 'actions' },
             h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
             h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
+            h('button', { class: 'btn', onclick: () => testRecordingFolderAccess() }, '🩺 Test folder access'),
             h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
             h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
           ),
@@ -11782,6 +11783,71 @@ function resetRecordingFolder() {
   localStorage.removeItem('rec_uploaded');
   toast('Folder cleared');
   if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
+}
+
+/**
+ * Diagnostic — tells the user exactly what the native layer can read in
+ * their picked recordings folder. Surfaces the file count, audio count,
+ * and sample filenames in a modal so the rep can spot "0 files visible"
+ * vs "100 files but 0 audio" vs "names returning blank" instantly.
+ */
+function testRecordingFolderAccess() {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.diagnoseRecordingFolder !== 'function') {
+    toast('Update the app — this diagnostic was added in a newer build.', 'warn');
+    return;
+  }
+  let result;
+  try {
+    const raw = LeadCRMNative.diagnoseRecordingFolder();
+    result = JSON.parse(raw || '{}');
+  } catch (e) {
+    toast('Could not read folder: ' + e.message, 'err');
+    return;
+  }
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal' });
+  body.appendChild(h('h3', {}, '🩺 Folder access check'));
+  if (!result.ok) {
+    body.appendChild(h('div', { class: 'error-box', style: { marginBottom: '.75rem' } },
+      result.error === 'no_folder_picked'
+        ? 'No folder picked yet. Tap "Pick recordings folder" first.'
+        : 'Could not read the folder: ' + (result.error || 'unknown error')));
+  } else {
+    body.appendChild(h('div', { class: 'muted', style: { marginBottom: '.5rem' } },
+      'Folder: ', h('code', { style: { fontSize: '.78rem' } }, result.display || result.uri || '(unknown)')));
+    body.appendChild(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '.5rem', marginBottom: '.75rem' } },
+      h('div', { style: { background: '#f1f5f9', padding: '.5rem .75rem', borderRadius: '6px' } },
+        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Subfolders'),
+        h('div', { style: { fontSize: '1.4rem', fontWeight: 700 } }, String(result.dirs || 0))),
+      h('div', { style: { background: '#f1f5f9', padding: '.5rem .75rem', borderRadius: '6px' } },
+        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Files'),
+        h('div', { style: { fontSize: '1.4rem', fontWeight: 700 } }, String(result.files || 0))),
+      h('div', { style: { background: '#dcfce7', padding: '.5rem .75rem', borderRadius: '6px' } },
+        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Audio files'),
+        h('div', { style: { fontSize: '1.4rem', fontWeight: 700, color: '#166534' } }, String(result.audioFiles || 0)))
+    ));
+    if (result.audioFiles === 0) {
+      body.appendChild(h('div', { class: 'error-box', style: { marginBottom: '.75rem' } },
+        '⚠ The folder is readable but contains zero audio files. Either: (a) call recording is not enabled in your phone\'s dialer, (b) recordings land in a different folder, or (c) your OEM is hiding the files. Make a test call (with recording on), then re-run this check.'));
+    }
+    if (Array.isArray(result.sample) && result.sample.length) {
+      body.appendChild(h('h4', { style: { marginBottom: '.4rem' } }, 'Sample files (top of folder):'));
+      const list = h('ul', { style: { maxHeight: '180px', overflow: 'auto', fontSize: '.78rem', paddingLeft: '1.2rem' } });
+      result.sample.forEach(f => {
+        const sizeKb = Math.max(0, Math.round((f.size || 0) / 1024));
+        const ts = f.modified ? new Date(f.modified).toLocaleString() : '(no timestamp)';
+        list.appendChild(h('li', {}, h('code', {}, f.name || '(unnamed)'),
+          ' · ', sizeKb, ' KB · ', ts));
+      });
+      body.appendChild(list);
+    } else {
+      body.appendChild(h('div', { class: 'muted' }, 'Folder is empty.'));
+    }
+  }
+  body.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Close')));
+  m.appendChild(body);
+  document.body.appendChild(m);
 }
 
 // When the native PhoneStateReceiver fires a call event, it calls this function.
