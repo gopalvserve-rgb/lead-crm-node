@@ -14,7 +14,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
@@ -23,7 +22,7 @@ import android.webkit.WebView;
 import androidx.annotation.NonNull;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-// (DocumentFile import removed — we now use ContentResolver/DocumentsContract directly)
+import androidx.documentfile.provider.DocumentFile;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -51,30 +50,11 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        // Register the new CallerId plugin so the JS bridge wires up the
-        // CallerId.* API. MUST be before super.onCreate() per Capacitor docs.
-        registerPlugin(CallerIdPlugin.class);
         super.onCreate(savedInstanceState);
         requestPermissions();
         registerCallReceiver();
         getBridge().getWebView().addJavascriptInterface(new LeadCRMBridge(), "LeadCRMNative");
         handleSharedIntent(getIntent());
-        // Deep-link from the caller-ID notification → navigate the SPA
-        handleDeeplink(getIntent());
-    }
-
-    private void handleDeeplink(Intent intent) {
-        if (intent == null) return;
-        String dl = intent.getStringExtra("deeplink");
-        if (dl == null || dl.isEmpty()) return;
-        // The CRM uses hash-based routing; just set window.location.hash
-        getBridge().eval(
-            "(function(){try{var h=" + jsString(dl) + ";window.location.hash=h.replace(/^\\/?#/,'');}catch(e){}})();",
-            null
-        );
-    }
-    private static String jsString(String s) {
-        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'";
     }
 
     @Override
@@ -82,7 +62,6 @@ public class MainActivity extends BridgeActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleSharedIntent(intent);
-        handleDeeplink(intent);
     }
 
     private void handleSharedIntent(Intent intent) {
@@ -222,158 +201,43 @@ public class MainActivity extends BridgeActivity {
     }
 
     /**
-     * One row in a SAF folder listing — populated via a direct
-     * ContentResolver query against DocumentsContract instead of going
-     * through DocumentFile, which is documented as O(N) per call on some
-     * OEMs (Xiaomi MIUI, Realme UI, Vivo Funtouch) and routinely returns
-     * null filenames or empty arrays on Android 11+. Direct queries are
-     * 100-500× faster and far more reliable.
+     * Walk the folder tree (3 levels deep) looking for the most recently-modified
+     * audio file whose filename digits include the given tail (last 7 digits of
+     * the dialed phone). Files modified before sinceMs are skipped.
      */
-    private static class SafEntry {
-        Uri uri;
-        String name;
-        String mime;
-        long size;
-        long modified;
-        boolean isDir;
-    }
-
-    /** Resolve the document id of `parentDocUri`, or fall back to the tree's
-     *  root id. Returns null if neither can be derived (the caller treats
-     *  this as "list nothing"). */
-    private String resolveDocId(Uri parentDocUri, Uri tree) {
-        try {
-            return DocumentsContract.getDocumentId(parentDocUri);
-        } catch (Exception ignored) { }
-        try {
-            return DocumentsContract.getTreeDocumentId(tree);
-        } catch (Exception ignored) { }
-        return null;
-    }
-
-    /**
-     * List one folder's children using ContentResolver directly. This is
-     * the function the OEM-tolerant scanner is built on — DocumentFile's
-     * abstraction layer drops names/timestamps on too many devices.
-     */
-    private java.util.List<SafEntry> safList(Uri parentDocUri, Uri tree) {
-        // EVERY path through this method must return a list — a thrown
-        // exception here would propagate up through findBestSafMatchRec /
-        // listRecursiveSaf and ultimately crash the WebView process,
-        // which the user sees as "app force-closed". Wrap the whole body.
-        java.util.List<SafEntry> out = new java.util.ArrayList<SafEntry>();
-        try {
-            if (tree == null) return out;
-            String parentDocId = resolveDocId(parentDocUri, tree);
-            if (parentDocId == null) return out;
-            ContentResolver cr = getContentResolver();
-            Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentDocId);
-            String[] proj = new String[] {
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE,
-                    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
-                    DocumentsContract.Document.COLUMN_SIZE
-            };
-            try (Cursor c = cr.query(children, proj, null, null, null)) {
-                if (c == null) return out;
-                while (c.moveToNext()) {
-                    try {
-                        SafEntry e = new SafEntry();
-                        String docId = c.getString(0);
-                        if (docId == null) continue;
-                        e.uri = DocumentsContract.buildDocumentUriUsingTree(tree, docId);
-                        e.name = c.getString(1);
-                        e.mime = c.getString(2);
-                        e.modified = c.isNull(3) ? 0L : c.getLong(3);
-                        e.size = c.isNull(4) ? 0L : c.getLong(4);
-                        e.isDir = DocumentsContract.Document.MIME_TYPE_DIR.equals(e.mime);
-                        out.add(e);
-                    } catch (Throwable rowErr) {
-                        // Bad row → skip, don't kill the whole listing
-                        Log.w(TAG, "safList row failed: " + rowErr.getMessage());
-                    }
-                }
-            }
-        } catch (Throwable t) {
-            // Catch Throwable (not just Exception) so even something like
-            // an OutOfMemoryError on a giant folder doesn't take the app
-            // down — better to return empty than crash.
-            Log.w(TAG, "safList failed hard: " + t.getMessage());
-        }
-        return out;
-    }
-
-    /**
-     * Walk the folder tree (3 levels deep) looking for an audio file
-     * whose filename digits include `tail` (last 7 digits of the dialed
-     * phone) and was modified after `sinceMs`. Falls back gracefully
-     * when modified timestamps are missing (some MIUI / Realme builds
-     * report 0 for SAF document timestamps) — in that case we use file
-     * SIZE > 0 + display-name match as the only filter, ranked by
-     * lexicographic name (call-recorder filenames are timestamp-sortable
-     * on every OEM we've seen).
-     */
-    private SafEntry findBestSafMatch(Uri tree, String tail, long sinceMs) {
-        try {
-            if (tree == null) return null;
-            Uri rootDoc = DocumentsContract.buildDocumentUriUsingTree(
-                    tree, DocumentsContract.getTreeDocumentId(tree));
-            return findBestSafMatchRec(rootDoc, tree, tail, sinceMs, 0, null);
-        } catch (Throwable t) {
-            Log.w(TAG, "findBestSafMatch failed: " + t.getMessage());
-            return null;
-        }
-    }
-
-    private SafEntry findBestSafMatchRec(Uri parentDoc, Uri tree, String tail,
-                                         long sinceMs, int depth, SafEntry bestSoFar) {
+    private DocumentFile findBestMatch(DocumentFile dir, String tail, long sinceMs, int depth, DocumentFile bestSoFar) {
         if (depth > 3) return bestSoFar;
-        SafEntry best = bestSoFar;
-        long bestKey = best != null ? rankKey(best) : 0;
-        try {
-            for (SafEntry e : safList(parentDoc, tree)) {
-                try {
-                    if (e == null) continue;
-                    if (e.isDir) {
-                        SafEntry sub = findBestSafMatchRec(e.uri, tree, tail, sinceMs, depth + 1, best);
-                        if (sub != null) {
-                            long k = rankKey(sub);
-                            if (k > bestKey) { best = sub; bestKey = k; }
-                        }
-                        continue;
+        DocumentFile[] kids;
+        try { kids = dir.listFiles(); } catch (Exception e) { return bestSoFar; }
+        if (kids == null) return bestSoFar;
+        DocumentFile best = bestSoFar;
+        long bestMod = best != null ? best.lastModified() : 0;
+        for (DocumentFile f : kids) {
+            try {
+                if (f.isDirectory()) {
+                    DocumentFile sub = findBestMatch(f, tail, sinceMs, depth + 1, best);
+                    if (sub != null && sub.lastModified() > bestMod) {
+                        best = sub;
+                        bestMod = sub.lastModified();
                     }
-                    if (e.name == null || e.name.isEmpty()) continue;
-                    if (!isAudioFile(e.name)) continue;
-                    if (e.size <= 0) continue;
-                    if (sinceMs > 0 && e.modified > 0 && e.modified < sinceMs) continue;
-                    if (tail != null && !tail.isEmpty()) {
-                        String fileDigits = e.name.replaceAll("[^0-9]", "");
-                        if (!fileDigits.contains(tail)) continue;
-                    }
-                    long k = rankKey(e);
-                    if (k > bestKey) { best = e; bestKey = k; }
-                } catch (Throwable rowErr) { /* skip row */ }
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "findBestSafMatchRec failed: " + t.getMessage());
+                    continue;
+                }
+                if (!f.isFile()) continue;
+                String name = f.getName();
+                if (!isAudioFile(name)) continue;
+                long mod = f.lastModified();
+                if (sinceMs > 0 && mod < sinceMs) continue;
+                if (tail != null && !tail.isEmpty()) {
+                    String fileDigits = name.replaceAll("[^0-9]", "");
+                    if (!fileDigits.contains(tail)) continue;
+                }
+                if (mod > bestMod) {
+                    best = f;
+                    bestMod = mod;
+                }
+            } catch (Exception ignored) {}
         }
         return best;
-    }
-
-    /** Ranking key: prefer real timestamps; fall back to lex name. */
-    private static long rankKey(SafEntry e) {
-        if (e.modified > 0) return e.modified;
-        // No modified timestamp → use a name-derived pseudo-time. OEM
-        // call recorders embed yyyymmdd-hhmmss in filenames; the longest
-        // digit run gives a good ranking proxy.
-        String n = e.name == null ? "" : e.name;
-        String digits = n.replaceAll("[^0-9]", "");
-        if (digits.length() >= 8) {
-            try { return Long.parseLong(digits.substring(0, Math.min(14, digits.length()))); }
-            catch (Exception ignored) {}
-        }
-        return 1L; // any positive value beats null bestSoFar
     }
 
     /* ---------------- JS-facing bridge ---------------- */
@@ -443,10 +307,10 @@ public class MainActivity extends BridgeActivity {
             if (s == null) return "[]";
             try {
                 Uri tree = Uri.parse(s);
-                Uri rootDoc = DocumentsContract.buildDocumentUriUsingTree(
-                        tree, DocumentsContract.getTreeDocumentId(tree));
+                DocumentFile dir = DocumentFile.fromTreeUri(MainActivity.this, tree);
+                if (dir == null || !dir.exists() || !dir.canRead()) return "[]";
                 JSONArray arr = new JSONArray();
-                listRecursiveSaf(rootDoc, tree, (long) sinceMs, arr, 0);
+                listRecursive(dir, (long) sinceMs, arr, 0);
                 return arr.toString();
             } catch (Exception e) {
                 Log.e(TAG, "listRecordings: " + e.getMessage());
@@ -454,29 +318,25 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
-        /**
-         * Direct-ContentResolver replacement for the old DocumentFile-based
-         * recursive walk. On Android 11+ OEM ROMs (Xiaomi, Realme, Vivo,
-         * Honor) DocumentFile.listFiles() / getName() routinely return
-         * empty / null even when the user has granted persistable URI
-         * permission. Querying DocumentsContract directly bypasses that
-         * abstraction and gets the actual rows.
-         */
-        private void listRecursiveSaf(Uri parentDoc, Uri tree, long sinceMs, JSONArray arr, int depth) {
+        private void listRecursive(DocumentFile dir, long sinceMs, JSONArray arr, int depth) {
             if (depth > 3) return;
-            for (SafEntry e : safList(parentDoc, tree)) {
+            DocumentFile[] kids;
+            try { kids = dir.listFiles(); } catch (Exception e) { return; }
+            if (kids == null) return;
+            for (DocumentFile f : kids) {
                 try {
-                    if (e.isDir) { listRecursiveSaf(e.uri, tree, sinceMs, arr, depth + 1); continue; }
-                    if (e.name == null || e.name.isEmpty()) continue;
-                    if (!isAudioFile(e.name)) continue;
-                    if (e.size <= 0) continue;
-                    if (sinceMs > 0 && e.modified > 0 && e.modified < sinceMs) continue;
+                    if (f.isDirectory()) { listRecursive(f, sinceMs, arr, depth + 1); continue; }
+                    if (!f.isFile()) continue;
+                    String name = f.getName();
+                    if (!isAudioFile(name)) continue;
+                    long modified = f.lastModified();
+                    if (sinceMs > 0 && modified < sinceMs) continue;
                     JSONObject o = new JSONObject();
-                    o.put("name", e.name);
-                    o.put("uri", e.uri.toString());
-                    o.put("size", e.size);
-                    o.put("modified", e.modified);
-                    o.put("mime", e.mime != null ? e.mime : guessMime(e.name));
+                    o.put("name", name);
+                    o.put("uri", f.getUri().toString());
+                    o.put("size", f.length());
+                    o.put("modified", modified);
+                    o.put("mime", f.getType() != null ? f.getType() : guessMime(name));
                     arr.put(o);
                 } catch (Exception ignored) {}
             }
@@ -505,23 +365,19 @@ public class MainActivity extends BridgeActivity {
                         return;
                     }
                     Uri tree = Uri.parse(folderUriStr);
+                    DocumentFile dir = DocumentFile.fromTreeUri(MainActivity.this, tree);
+                    if (dir == null || !dir.exists() || !dir.canRead()) {
+                        invokeJsCallback(cb, false, "folder_unreachable");
+                        return;
+                    }
                     String digits = phone == null ? "" : phone.replaceAll("[^0-9]", "");
                     String tail = digits.length() >= 7 ? digits.substring(digits.length() - 7) : digits;
 
-                    // Direct-ContentResolver SAF walk. Try once, retry once after
-                    // 4s (recorder needs time to finalise the file on disk before
-                    // SAF can see it).
-                    SafEntry best = findBestSafMatch(tree, tail, (long) sinceMs);
+                    // Try once, retry once after 4s (recorder needs time to finalise the file)
+                    DocumentFile best = findBestMatch(dir, tail, (long) sinceMs, 0, null);
                     if (best == null) {
                         Thread.sleep(4000);
-                        best = findBestSafMatch(tree, tail, (long) sinceMs);
-                    }
-                    // Last resort: take the most recent audio file in the folder
-                    // ignoring the digit-tail filter. Some OEM recorders
-                    // (Realme UI 5+) name files as "Call_<contact>_<datetime>.m4a"
-                    // with no embedded phone digits.
-                    if (best == null) {
-                        best = findBestSafMatch(tree, "", (long) sinceMs);
+                        best = findBestMatch(dir, tail, (long) sinceMs, 0, null);
                     }
                     if (best == null) {
                         invokeJsCallback(cb, false, "no_match");
@@ -529,65 +385,14 @@ public class MainActivity extends BridgeActivity {
                     }
 
                     long durationGuess = Math.max(0, (System.currentTimeMillis() - (long) sinceMs) / 1000);
-                    String name = best.name != null && !best.name.isEmpty() ? best.name : "recording.m4a";
-                    uploadFile(best.uri, name, phone, "out", (int) durationGuess,
-                            leadId, String.valueOf((long) sinceMs), baseUrl, token, cb);
+                    uploadFile(best.getUri(), best.getName() != null ? best.getName() : "recording.m4a",
+                            phone, "out", (int) durationGuess, leadId, String.valueOf((long) sinceMs),
+                            baseUrl, token, cb);
                 } catch (Exception e) {
                     Log.e(TAG, "syncCallRecording: " + e.getMessage());
                     invokeJsCallback(cb, false, e.getMessage() == null ? "error" : e.getMessage());
                 }
             }).start();
-        }
-
-        /**
-         * Diagnostic: tells the user exactly what we can see in the picked
-         * folder. Returns a JSON blob with file count, sample names, and
-         * any error encountered. Wire this to a "Test folder access"
-         * button on the Diagnostics screen so reps can self-verify.
-         */
-        @JavascriptInterface
-        public String diagnoseRecordingFolder() {
-            SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-            String s = prefs.getString(KEY_REC_FOLDER, null);
-            JSONObject out = new JSONObject();
-            try {
-                if (s == null) { out.put("ok", false); out.put("error", "no_folder_picked"); return out.toString(); }
-                Uri tree = Uri.parse(s);
-                out.put("uri", s);
-                out.put("display", humanFolderName(tree));
-                Uri rootDoc;
-                try {
-                    rootDoc = DocumentsContract.buildDocumentUriUsingTree(
-                            tree, DocumentsContract.getTreeDocumentId(tree));
-                } catch (Exception e) {
-                    out.put("ok", false); out.put("error", "bad_tree_uri: " + e.getMessage());
-                    return out.toString();
-                }
-                java.util.List<SafEntry> top = safList(rootDoc, tree);
-                int fileCount = 0, audioCount = 0, dirCount = 0;
-                JSONArray sample = new JSONArray();
-                for (SafEntry e : top) {
-                    if (e.isDir) { dirCount++; continue; }
-                    fileCount++;
-                    if (isAudioFile(e.name)) audioCount++;
-                    if (sample.length() < 8) {
-                        JSONObject row = new JSONObject();
-                        row.put("name", e.name);
-                        row.put("mime", e.mime);
-                        row.put("size", e.size);
-                        row.put("modified", e.modified);
-                        sample.put(row);
-                    }
-                }
-                out.put("ok", true);
-                out.put("dirs", dirCount);
-                out.put("files", fileCount);
-                out.put("audioFiles", audioCount);
-                out.put("sample", sample);
-            } catch (Exception e) {
-                try { out.put("ok", false); out.put("error", e.getMessage()); } catch (Exception ignored) {}
-            }
-            return out.toString();
         }
 
         @JavascriptInterface

@@ -3,50 +3,6 @@
  * Full-featured SPA over POST /api.
  */
 
-// Global JS error hook — turns silent WebView crashes into a visible
-// banner so we can see exactly which line failed. Without this, a fatal
-// error in any view handler just blanks the page (and on some Capacitor
-// builds bubbles up as an Android "App keeps stopping" dialog).
-window.__globalErrCount = 0;
-function _renderGlobalError(msg, src) {
-  try {
-    if (!document.body) return;
-    if (window.__globalErrCount >= 5) return; // cap so a fast loop can't bloat DOM
-    window.__globalErrCount++;
-    var el = document.getElementById('global-js-err');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'global-js-err';
-      el.style.cssText = 'position:fixed;left:.5rem;right:.5rem;top:.5rem;z-index:99999;background:#fee2e2;color:#7f1d1d;padding:.6rem .8rem;border-radius:8px;font-size:.78rem;box-shadow:0 4px 12px rgba(0,0,0,.2);max-height:40vh;overflow:auto';
-      document.body.appendChild(el);
-      var close = document.createElement('button');
-      close.textContent = '✕';
-      close.style.cssText = 'float:right;background:transparent;border:0;font-size:1rem;color:#7f1d1d;cursor:pointer';
-      close.onclick = function () { try { el.remove(); } catch (_) {} window.__globalErrCount = 0; };
-      el.appendChild(close);
-    }
-    var line = document.createElement('div');
-    line.textContent = '⚠ ' + msg + (src ? ' @ ' + src : '');
-    el.appendChild(line);
-  } catch (_) {}
-}
-window.addEventListener('error', function (ev) {
-  try {
-    var msg = (ev && ev.message) || 'Unknown JS error';
-    var src = (ev && ev.filename) ? (ev.filename + ':' + (ev.lineno || '?')) : '';
-    console.error('[global onerror]', msg, src, ev && ev.error);
-    _renderGlobalError(msg, src);
-  } catch (_) {}
-});
-window.addEventListener('unhandledrejection', function (ev) {
-  try {
-    var reason = ev && ev.reason;
-    var msg = (reason && (reason.message || reason)) || 'Unhandled promise rejection';
-    console.error('[unhandledrejection]', reason);
-    _renderGlobalError('Promise: ' + String(msg).slice(0, 200), '');
-  } catch (_) {}
-});
-
 const CRM = {
   token: localStorage.getItem('crm_token') || null,
   user: null,
@@ -165,18 +121,16 @@ async function apiRaw(fn, ...args) {
       // Resume any pending call (WebView may have been killed during the call).
       // Runs after warmCache so the lead's status options etc are loaded.
       setTimeout(() => _resumePendingCall('boot'), 1500);
-      // (DISABLED) firstRunRecordingPrompt + silentBackgroundSync — these
-      // hit the native LeadCRMNative.listRecordings / syncCallRecording
-      // bridge which has been crashing the WebView on some OEM devices.
-      // Recording sync is temporarily off until the SAF reading path is
-      // proven safe. The Dialer → Recordings tab still has a manual
-      // "Sync now" button if the user wants to opt in explicitly.
-      // setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
+      // First-run onboarding (APK only) — if user has never picked a
+      // call-recordings folder, prompt them with a clear modal so they
+      // don't have to discover it via the Dialer tab.
+      setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
       // If user is already checked in today (came back to app later in
       // the day), resume the 30-min location-ping loop so the trail
       // continues from where the previous session left off.
       setTimeout(() => _resumeLocationPingsIfCheckedIn().catch(() => {}), 3000);
-      // setTimeout(() => silentBackgroundSync(), 4000);
+      // Silent background sweep: pick up any missed recordings.
+      setTimeout(() => silentBackgroundSync(), 4000);
     } catch (_) { logout(); }
   } else {
     renderLogin();
@@ -982,29 +936,6 @@ const LEAD_COLUMNS = [
 ];
 
 VIEWS.leads = async (view) => {
-  // Error boundary — if rendering throws below, surface a recoverable
-  // error card instead of letting the exception bubble all the way up
-  // to Capacitor (which on some devices pops a "App keeps stopping" dialog
-  // because the WebView's JS context gets blown away).
-  try {
-    return await _renderLeadsView(view);
-  } catch (err) {
-    console.error('[leads] render failed:', err);
-    view.innerHTML = '';
-    view.appendChild(h('div', { class: 'error-box', style: { margin: '1rem' } },
-      h('h4', { style: { marginTop: 0 } }, '⚠ Couldn\'t open the Leads tab'),
-      h('p', {}, 'Something went wrong while rendering this page. Try the actions below — if it keeps failing, please share the error text.'),
-      h('p', { class: 'muted', style: { fontSize: '.78rem' } }, 'Error: ', String(err && err.message || err))
-    ));
-    view.appendChild(h('div', { style: { display: 'flex', gap: '.5rem', margin: '0 1rem 1rem', flexWrap: 'wrap' } },
-      h('button', { class: 'btn', onclick: () => location.reload() }, '🔄 Reload app'),
-      h('button', { class: 'btn ghost', onclick: () => { CRM.prefs.filters = {}; location.reload(); } }, 'Reset filters & reload'),
-      h('button', { class: 'btn ghost', onclick: () => { location.hash = '#/dashboard'; } }, '← Dashboard')
-    ));
-  }
-};
-
-async function _renderLeadsView(view) {
   if (!CRM.cache.statuses) await warmCache();
   const { statuses, sources, users } = CRM.cache;
 
@@ -1104,7 +1035,7 @@ async function _renderLeadsView(view) {
 
   CRM._leadsPage = 1;
   await loadLeads({ page: 1 });
-}
+};
 
 function toggleHeader(show) {
   CRM.prefs.showHeader = show;
@@ -2414,20 +2345,6 @@ function openColumnChooser() {
 
 /* --- Lead modal --- */
 async function openLeadModal(id) {
-  // Error boundary — see VIEWS.leads for rationale. A render failure
-  // here used to silently kill the WebView; now it shows a tiny error
-  // toast with the message, leaving the rest of the app responsive.
-  try {
-    return await _openLeadModalImpl(id);
-  } catch (err) {
-    console.error('[openLeadModal] failed:', err);
-    if (typeof toast === 'function') {
-      toast('Could not open lead — ' + (err && err.message ? err.message : 'unknown error'), 'err');
-    }
-  }
-}
-
-async function _openLeadModalImpl(id) {
   const { statuses, sources, products, users, customFields } = CRM.cache;
   // Lazy-load the admin-managed tag library; cached for the session.
   if (!CRM.cache.tagLibrary) {
@@ -3245,13 +3162,13 @@ VIEWS.dialer = async (view) => {
 
   view.innerHTML = '';
 
-  // (DISABLED) "Connect folder" auto-banner — recording sync is OFF
-  // until the SAF reading path is proven safe. Folder picker is still
-  // available in Dialer → Settings if the user wants it.
+  // Always-visible banner when running on the APK and no folder is connected
+  // yet. Impossible to miss, taps directly into the picker. Hidden as soon
+  // as the user picks a folder (next render won't include it).
   const isApkRuntime = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
   let connectedFolder = '';
   try { connectedFolder = isApkRuntime ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
-  if (false /* isApkRuntime && !connectedFolder */) {
+  if (isApkRuntime && !connectedFolder) {
     view.appendChild(h('div', {
       style: { background: '#fef3c7', color: '#92400e', borderLeft: '4px solid #f59e0b', padding: '.7rem 1rem', borderRadius: '8px', marginBottom: '.75rem', cursor: 'pointer' },
       onclick: () => setupRecordingFolder()
@@ -3291,9 +3208,24 @@ VIEWS.dialer = async (view) => {
 
   renderDialerTab();
 
-  // (DISABLED) Dialer-tab folder-picker nudge — recording sync is off
-  // until the SAF reading path is proven safe. Picker is still
-  // accessible from Dialer → Settings → "Pick recordings folder".
+  // Dialer-tab nudge: if the user lands on the Dialer page and still hasn't
+  // picked a folder (e.g. they dismissed the boot-time onboarding modal),
+  // open the picker once per session. The boot onboarding (firstRunRecordingPrompt)
+  // is the primary path; this is a backup so users who hit Dialer before
+  // dismissing/seeing onboarding still get prompted.
+  if (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') {
+    try {
+      const fld = LeadCRMNative.getRecordingFolder();
+      if (!fld
+          && !sessionStorage.getItem('rec_setup_dismissed')
+          && localStorage.getItem('rec_onboarding_seen_v2') !== '1') {
+        setTimeout(() => {
+          if (location.hash === '#/dialer') setupRecordingFolder();
+          sessionStorage.setItem('rec_setup_dismissed', '1');
+        }, 800);
+      }
+    } catch (_) {}
+  }
 };
 
 function renderDialerSettings() {
@@ -3321,7 +3253,6 @@ function renderDialerSettings() {
           h('div', { class: 'actions' },
             h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
             h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
-            h('button', { class: 'btn', onclick: () => testRecordingFolderAccess() }, '🩺 Test folder access'),
             h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
             h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
           ),
@@ -11853,71 +11784,6 @@ function resetRecordingFolder() {
   if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
 }
 
-/**
- * Diagnostic — tells the user exactly what the native layer can read in
- * their picked recordings folder. Surfaces the file count, audio count,
- * and sample filenames in a modal so the rep can spot "0 files visible"
- * vs "100 files but 0 audio" vs "names returning blank" instantly.
- */
-function testRecordingFolderAccess() {
-  if (!window.LeadCRMNative || typeof LeadCRMNative.diagnoseRecordingFolder !== 'function') {
-    toast('Update the app — this diagnostic was added in a newer build.', 'warn');
-    return;
-  }
-  let result;
-  try {
-    const raw = LeadCRMNative.diagnoseRecordingFolder();
-    result = JSON.parse(raw || '{}');
-  } catch (e) {
-    toast('Could not read folder: ' + e.message, 'err');
-    return;
-  }
-  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
-  const body = h('div', { class: 'modal' });
-  body.appendChild(h('h3', {}, '🩺 Folder access check'));
-  if (!result.ok) {
-    body.appendChild(h('div', { class: 'error-box', style: { marginBottom: '.75rem' } },
-      result.error === 'no_folder_picked'
-        ? 'No folder picked yet. Tap "Pick recordings folder" first.'
-        : 'Could not read the folder: ' + (result.error || 'unknown error')));
-  } else {
-    body.appendChild(h('div', { class: 'muted', style: { marginBottom: '.5rem' } },
-      'Folder: ', h('code', { style: { fontSize: '.78rem' } }, result.display || result.uri || '(unknown)')));
-    body.appendChild(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '.5rem', marginBottom: '.75rem' } },
-      h('div', { style: { background: '#f1f5f9', padding: '.5rem .75rem', borderRadius: '6px' } },
-        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Subfolders'),
-        h('div', { style: { fontSize: '1.4rem', fontWeight: 700 } }, String(result.dirs || 0))),
-      h('div', { style: { background: '#f1f5f9', padding: '.5rem .75rem', borderRadius: '6px' } },
-        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Files'),
-        h('div', { style: { fontSize: '1.4rem', fontWeight: 700 } }, String(result.files || 0))),
-      h('div', { style: { background: '#dcfce7', padding: '.5rem .75rem', borderRadius: '6px' } },
-        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, 'Audio files'),
-        h('div', { style: { fontSize: '1.4rem', fontWeight: 700, color: '#166534' } }, String(result.audioFiles || 0)))
-    ));
-    if (result.audioFiles === 0) {
-      body.appendChild(h('div', { class: 'error-box', style: { marginBottom: '.75rem' } },
-        '⚠ The folder is readable but contains zero audio files. Either: (a) call recording is not enabled in your phone\'s dialer, (b) recordings land in a different folder, or (c) your OEM is hiding the files. Make a test call (with recording on), then re-run this check.'));
-    }
-    if (Array.isArray(result.sample) && result.sample.length) {
-      body.appendChild(h('h4', { style: { marginBottom: '.4rem' } }, 'Sample files (top of folder):'));
-      const list = h('ul', { style: { maxHeight: '180px', overflow: 'auto', fontSize: '.78rem', paddingLeft: '1.2rem' } });
-      result.sample.forEach(f => {
-        const sizeKb = Math.max(0, Math.round((f.size || 0) / 1024));
-        const ts = f.modified ? new Date(f.modified).toLocaleString() : '(no timestamp)';
-        list.appendChild(h('li', {}, h('code', {}, f.name || '(unnamed)'),
-          ' · ', sizeKb, ' KB · ', ts));
-      });
-      body.appendChild(list);
-    } else {
-      body.appendChild(h('div', { class: 'muted' }, 'Folder is empty.'));
-    }
-  }
-  body.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
-    h('button', { class: 'btn', onclick: () => m.remove() }, 'Close')));
-  m.appendChild(body);
-  document.body.appendChild(m);
-}
-
 // When the native PhoneStateReceiver fires a call event, it calls this function.
 window.onLeadCRMCallEvent = function (event, number) {
   try {
@@ -11964,13 +11830,10 @@ window.onLeadCRMCallEvent = function (event, number) {
  */
 async function openAfterCallModalWithRecording(lead, callContext) {
   await openAfterCallModal(lead);
-  // (DISABLED) triggerBackgroundRecordingSync — calls the native SAF
-  // reader which has been crashing the WebView on some OEM devices.
-  // The remark/status form still works; the user can manually upload a
-  // recording via the lead detail screen if they need to.
-  // if (window.LeadCRMNative && typeof LeadCRMNative.syncCallRecording === 'function') {
-  //   triggerBackgroundRecordingSync(lead, callContext);
-  // }
+  // Fire the silent background sync — runs independently while the user types.
+  if (window.LeadCRMNative && typeof LeadCRMNative.syncCallRecording === 'function') {
+    triggerBackgroundRecordingSync(lead, callContext);
+  }
 }
 
 /**

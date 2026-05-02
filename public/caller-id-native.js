@@ -13,12 +13,6 @@
  * even on a flaky connection.
  */
 (function(){
-  // Wrap the whole thing — one bad event listener should never crash the
-  // host APK. Errors get logged to console + the global error banner.
-  try { _setup(); } catch (e) {
-    console.error('[caller-id] setup failed:', e);
-  }
-  function _setup() {
   // Skip outside Capacitor — this is loaded by every page but only
   // means anything on the native wrapper.
   const isCap = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
@@ -163,119 +157,25 @@
   });
 
   // ---- 4. Start listening once the user is logged in -----------
-  let _starting = false;       // re-entry guard
-  let _startedOnce = false;    // already listening — don't double-start
   function tryStart() {
-    if (_starting || _startedOnce) return;
     if (!_token()) {
       // Not logged in yet — wait for it
       setTimeout(tryStart, 2000);
       return;
     }
-    _starting = true;
-    try {
-      CallerId.start().then(r => {
-        _starting = false;
-        console.log('[caller-id] started', r);
-        // r.ok=false means at least one critical permission was denied
-        // even though Capacitor resolved (e.g. user dismissed the dialog
-        // or hit "Don't ask again"). In that case fall through to the
-        // failure UI so we surface the persistent banner.
-        if (r && r.listening) {
-          _startedOnce = true;
-          try { if (typeof toast === 'function') toast('📞 Caller ID active — incoming calls will auto-log'); } catch (_) {}
-          _hidePermissionBanner();
-        } else {
-          _showPermissionBanner(r || {});
-        }
-      }).catch(e => {
-        _starting = false;
-        console.warn('[caller-id] start failed', e);
-        _showPermissionBanner({ error: e && e.message });
-      });
-    } catch (e) {
-      _starting = false;
-      console.warn('[caller-id] CallerId.start threw synchronously', e);
-    }
-  }
-  setTimeout(tryStart, 1500);  // small delay so the WebView and SPA can finish booting first
-
-  /**
-   * Show a persistent dismissible banner at the top of the page when the
-   * caller-ID plugin can't start because of missing Android permissions.
-   * Has ONE button — "Open settings" — which opens the system "App info"
-   * page for our package directly via the native plugin, so the user
-   * doesn't have to navigate Settings → Apps → Lead CRM by hand.
-   */
-  function _showPermissionBanner(state) {
-    if (document.getElementById('callerid-perm-banner')) return;
-    const banner = document.createElement('div');
-    banner.id = 'callerid-perm-banner';
-    banner.style.cssText = [
-      'position:fixed', 'left:.5rem', 'right:.5rem', 'bottom:5rem',
-      'z-index:9999', 'background:#f59e0b', 'color:#451a03',
-      'padding:.75rem 1rem', 'border-radius:8px',
-      'box-shadow:0 4px 16px rgba(0,0,0,.25)',
-      'font-size:.85rem', 'line-height:1.4',
-      'display:flex', 'flex-direction:column', 'gap:.5rem'
-    ].join(';');
-    const msg = document.createElement('div');
-    msg.innerHTML = '⚠ <b>Caller ID needs permission.</b> Tap below to open the app settings, then allow <b>Phone</b>, <b>Notifications</b>, and <b>Music &amp; audio</b> (or Files / Storage).';
-    banner.appendChild(msg);
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:.5rem;justify-content:flex-end';
-    const openBtn = document.createElement('button');
-    openBtn.textContent = '⚙ Open settings';
-    openBtn.style.cssText = 'background:#451a03;color:#fff;border:0;padding:.5rem .9rem;border-radius:6px;font-weight:600';
-    openBtn.onclick = () => {
-      if (CallerId && typeof CallerId.openAppSettings === 'function') {
-        CallerId.openAppSettings().catch(err => {
-          console.warn('[caller-id] openAppSettings failed', err);
-          if (typeof toast === 'function') toast('Could not open settings — please open Android Settings → Apps → CRM → Permissions manually.', 'warn');
-        });
-      } else {
-        if (typeof toast === 'function') toast('Update the app to enable one-tap settings — for now please open Android Settings → Apps → CRM → Permissions manually.', 'warn');
+    CallerId.start().then(r => {
+      console.log('[caller-id] started', r);
+      if (typeof toast === 'function') {
+        toast('📞 Caller ID active — incoming calls will auto-log');
       }
-    };
-    const retryBtn = document.createElement('button');
-    retryBtn.textContent = '↻ Retry';
-    retryBtn.style.cssText = 'background:transparent;color:#451a03;border:1px solid #451a03;padding:.5rem .9rem;border-radius:6px;font-weight:600';
-    retryBtn.onclick = () => {
-      banner.remove();
-      tryStart();
-    };
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
-    closeBtn.title = 'Dismiss';
-    closeBtn.style.cssText = 'background:transparent;color:#451a03;border:0;font-size:1rem;cursor:pointer;align-self:flex-end;padding:.25rem .5rem';
-    closeBtn.onclick = () => banner.remove();
-    row.appendChild(retryBtn);
-    row.appendChild(openBtn);
-    banner.appendChild(row);
-    banner.appendChild(closeBtn);
-    document.body.appendChild(banner);
+    }).catch(e => {
+      console.warn('[caller-id] start failed', e);
+      if (typeof toast === 'function') {
+        toast('Caller ID failed — open Settings → Apps → Lead CRM → Permissions and grant Phone, Notifications, Storage', 'warn');
+      }
+    });
   }
-  function _hidePermissionBanner() {
-    const el = document.getElementById('callerid-perm-banner');
-    if (el) el.remove();
-  }
-
-  // When the user comes back from Android Settings (visibilitychange to
-  // visible), re-probe permissions silently. If they're now granted,
-  // restart listening and remove the banner without a UI flicker.
-  document.addEventListener('visibilitychange', () => {
-    try {
-      if (document.visibilityState !== 'visible') return;
-      if (_startedOnce) return;  // already listening — nothing to retry
-      if (!CallerId || typeof CallerId.permissionStatus !== 'function') return;
-      CallerId.permissionStatus().then(p => {
-        if (p && p.ok) {
-          _hidePermissionBanner();
-          tryStart();
-        }
-      }).catch(() => {});
-    } catch (_) {}
-  });
+  tryStart();
 
   // ---- helpers ------------------------------------------------
   function _token() {
@@ -298,5 +198,4 @@
     if (lc.endsWith('.ogg')) return 'audio/ogg';
     return 'application/octet-stream';
   }
-  } // _setup
 })();
