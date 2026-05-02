@@ -832,3 +832,35 @@ CREATE INDEX IF NOT EXISTS idx_pwa_templates_owner ON personal_wa_templates(owne
 -- scheduled time, and log a remark on the lead.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS calendly_webhook_token TEXT;
 CREATE INDEX IF NOT EXISTS idx_users_calendly_token ON users(calendly_webhook_token);
+
+-- ---- Google Sheet sync ----------------------------------------
+-- Admin connects a Google Sheet (set to "Anyone with link can view"),
+-- the CRM polls its CSV export every poll_interval_min and inserts
+-- new rows as leads. Headers map to lead columns the same way the
+-- bulk-upload sample CSV expects.
+CREATE TABLE IF NOT EXISTS sheet_integrations (
+  id                  SERIAL PRIMARY KEY,
+  name                TEXT NOT NULL,
+  sheet_id            TEXT NOT NULL,
+  sheet_gid           TEXT DEFAULT '0',
+  default_source      TEXT DEFAULT 'Google Sheet',
+  default_assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  poll_interval_min   INTEGER NOT NULL DEFAULT 15,
+  last_synced_at      TIMESTAMPTZ,
+  last_synced_count   INTEGER NOT NULL DEFAULT 0,
+  last_error          TEXT,
+  is_active           INTEGER NOT NULL DEFAULT 1,
+  created_by          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Hash of every row already imported, keyed by integration. Stops
+-- the poller from re-creating the same lead every cycle.
+CREATE TABLE IF NOT EXISTS sheet_imported_rows (
+  integration_id INTEGER NOT NULL REFERENCES sheet_integrations(id) ON DELETE CASCADE,
+  row_hash       TEXT NOT NULL,
+  imported_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  lead_id        INTEGER REFERENCES leads(id) ON DELETE SET NULL,
+  PRIMARY KEY (integration_id, row_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_sheet_imported_rows_int ON sheet_imported_rows(integration_id);

@@ -8018,7 +8018,8 @@ VIEWS.admin = async (view) => {
     { id: 'announce',     label: '📢 Announcements' },
     { id: 'chatperm',     label: '💬 Chat permissions' },
     { id: 'menu',         label: '🧭 Menu visibility' },
-    { id: 'projstages',   label: '🚚 Project stages' }
+    { id: 'projstages',   label: '🚚 Project stages' },
+    { id: 'integrations', label: '🔌 Integrations' }
   ];
   const nav = h('div', { class: 'subtabs' },
     ...tabs.map(t => h('button', { class: 'subtab', 'data-tab': t.id, onclick: () => showAdminTab(t.id) }, t.label))
@@ -8051,7 +8052,216 @@ async function showAdminTab(id) {
     if (id === 'chatperm') body.replaceChildren(await adminChatPermissions());
     if (id === 'menu')     body.replaceChildren(await adminMenuVisibility());
     if (id === 'projstages') body.replaceChildren(await adminProjectStages());
+    if (id === 'integrations') body.replaceChildren(await adminIntegrations());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+/**
+ * Admin → Integrations tab. Two sections:
+ *  1. Lead-source webhooks — copy-paste URL per vendor (IndiaMART,
+ *     MagicBricks, JustDial, TradeIndia, 99acres, Housing).
+ *  2. Google Sheet sync — manage connected sheets.
+ */
+async function adminIntegrations() {
+  const cfg = await api('api_admin_getConfig').catch(() => ({}));
+  const apiKey = cfg.WEBSITE_API_KEY || '';
+  const base = location.origin;
+  const wrap = h('div', {});
+
+  // --- Section 1: Lead-source webhooks ---
+  wrap.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '🌐 Lead-source webhooks'));
+  if (!apiKey) {
+    wrap.appendChild(h('p', { class: 'error-box' },
+      'No API key set yet. Generate one in the API tab first; webhook URLs need it.'));
+  } else {
+    wrap.appendChild(h('p', { class: 'muted' },
+      'Paste these URLs into each vendor\'s lead-notification settings. The CRM auto-maps their field names to lead columns.'));
+    const sources = [
+      { id: 'indiamart',   label: 'IndiaMART',     guide: 'IndiaMART Seller dashboard → Lead Manager → CRM Integration → paste URL' },
+      { id: 'magicbricks', label: 'MagicBricks',   guide: 'MagicBricks Builder/Agent dashboard → Lead Settings → API/Webhook → paste URL' },
+      { id: 'justdial',    label: 'JustDial',      guide: 'JustDial business dashboard → Lead Push API → Webhook URL → paste URL' },
+      { id: 'tradeindia',  label: 'TradeIndia',    guide: 'TradeIndia Seller panel → Lead Manager → External CRM → paste URL' },
+      { id: '99acres',     label: '99acres',       guide: '99acres dashboard → Lead Settings → Webhook → paste URL' },
+      { id: 'housing',     label: 'Housing.com',   guide: 'Housing.com builder/agent dashboard → Integrations → paste URL' },
+      { id: 'generic',     label: 'Custom / generic', guide: 'For any other source — vendor sends JSON with name/phone/email keys' }
+    ];
+    const list = h('div', { class: 'card', style: { padding: '0' } });
+    sources.forEach((s, idx) => {
+      const url = base + '/hook/leadsource/' + s.id + '/' + apiKey;
+      list.appendChild(h('div', {
+        style: { padding: '.75rem .9rem', borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center' }
+      },
+        h('div', { style: { flex: '1 1 200px' } },
+          h('div', { style: { fontWeight: 600 } }, s.label),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' } }, s.guide)
+        ),
+        h('input', {
+          type: 'text', readonly: 'readonly', value: url,
+          style: { flex: '1 1 320px', fontFamily: 'monospace', fontSize: '.78rem' }
+        }),
+        h('button', { class: 'btn sm', onclick: ev => {
+          const inp = ev.target.parentNode.querySelector('input');
+          navigator.clipboard.writeText(inp.value).then(() => toast('Copied'), () => { inp.select(); document.execCommand('copy'); toast('Copied'); });
+        } }, '📋 Copy')
+      ));
+    });
+    wrap.appendChild(list);
+  }
+
+  // --- Section 2: Google Sheet sync ---
+  wrap.appendChild(h('h4', { style: { margin: '1.5rem 0 .5rem' } }, '📊 Google Sheet sync'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'Connect a Google Sheet — set its share to "Anyone with link → Viewer" — and the CRM polls new rows as leads. Headers should match lead columns (name, phone, email, source, city, notes, etc.).'));
+  let sheets = [];
+  try { sheets = await api('api_sheetSync_list'); } catch (_) {}
+  const sheetList = h('div', { class: 'card', style: { padding: '0' } });
+  if (!sheets.length) {
+    sheetList.appendChild(h('p', { class: 'muted', style: { padding: '1rem', margin: 0 } }, 'No sheets connected yet.'));
+  }
+  sheets.forEach((s, idx) => {
+    const lastSync = s.last_synced_at ? fmtDate(s.last_synced_at, 'relative') : 'never';
+    sheetList.appendChild(h('div', {
+      style: { padding: '.75rem .9rem', borderTop: idx === 0 ? 'none' : '1px solid #f3f4f6', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center' }
+    },
+      h('div', { style: { flex: '1 1 200px' } },
+        h('div', { style: { fontWeight: 600 } }, s.name,
+          Number(s.is_active) === 0 ? h('span', { class: 'tag', style: { background: '#fef2f2', color: '#991b1b', marginLeft: '.5rem' } }, 'PAUSED') : null),
+        h('div', { class: 'muted', style: { fontSize: '.78rem' } },
+          'Sheet ' + String(s.sheet_id).slice(0, 12) + '… · every ' + s.poll_interval_min + 'min · last synced ' + lastSync +
+          (s.last_synced_count ? ' (' + s.last_synced_count + ' new)' : '')),
+        s.last_error ? h('div', { class: 'muted', style: { fontSize: '.78rem', color: '#dc2626' } }, '⚠ ' + s.last_error) : null
+      ),
+      h('button', { class: 'btn sm', onclick: async () => {
+        try { const r = await api('api_sheetSync_runNow', s.id); toast('Synced — ' + r.imported + ' new, ' + r.skipped + ' skipped'); showAdminTab('integrations'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🔄 Sync now'),
+      h('button', { class: 'btn sm', onclick: () => openSheetSyncEditModal(s, () => showAdminTab('integrations')) }, '✎ Edit'),
+      h('button', { class: 'btn sm danger', onclick: async () => {
+        if (!await confirmDialog('Disconnect "' + s.name + '"? Leads already imported from it stay; the CRM just stops polling.')) return;
+        try { await api('api_sheetSync_delete', s.id); toast('Disconnected'); showAdminTab('integrations'); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🗑')
+    ));
+  });
+  wrap.appendChild(sheetList);
+  wrap.appendChild(h('div', { class: 'actions', style: { marginTop: '.75rem' } },
+    h('button', { class: 'btn primary', onclick: () => openSheetSyncEditModal(null, () => showAdminTab('integrations')) }, '+ Connect Google Sheet')
+  ));
+
+  // --- Section 3: Gmail Apps Script (no native OAuth — show wizard) ---
+  wrap.appendChild(h('h4', { style: { margin: '1.5rem 0 .5rem' } }, '✉ Gmail → CRM (via Apps Script)'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'For sources that send leads via email (IndiaMART/MagicBricks email notifications, contact-form replies). Free, runs in your Google account, takes ~3 min to set up.'));
+  if (apiKey) {
+    const script = `// Set up:
+// 1) In Gmail, create a label "ToCRM" and a filter that auto-applies it
+//    to lead emails (e.g. from:noreply@indiamart.com).
+// 2) Open script.google.com → New project → paste this code → Save.
+// 3) Triggers (clock icon) → Add → importGmailLeads → time-driven → 5 min.
+const CRM_URL = '${base}';
+const API_KEY = '${apiKey}';
+const LABEL = 'ToCRM';
+const PROCESSED = 'CRM-Sent';
+
+function importGmailLeads() {
+  const label = GmailApp.getUserLabelByName(LABEL);
+  const done = GmailApp.getUserLabelByName(PROCESSED) || GmailApp.createLabel(PROCESSED);
+  if (!label) { Logger.log('No "ToCRM" label found'); return; }
+  label.getThreads(0, 50).forEach(t => {
+    if (t.getLabels().some(l => l.getName() === PROCESSED)) return;
+    const m = t.getMessages()[0];
+    const body = m.getPlainBody();
+    const lead = {
+      name:  (body.match(/Name[:\\s]+(.+)/i) || [, ''])[1].trim(),
+      phone: (body.match(/(?:Phone|Mobile)[:\\s]+([+\\d\\s-]+)/i) || [, ''])[1].trim(),
+      email: (body.match(/Email[:\\s]+([^\\s]+@[^\\s]+)/i) || [, m.getFrom()])[1],
+      city:  (body.match(/City[:\\s]+(.+)/i) || [, ''])[1].trim(),
+      notes: 'Email subject: ' + m.getSubject(),
+      source: 'Email'
+    };
+    if (!lead.name || !lead.phone) return;
+    const res = UrlFetchApp.fetch(CRM_URL + '/hook/website', {
+      method: 'post', contentType: 'application/json',
+      headers: { 'x-api-key': API_KEY }, payload: JSON.stringify(lead),
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() === 200) t.addLabel(done);
+  });
+}`;
+    const ta = h('textarea', { readonly: 'readonly', rows: 12, style: { width: '100%', fontFamily: 'monospace', fontSize: '.75rem' } }, script);
+    wrap.appendChild(ta);
+    wrap.appendChild(h('button', { class: 'btn sm', onclick: () => {
+      ta.select(); navigator.clipboard.writeText(script).then(() => toast('Copied'), () => { document.execCommand('copy'); toast('Copied'); });
+    } }, '📋 Copy script'));
+  }
+
+  return wrap;
+}
+
+function openSheetSyncEditModal(s, onSaved) {
+  s = s || { name: '', sheet_url: '', poll_interval_min: 15, default_source: 'Google Sheet', is_active: 1 };
+  const sheetUrlValue = s.sheet_id ? `https://docs.google.com/spreadsheets/d/${s.sheet_id}/edit#gid=${s.sheet_gid || '0'}` : '';
+  const users = (CRM.cache.users || []).filter(u => Number(u.is_active) === 1);
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, s.id ? 'Edit sheet integration' : '+ Connect Google Sheet'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('form', { id: 'ss-form', class: 'form-grid' },
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Friendly name *'),
+        h('input', { name: 'name', value: s.name, required: 'required', placeholder: 'e.g. IndiaMART weekly leads' })
+      ),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Google Sheet URL *'),
+        h('input', { name: 'sheet_url', value: sheetUrlValue, required: 'required', placeholder: 'https://docs.google.com/spreadsheets/d/.../edit#gid=0' }),
+        h('p', { class: 'muted', style: { margin: '.25rem 0 0', fontSize: '.78rem' } },
+          '⚠ The sheet must be shared as "Anyone with link → Viewer". The CRM only reads (never writes).')
+      ),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Poll interval (min)'),
+        h('input', { name: 'poll_interval_min', type: 'number', min: 5, value: s.poll_interval_min || 15 })
+      ),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Default source label'),
+        h('input', { name: 'default_source', value: s.default_source || 'Google Sheet' })
+      ),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Default assignee (if "assigned_to" column blank)'),
+        h('select', { name: 'default_assignee_id' },
+          h('option', { value: '' }, '— Use assignment rules —'),
+          ...users.map(u => h('option', { value: u.id, selected: Number(u.id) === Number(s.default_assignee_id) ? 'selected' : null }, u.name))
+        )
+      ),
+      h('div', { class: 'f-row full' },
+        h('label', { class: 'qual-toggle' },
+          h('input', { name: 'is_active', type: 'checkbox', checked: Number(s.is_active) !== 0 ? 'checked' : null }),
+          h('span', {}, ' Active (CRM polls this sheet)')
+        )
+      )
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const f = $('#ss-form');
+        const fd = new FormData(f);
+        const payload = {
+          id: s.id,
+          name: fd.get('name'),
+          sheet_url: fd.get('sheet_url'),
+          poll_interval_min: Number(fd.get('poll_interval_min')) || 15,
+          default_source: fd.get('default_source'),
+          default_assignee_id: fd.get('default_assignee_id') || null,
+          is_active: f.querySelector('[name="is_active"]').checked ? 1 : 0
+        };
+        if (!payload.name || !payload.sheet_url) return toast('Name + URL required', 'err');
+        try { await api('api_sheetSync_save', payload); toast('Saved'); modal.remove(); onSaved && onSaved(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
 }
 
 /**

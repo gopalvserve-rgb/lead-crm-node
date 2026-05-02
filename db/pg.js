@@ -108,6 +108,17 @@ const SCHEMA = {
     columns: ['owner_id', 'name', 'body', 'is_active', 'created_at'],
     json: []
   },
+  sheet_integrations: {
+    columns: ['name', 'sheet_id', 'sheet_gid', 'default_source',
+              'default_assignee_id', 'poll_interval_min',
+              'last_synced_at', 'last_synced_count', 'last_error',
+              'is_active', 'created_by', 'created_at'],
+    json: []
+  },
+  sheet_imported_rows: {
+    columns: ['integration_id', 'row_hash', 'imported_at', 'lead_id'],
+    json: []
+  },
   remarks: {
     columns: ['lead_id', 'user_id', 'remark', 'status_id', 'created_at'],
     json: []

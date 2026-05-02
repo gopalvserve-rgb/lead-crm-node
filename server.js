@@ -54,7 +54,8 @@ const routes = {
   targets:     require('./routes/targets'),
   inventory:   require('./routes/inventory'),
   projectStages: require('./routes/projectStages'),
-  personalWa:    require('./routes/personalWaTemplates')
+  personalWa:    require('./routes/personalWaTemplates'),
+  integrations:  require('./routes/integrations')
 };
 const webhooks = require('./routes/webhooks');
 
@@ -190,6 +191,10 @@ app.post('/hook/website',  webhooks.websiteHook);
 app.post('/hook/other',    webhooks.otherHook);
 // Calendly per-rep webhook — token in URL identifies the rep.
 app.post('/hook/calendly/:token', webhooks.calendlyEvent);
+// Lead-source webhooks — one URL per vendor (indiamart, magicbricks,
+// justdial, tradeindia, 99acres, housing, generic). Auto-maps each
+// vendor's payload format to the CRM lead shape.
+app.post('/hook/leadsource/:source/:key', routes.integrations.leadSourceWebhook);
 
 // Facebook OAuth callback — server-side flow that bypasses the JS SDK.
 // User clicks Connect → redirected here with code → we fetch pages → redirect back.
@@ -846,6 +851,14 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
   catch (e) { console.error('[boot] tat worker start failed:', e.message); }
   try { require('./routes/whatsbot').startCampaignWorker(); }
   catch (e) { console.error('[boot] wb campaign worker start failed:', e.message); }
+  // Background poller for Google Sheet integrations. Each integration
+  // has its own poll_interval_min; the runner just checks who is due.
+  // First run after 60s so the boot finishes cleanly, then every 60s.
+  try {
+    const integrations = require('./routes/integrations');
+    setTimeout(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] initial run failed:', e.message)), 60_000);
+    setInterval(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] tick failed:', e.message)), 60_000);
+  } catch (e) { console.error('[boot] sheet sync poller failed to start:', e.message); }
   app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);
