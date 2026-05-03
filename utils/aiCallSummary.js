@@ -82,7 +82,13 @@ Listen to the entire call. Then return ONLY a JSON object with these exact keys:
   "sentiment": "<one of: positive | neutral | negative>",
   "suggested_status": "<one of the existing CRM statuses that best fits where this lead is now>",
   "next_followup_in_days": <integer 0-30 — when should the rep call back? 0 = today>,
-  "key_insight": "<one-sentence insight that would surprise a busy manager>"
+  "key_insight": "<one-sentence insight that would surprise a busy manager>",
+  "suggested_rating": <integer 1-5 — rate the REP's performance on this call.
+    1 = poor (no qualifying, no objection handling, no next step),
+    2 = below average,
+    3 = average,
+    4 = good (clear pitch, qualifying questions, objection handling),
+    5 = excellent (booked next step, customer enthusiastic, all bases covered)>
 }
 
 Notes:
@@ -190,6 +196,22 @@ async function processRecording(id) {
   const rec = await _loadRecording(id);
   if (!rec) throw new Error('Recording not found: ' + id);
 
+  // Admin can disable AI transcription per-tenant.
+  // Skip silently — the row stays unprocessed but the worker won't loop.
+  try {
+    const enabled = await db.getConfig('AI_TRANSCRIPTION_ENABLED', '1');
+    if (String(enabled) === '0') {
+      // Mark as processed-with-skip so the worker doesn't keep retrying.
+      await _saveResult(id, {
+        ai_processed_at: db.nowIso(),
+        ai_provider: 'disabled',
+        ai_model: 'none',
+        ai_error: 'AI transcription disabled by admin'
+      });
+      return { ok: false, skipped: 'disabled', id };
+    }
+  } catch (_) {}
+
   // Demo mode — return mock data so the UI shows the feature working
   // without burning the platform's API quota.
   if (demo.on) {
@@ -200,7 +222,8 @@ async function processRecording(id) {
       sentiment: 'positive',
       suggested_status: 'Site Visit Scheduled',
       next_followup_in_days: 5,
-      key_insight: 'Customer\'s spouse has final say — Rep should arrange both partners on the site visit.'
+      key_insight: 'Customer\'s spouse has final say — Rep should arrange both partners on the site visit.',
+      suggested_rating: 4
     };
     await _saveResult(id, {
       transcript: mock.transcript,
@@ -208,6 +231,7 @@ async function processRecording(id) {
       action_items: JSON.stringify(mock.action_items),
       sentiment: mock.sentiment,
       suggested_status_id: await _statusIdByName(mock.suggested_status),
+      ai_suggested_rating: mock.suggested_rating,
       ai_processed_at: db.nowIso(),
       ai_provider: 'gemini-demo',
       ai_model: 'mock',
@@ -227,6 +251,11 @@ async function processRecording(id) {
 
   const suggested_status_id = await _statusIdByName(ai.suggested_status);
 
+  let suggestedRating = Number(ai.suggested_rating);
+  if (!Number.isFinite(suggestedRating) || suggestedRating < 1 || suggestedRating > 5) {
+    suggestedRating = null;
+  }
+
   await _saveResult(id, {
     transcript: ai.transcript || '',
     summary: ai.summary || '',
@@ -238,7 +267,8 @@ async function processRecording(id) {
     ai_model: GEMINI_MODEL,
     ai_error: null,
     next_followup_days: Number(ai.next_followup_in_days) || null,
-    key_insight: ai.key_insight || null
+    key_insight: ai.key_insight || null,
+    ai_suggested_rating: suggestedRating
   });
 
   return { ok: true, id, summary: ai.summary };

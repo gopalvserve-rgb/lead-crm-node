@@ -385,14 +385,25 @@ async function api_recording_aiSummary(token, recId) {
   const { rows } = await db.query(
     `SELECT id, summary, transcript, action_items, sentiment, suggested_status_id,
             next_followup_days, key_insight, ai_processed_at, ai_provider,
-            ai_model, ai_error, lead_id, phone, duration_s
+            ai_model, ai_error, lead_id, phone, duration_s,
+            rating, rating_by, rating_notes, rated_at, ai_suggested_rating
        FROM lead_recordings WHERE id = $1`,
     [id]
   );
   const r = rows[0];
   if (!r) throw new Error('Recording not found');
   if (!r.ai_processed_at) return { status: 'pending' };
-  if (r.ai_error) return { status: 'failed', error: r.ai_error };
+  if (r.ai_error) {
+    // Still surface rating fields even when AI failed/disabled, so the
+    // manual-rating UI works regardless of AI status.
+    return {
+      status: 'failed',
+      error: r.ai_error,
+      rating: r.rating,
+      rating_notes: r.rating_notes,
+      ai_suggested_rating: r.ai_suggested_rating
+    };
+  }
   let action_items = [];
   try { action_items = JSON.parse(r.action_items || '[]'); } catch (_) { action_items = []; }
   return {
@@ -409,8 +420,36 @@ async function api_recording_aiSummary(token, recId) {
     model: r.ai_model,
     lead_id: r.lead_id,
     phone: r.phone,
-    duration_s: r.duration_s
+    duration_s: r.duration_s,
+    rating: r.rating,
+    rating_by: r.rating_by,
+    rating_notes: r.rating_notes,
+    rated_at: r.rated_at,
+    ai_suggested_rating: r.ai_suggested_rating
   };
+}
+
+/**
+ * Manually rate a call recording (1-5 stars).
+ * Anyone with auth can rate their own calls; managers/admins can rate
+ * anyone's. Saves rating, rating_by (current user), rating_notes,
+ * rated_at. Pass rating: null to clear an existing rating.
+ */
+async function api_recording_rate(token, recId, rating, notes) {
+  const me = await authUser(token);
+  const id = Number(recId);
+  if (!id) throw new Error('Missing recording id');
+  if (rating != null) {
+    const r = Number(rating);
+    if (!Number.isFinite(r) || r < 1 || r > 5) throw new Error('Rating must be between 1 and 5');
+  }
+  await db.query(
+    `UPDATE lead_recordings SET
+        rating = $1, rating_by = $2, rating_notes = $3, rated_at = NOW()
+      WHERE id = $4`,
+    [rating == null ? null : Number(rating), me.id, notes || null, id]
+  );
+  return { ok: true, recording_id: id, rating: rating == null ? null : Number(rating) };
 }
 
 /**
@@ -496,5 +535,6 @@ module.exports = {
   api_recording_aiSummary,
   api_recording_aiReprocess,
   api_recording_applySuggestion,
+  api_recording_rate,
   _findLeadByPhone
 };

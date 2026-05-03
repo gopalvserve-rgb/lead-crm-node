@@ -905,3 +905,17 @@ ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_provider         TEXT;
 ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_model            TEXT;
 ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_error            TEXT;
 CREATE INDEX IF NOT EXISTS idx_lead_rec_ai_processed ON lead_recordings(ai_processed_at);
+
+-- ===========================================================
+-- v16: Call rating (1-5 stars)
+-- Reps + managers can rate every call recording, AI also
+-- suggests a rating during summarisation. Used to compute
+-- rep-wise call quality reports.
+-- ===========================================================
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS rating              INTEGER;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS rating_by           INTEGER REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS rating_notes        TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS rated_at            TIMESTAMPTZ;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_suggested_rating INTEGER;
+CREATE INDEX IF NOT EXISTS idx_lead_rec_rating ON lead_recordings(rating);
+CREATE INDEX IF NOT EXISTS idx_lead_rec_rating_by ON lead_recordings(rating_by);

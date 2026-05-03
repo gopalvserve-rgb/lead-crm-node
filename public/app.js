@@ -518,6 +518,7 @@ const NAV = [
   { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
   { id: 'teamchat',   label: 'Team chat',    icon: '👥', countKey: 'chat_unread' },
@@ -3154,28 +3155,112 @@ function renderRecordingItem(r) {
  * poll every 10s. Renders summary + action items + sentiment chip +
  * "Apply suggested status" + "Schedule follow-up" buttons.
  */
+/**
+ * Build a 5-star rating widget. Filled to currentRating, hover changes
+ * preview. Click to set. Shows AI-suggested rating as a faint hint star.
+ */
+function ratingStars(recId, currentRating, aiRating, onChange) {
+  const wrap = h('div', { class: 'rating-stars' });
+  const stars = [];
+  for (let i = 1; i <= 5; i++) {
+    const s = h('span', { class: 'rating-star', 'data-val': i, role: 'button', tabindex: 0,
+      title: 'Rate ' + i + (i === 1 ? ' star' : ' stars') }, '★');
+    s.onclick = async () => {
+      try {
+        await api('api_recording_rate', recId, i, '');
+        currentRating = i;
+        paint();
+        if (typeof onChange === 'function') onChange(i);
+        toast('Rated ' + i + '/5');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    s.onmouseenter = () => paintHover(i);
+    s.onmouseleave = () => paint();
+    stars.push(s);
+    wrap.appendChild(s);
+  }
+  function paint() {
+    stars.forEach((s, idx) => {
+      const v = idx + 1;
+      s.classList.toggle('filled', currentRating != null && v <= currentRating);
+      s.classList.toggle('ai-hint', currentRating == null && aiRating != null && v <= aiRating);
+    });
+  }
+  function paintHover(n) {
+    stars.forEach((s, idx) => s.classList.toggle('filled', idx < n));
+  }
+  paint();
+  if (currentRating != null) {
+    const clear = h('button', { class: 'btn xs ghost rating-clear', title: 'Clear rating', onclick: async () => {
+      try {
+        await api('api_recording_rate', recId, null, '');
+        currentRating = null;
+        paint();
+        toast('Rating cleared');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '✕');
+    wrap.appendChild(clear);
+  }
+  if (aiRating != null) {
+    const aiHint = h('span', { class: 'rating-ai-hint', title: 'AI suggested rating' },
+      currentRating == null ? '🤖 ' + aiRating + '/5' : ''
+    );
+    if (currentRating == null) wrap.appendChild(aiHint);
+  }
+  return wrap;
+}
+
 async function loadRecordingAI(recId, container, retries) {
   retries = retries || 0;
   try {
     const r = await api('api_recording_aiSummary', recId);
     if (!r || r.status === 'pending') {
-      if (retries === 0) container.innerHTML = '<div class="ai-pending">🤖 AI is analysing this call…</div>';
+      if (retries === 0) {
+        container.innerHTML = '';
+        container.appendChild(h('div', { class: 'rating-row' },
+          h('span', { class: 'rating-label' }, 'Rate this call:'),
+          ratingStars(recId, null, null)
+        ));
+        const pending = h('div', { class: 'ai-pending' }, '🤖 AI is analysing this call…');
+        container.appendChild(pending);
+      }
       if (retries < 18) {
         setTimeout(() => loadRecordingAI(recId, container, retries + 1), 10000);
       } else {
-        container.innerHTML = '<div class="ai-pending muted">⏳ Still processing — refresh in a minute</div>';
+        container.innerHTML = '';
+        container.appendChild(h('div', { class: 'rating-row' },
+          h('span', { class: 'rating-label' }, 'Rate this call:'),
+          ratingStars(recId, null, null)
+        ));
+        container.appendChild(h('div', { class: 'ai-pending muted' }, '⏳ Still processing — refresh in a minute'));
       }
       return;
     }
     if (r.status === 'failed') {
-      container.innerHTML = '<div class="ai-error">⚠️ AI summary failed: ' + esc(r.error || 'unknown') +
-        ' <button class="btn xs" onclick="retryAi(' + recId + ', this)">Retry</button></div>';
+      container.innerHTML = '';
+      // Manual rating still works even when AI failed
+      container.appendChild(h('div', { class: 'rating-row' },
+        h('span', { class: 'rating-label' }, 'Rate this call:'),
+        ratingStars(recId, r.rating, r.ai_suggested_rating)
+      ));
+      const isDisabled = /disabled by admin/i.test(r.error || '');
+      if (!isDisabled) {
+        container.appendChild(h('div', { class: 'ai-error' },
+          '⚠️ AI summary failed: ' + (r.error || 'unknown') + ' ',
+          h('button', { class: 'btn xs', onclick: () => window.retryAi(recId, null) }, 'Retry')
+        ));
+      }
       return;
     }
     // r.status === 'done'
     const sentColor = { positive: '#10b981', neutral: '#64748b', negative: '#ef4444' }[r.sentiment] || '#64748b';
     const sentLabel = { positive: '😊 Positive', neutral: '😐 Neutral', negative: '😟 Negative' }[r.sentiment] || r.sentiment || '—';
     container.innerHTML = '';
+    // Manual call rating row — always shown, regardless of AI status
+    container.appendChild(h('div', { class: 'rating-row' },
+      h('span', { class: 'rating-label' }, 'Rate this call:'),
+      ratingStars(recId, r.rating, r.ai_suggested_rating)
+    ));
     container.appendChild(h('div', { class: 'ai-summary-card' },
       h('div', { class: 'ai-header' },
         h('span', { class: 'ai-badge' }, '🤖 AI Summary'),
@@ -7115,6 +7200,102 @@ async function openSetTargetModal(month, userId, onDone) {
   document.body.appendChild(modal);
 }
 
+/**
+ * Call ratings report — rep-wise call quality summary.
+ * Shows total calls, rated calls, manual avg, AI-suggested avg, and a
+ * 1★→5★ distribution bar per rep. Supports date range + user filter.
+ */
+VIEWS.callratings = async (view) => {
+  view.innerHTML = '';
+  const { users = [] } = CRM.cache;
+  const fromInp = h('input', { type: 'date' });
+  const toInp   = h('input', { type: 'date' });
+  const userSel = h('select', {},
+    h('option', { value: '' }, 'All users'),
+    ...users.map(u => h('option', { value: u.id }, u.name))
+  );
+  const out = h('div', { class: 'call-rating-report' });
+
+  async function load() {
+    out.innerHTML = '<div class="muted">Loading…</div>';
+    const filters = {};
+    if (fromInp.value) filters.from = fromInp.value + 'T00:00:00';
+    if (toInp.value)   filters.to   = toInp.value   + 'T23:59:59';
+    if (userSel.value) filters.userId = userSel.value;
+    try {
+      const rows = await api('api_reports_callRatingByUser', filters);
+      if (rows && rows.error) {
+        out.innerHTML = '<div class="ai-error">' + esc(rows.error) + '</div>';
+        return;
+      }
+      if (!rows || rows.length === 0) {
+        out.innerHTML = '<div class="muted">No call recordings in this range.</div>';
+        return;
+      }
+      out.innerHTML = '';
+      const tbl = h('table', {},
+        h('thead', {},
+          h('tr', {},
+            h('th', {}, 'Rep'),
+            h('th', { style: 'text-align:right' }, 'Total calls'),
+            h('th', { style: 'text-align:right' }, 'Rated'),
+            h('th', { style: 'text-align:right' }, 'Avg ★'),
+            h('th', { style: 'text-align:right' }, 'AI avg'),
+            h('th', {}, '1★ 2★ 3★ 4★ 5★'),
+            h('th', {}, 'Last call')
+          )
+        )
+      );
+      const tb = h('tbody', {});
+      tbl.appendChild(tb);
+      rows.forEach(r => {
+        const stars = (n, color) => {
+          if (n == null) return h('span', { class: 'muted' }, '—');
+          return h('span', { style: 'color:' + (color || '#f59e0b'), fontWeight: 600 },
+            n.toFixed(1) + ' ' + '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n))
+          );
+        };
+        tb.appendChild(h('tr', {},
+          h('td', {}, h('b', {}, r.user_name || '—'),
+            r.user_role ? h('span', { class: 'muted' }, ' · ' + r.user_role) : null),
+          h('td', { style: 'text-align:right' }, h('span', { class: 'num-pill' }, r.total_calls)),
+          h('td', { style: 'text-align:right' }, r.rated_calls),
+          h('td', { style: 'text-align:right' }, stars(r.avg_rating)),
+          h('td', { style: 'text-align:right' }, stars(r.avg_ai_rating, '#94a3b8')),
+          h('td', {},
+            h('span', { class: 'num-pill', style: 'background:#fee2e2;color:#991b1b' }, r.r1 || 0),
+            ' ',
+            h('span', { class: 'num-pill', style: 'background:#fed7aa;color:#9a3412' }, r.r2 || 0),
+            ' ',
+            h('span', { class: 'num-pill', style: 'background:#fef08a;color:#713f12' }, r.r3 || 0),
+            ' ',
+            h('span', { class: 'num-pill', style: 'background:#bbf7d0;color:#14532d' }, r.r4 || 0),
+            ' ',
+            h('span', { class: 'num-pill', style: 'background:#86efac;color:#14532d' }, r.r5 || 0)
+          ),
+          h('td', { class: 'muted' }, r.last_call_at ? fmtDate(r.last_call_at, 'relative') : '—')
+        ));
+      });
+      out.appendChild(tbl);
+    } catch (e) {
+      out.innerHTML = '<div class="ai-error">Could not load: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  view.appendChild(h('div', { class: 'toolbar' },
+    h('span', {}, 'From'), fromInp,
+    h('span', {}, 'to'), toInp,
+    h('span', {}, 'User'), userSel,
+    h('button', { class: 'btn primary', onclick: load }, '🔎 Apply')
+  ));
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, '⭐ Call ratings — rep-wise'),
+    h('p', { class: 'muted' }, 'Manual ratings are 1-5 stars set by the rep or manager on each recording. AI-suggested ratings come from Gemini\'s call analysis. Use the rating panel on any recording to set / change a manual rating.'),
+    out
+  ));
+  load();
+};
+
 VIEWS.tatreport = async (view) => {
   view.innerHTML = '';
   const { users = [] } = CRM.cache;
@@ -9938,6 +10119,29 @@ async function adminRules() {
       h('span', {}, 'Auto-dial enabled — assignee gets a tap-to-call push for every new lead')
     ));
     wrap.appendChild(adCard);
+
+    // ---- AI call summary / transcription toggle ----
+    const aiOn = String(cfg.AI_TRANSCRIPTION_ENABLED == null ? '1' : cfg.AI_TRANSCRIPTION_ENABLED) === '1';
+    const aiCard = h('div', { class: 'card', style: { marginBottom: '1rem' } });
+    aiCard.appendChild(h('h4', { style: { marginTop: 0 } }, '🤖 AI call summary (Gemini 2.5 Flash)'));
+    aiCard.appendChild(h('p', { class: 'muted' },
+      'When enabled, every uploaded call recording is auto-analysed by Gemini: full transcript, 3-line summary, action items, sentiment, suggested next status, and an AI-suggested 1-5 rating. Cost: ~₹0.02 per 5-min call (Google\'s free tier covers ~750 calls/month).'
+    ));
+    aiCard.appendChild(h('label', { class: 'toggle-row', style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
+      h('input', { type: 'checkbox', checked: aiOn ? 'checked' : null,
+        onchange: async ev => {
+          try {
+            await api('api_admin_setConfig', { AI_TRANSCRIPTION_ENABLED: ev.target.checked ? '1' : '0' });
+            toast(ev.target.checked ? 'AI transcription ON' : 'AI transcription OFF');
+          } catch (e) {
+            toast(e.message, 'err');
+            ev.target.checked = !ev.target.checked;
+          }
+        }
+      }),
+      h('span', {}, 'Process new call recordings with Gemini AI — disable to pause spending or for privacy-sensitive tenants')
+    ));
+    wrap.appendChild(aiCard);
   } catch (_) { /* config endpoint missing — older deploy, skip silently */ }
 
   const rules = await api('api_rules_list');
