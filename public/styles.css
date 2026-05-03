@@ -2290,3 +2290,12 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
   text-align: center; background: #eef2ff; color: #4338ca;
   border-radius: 4px; font-weight: 500; font-size: 12px;
 }
+
+/* ===== AI Usage cards ===== */
+.card.kpi { padding: 14px; }
+.card.kpi .kpi-label { font-size: 12px; color: #64748b; font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.card.kpi .kpi-value { font-size: 22px; font-weight: 700; margin-top: 4px; color: #1e293b; }
+.card.kpi .kpi-sub   { font-size: 12px; margin-top: 4px; }
+.card.kpi.ok    .kpi-value { color: #10b981; }
+.card.kpi.warn  .kpi-value { color: #f59e0b; }
+.card.kpi.accent .kpi-value { color: #6366f1; }

@@ -519,6 +519,7 @@ const NAV = [
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'aiusage',     label: 'AI usage',     icon: '🤖', roles: ['admin', 'manager'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
   { id: 'teamchat',   label: 'Team chat',    icon: '👥', countKey: 'chat_unread' },
@@ -7205,6 +7206,157 @@ async function openSetTargetModal(month, userId, onDone) {
  * Shows total calls, rated calls, manual avg, AI-suggested avg, and a
  * 1★→5★ distribution bar per rep. Supports date range + user filter.
  */
+/**
+ * AI usage report — month-to-date Gemini cost + per-rep breakdown.
+ * Shows actual cost (vendor) and billable cost (with markup).
+ * Plus a cost estimator that converts X minutes → ₹.
+ */
+VIEWS.aiusage = async (view) => {
+  view.innerHTML = '';
+  const out = h('div', {});
+  view.appendChild(out);
+  out.innerHTML = '<div class="muted">Loading AI usage…</div>';
+
+  try {
+    const u = await api('api_reports_aiUsage', {});
+    if (u.error) {
+      out.innerHTML = '<div class="ai-error">' + esc(u.error) + '</div>';
+      return;
+    }
+    out.innerHTML = '';
+
+    // Top-level KPI cards (this month)
+    const m = u.this_month || {};
+    const a = u.all_time || {};
+    out.appendChild(h('div', { class: 'cards', style: 'margin-bottom:1rem' },
+      kpiCard('💸 This month', '₹' + (m.cost_inr_billable || 0).toFixed(2), 'Billable to client', 'accent'),
+      kpiCard('📞 Calls processed', m.calls || 0, (m.audio_minutes || 0) + ' min audio', 'ok'),
+      kpiCard('📈 Forecast', '₹' + (u.forecast_monthly_inr || 0).toFixed(0), 'Monthly @ current pace', 'warn'),
+      kpiCard('🔢 All-time', '₹' + (a.cost_inr_billable || 0).toFixed(2), a.calls + ' calls · ' + a.audio_minutes + ' min', 'accent')
+    ));
+
+    // Pricing details + at-cost vs billable
+    const pricing = u.pricing || {};
+    out.appendChild(h('div', { class: 'card' },
+      h('h3', {}, '💰 Pricing model'),
+      h('table', { class: 'mini-table', style: 'width:auto' },
+        h('tbody', {},
+          row('Model', pricing.model),
+          row('Input  (audio + text)', '$' + pricing.input_usd_per_m + ' / 1M tokens'),
+          row('Output (text)',         '$' + pricing.output_usd_per_m + ' / 1M tokens'),
+          row('Audio tokenisation',    pricing.audio_tokens_per_second + ' tokens/sec'),
+          row('USD → INR rate',         '₹' + pricing.usd_to_inr),
+          row('Markup',                Math.round((pricing.markup - 1) * 100) + '% (1.0 = at cost)')
+        )
+      ),
+      h('p', { class: 'muted' }, 'Edit markup via env: ',
+        h('code', {}, 'AI_PRICE_MARKUP=1.30'), ' (default 1.30 = 30% markup over Gemini\'s vendor cost). Lower to bill at-cost.')
+    ));
+
+    // This month breakdown
+    out.appendChild(h('div', { class: 'card' },
+      h('h3', {}, '📊 This month — ' + u.month),
+      h('table', { class: 'mini-table' },
+        h('tbody', {},
+          row('Calls processed', m.calls),
+          row('Audio analysed',  (m.audio_minutes || 0) + ' minutes'),
+          row('Input tokens',    (m.input_tokens || 0).toLocaleString()),
+          row('Output tokens',   (m.output_tokens || 0).toLocaleString()),
+          row('Vendor cost (USD)', '$' + (m.cost_usd || 0).toFixed(4)),
+          row('Vendor cost (INR)', '₹' + (m.cost_inr_at_cost || 0).toFixed(2)),
+          row('Billable to client', h('b', { style: 'color:#10b981' }, '₹' + (m.cost_inr_billable || 0).toFixed(2)))
+        )
+      )
+    ));
+
+    // By-user breakdown
+    if (u.by_user && u.by_user.length > 0) {
+      const tbl = h('table', { class: 'call-rating-report' });
+      tbl.appendChild(h('thead', {}, h('tr', {},
+        h('th', {}, 'Rep'),
+        h('th', { style: 'text-align:right' }, 'Calls'),
+        h('th', { style: 'text-align:right' }, 'Audio (min)'),
+        h('th', { style: 'text-align:right' }, 'Vendor cost'),
+        h('th', { style: 'text-align:right' }, 'Billable')
+      )));
+      const tb = h('tbody', {});
+      tbl.appendChild(tb);
+      u.by_user.forEach(ru => {
+        tb.appendChild(h('tr', {},
+          h('td', {}, h('b', {}, ru.user_name)),
+          h('td', { style: 'text-align:right' }, ru.calls),
+          h('td', { style: 'text-align:right' }, ru.audio_minutes),
+          h('td', { style: 'text-align:right' }, '₹' + ru.cost_inr_at_cost.toFixed(2)),
+          h('td', { style: 'text-align:right;color:#10b981;font-weight:600' }, '₹' + ru.cost_inr_billable.toFixed(2))
+        ));
+      });
+      out.appendChild(h('div', { class: 'card call-rating-report' },
+        h('h3', {}, '👥 By rep — this month'),
+        tbl
+      ));
+    }
+
+    // Cost estimator
+    const estCard = h('div', { class: 'card' });
+    estCard.appendChild(h('h3', {}, '🧮 Cost estimator'));
+    estCard.appendChild(h('p', { class: 'muted' }, 'Forecast what N minutes of transcription will cost a client at your current markup.'));
+    const minsInp = h('input', { type: 'number', value: 100, min: 1, step: 10, style: 'width:100px' });
+    const callMinInp = h('input', { type: 'number', value: 5, min: 0.5, step: 0.5, style: 'width:80px' });
+    const estOut = h('div', { id: 'est-out', style: 'margin-top:12px' });
+    estCard.appendChild(h('div', { class: 'toolbar' },
+      h('span', {}, 'Total minutes:'), minsInp,
+      h('span', {}, 'Avg call (min):'), callMinInp,
+      h('button', { class: 'btn primary', onclick: async () => {
+        try {
+          const r = await api('api_reports_aiCostEstimator', {
+            minutes: Number(minsInp.value),
+            avgCallMinutes: Number(callMinInp.value)
+          });
+          estOut.innerHTML = '';
+          estOut.appendChild(h('div', { class: 'cards' },
+            kpiCard('Vendor cost', '₹' + r.cost_inr_at_cost.toFixed(2), '$' + r.cost_usd.toFixed(4) + ' USD', 'accent'),
+            kpiCard('Billable', '₹' + r.cost_inr_billable.toFixed(2), '@ ' + Math.round((r.pricing.markup - 1) * 100) + '% markup', 'ok'),
+            kpiCard('Per minute', '₹' + r.per_minute_inr_billable.toFixed(3), '', 'warn'),
+            kpiCard('Per call', '₹' + r.per_call_inr_billable.toFixed(3), '~' + r.calls + ' calls', 'accent')
+          ));
+          // Examples table
+          const exTbl = h('table', { class: 'mini-table', style: 'margin-top:1rem' });
+          exTbl.appendChild(h('thead', {}, h('tr', {},
+            h('th', {}, 'Volume'),
+            h('th', { style: 'text-align:right' }, 'Vendor (₹)'),
+            h('th', { style: 'text-align:right' }, 'Billable (₹)')
+          )));
+          const exB = h('tbody', {});
+          exTbl.appendChild(exB);
+          (r.examples || []).forEach(e => exB.appendChild(h('tr', {},
+            h('td', {}, e.label),
+            h('td', { style: 'text-align:right' }, '₹' + e.cost_inr_at_cost.toFixed(2)),
+            h('td', { style: 'text-align:right;color:#10b981;font-weight:600' }, '₹' + e.cost_inr_billable.toFixed(2))
+          )));
+          estOut.appendChild(h('h4', { style: 'margin-top:1rem' }, 'Quick reference'));
+          estOut.appendChild(exTbl);
+        } catch (e) { estOut.innerHTML = '<div class="ai-error">' + esc(e.message) + '</div>'; }
+      } }, '🔢 Calculate')
+    ));
+    estCard.appendChild(estOut);
+    out.appendChild(estCard);
+  } catch (e) {
+    out.innerHTML = '<div class="ai-error">Could not load: ' + esc(e.message) + '</div>';
+  }
+};
+
+// Helper for KPI cards in AI usage view (avoids polluting global card())
+function kpiCard(label, value, sub, klass) {
+  return h('div', { class: 'card kpi ' + (klass || '') },
+    h('div', { class: 'kpi-label' }, label),
+    h('div', { class: 'kpi-value' }, value),
+    sub ? h('div', { class: 'kpi-sub muted' }, sub) : null
+  );
+}
+function row(label, value) {
+  return h('tr', {}, h('td', { class: 'muted' }, label), h('td', {}, value));
+}
+
 VIEWS.callratings = async (view) => {
   view.innerHTML = '';
   const { users = [] } = CRM.cache;

@@ -35,6 +35,31 @@ try { demo = require('./demoGuard'); } catch (_) { /* not in demo build */ }
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
 const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta';
+
+// ----- Cost model (Gemini 2.5 Flash, audio in / text out) -----
+// Gemini 2.5 Flash pricing as of mid-2025:
+//   - Input  (text/image/audio/video): $0.30 per 1M tokens
+//   - Output (text):                   $2.50 per 1M tokens
+//   - Audio is tokenised at 32 tokens / second (so 1 min = 1920 tokens).
+//
+// All numbers here are USD per 1M tokens. The 30% markup we charge
+// clients is applied at report time (utils/aiUsage.js _withMarkup),
+// so this constant stays the raw vendor cost.
+const GEMINI_INPUT_USD_PER_M  = 0.30;
+const GEMINI_OUTPUT_USD_PER_M = 2.50;
+const USD_TO_INR              = Number(process.env.USD_TO_INR_RATE || 84);
+
+function _estimateCost(promptTokens, candidateTokens) {
+  const inputCostUsd  = (Number(promptTokens) || 0) / 1_000_000 * GEMINI_INPUT_USD_PER_M;
+  const outputCostUsd = (Number(candidateTokens) || 0) / 1_000_000 * GEMINI_OUTPUT_USD_PER_M;
+  const totalUsd = inputCostUsd + outputCostUsd;
+  return {
+    input_usd:  Number(inputCostUsd.toFixed(6)),
+    output_usd: Number(outputCostUsd.toFixed(6)),
+    total_usd:  Number(totalUsd.toFixed(6)),
+    total_inr:  Number((totalUsd * USD_TO_INR).toFixed(4))
+  };
+}
 let fetch = global.fetch;
 if (!fetch) { try { fetch = require('node-fetch'); } catch (_) {} }
 
@@ -171,6 +196,13 @@ async function _callGemini(audioBytes, mimeType, meta) {
   } catch (e) {
     throw new Error('Could not parse Gemini JSON: ' + text.slice(0, 200));
   }
+  // Pull token usage out of the response so we can log per-tenant cost.
+  const usage = j.usageMetadata || {};
+  parsed.__tokens = {
+    prompt: Number(usage.promptTokenCount) || 0,
+    candidates: Number(usage.candidatesTokenCount) || 0,
+    total: Number(usage.totalTokenCount) || 0
+  };
   return parsed;
 }
 
@@ -256,6 +288,12 @@ async function processRecording(id) {
     suggestedRating = null;
   }
 
+  // Per-call usage + cost from Gemini's usageMetadata. Saved on the
+  // recording row so the AI Usage report can aggregate per-tenant /
+  // per-rep / per-month spend without us hitting Google's billing API.
+  const tk = ai.__tokens || { prompt: 0, candidates: 0, total: 0 };
+  const cost = _estimateCost(tk.prompt, tk.candidates);
+
   await _saveResult(id, {
     transcript: ai.transcript || '',
     summary: ai.summary || '',
@@ -268,7 +306,11 @@ async function processRecording(id) {
     ai_error: null,
     next_followup_days: Number(ai.next_followup_in_days) || null,
     key_insight: ai.key_insight || null,
-    ai_suggested_rating: suggestedRating
+    ai_suggested_rating: suggestedRating,
+    ai_input_tokens:  tk.prompt,
+    ai_output_tokens: tk.candidates,
+    ai_cost_usd: cost.total_usd,
+    ai_cost_inr: cost.total_inr
   });
 
   return { ok: true, id, summary: ai.summary };
