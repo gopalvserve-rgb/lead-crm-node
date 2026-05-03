@@ -2248,6 +2248,22 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
 .ai-transcript pre { white-space: pre-wrap; font-family: -apple-system, sans-serif; font-size: 12px; line-height: 1.5; color: #475569; background: #fff; padding: 8px 10px; border-radius: 6px; margin-top: 6px; max-height: 240px; overflow-y: auto; }
 .btn.xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }
 
+/* ===== AI Summary placeholder (empty state) ===== */
+.rec-placeholder { list-style: none; padding: 0; margin: 8px 0; border: 1px dashed #c7d2fe; border-radius: 12px; background: #fafbff; }
+.placeholder-banner { padding: 14px 16px 6px; }
+.placeholder-title { font-size: 15px; font-weight: 700; color: #4338ca; margin-bottom: 4px; }
+.placeholder-sub { font-size: 13px; line-height: 1.5; color: #475569; }
+.ai-summary-card.sample { margin: 10px 14px; opacity: 0.92; position: relative; }
+.ai-summary-card.sample::before {
+  content: "";
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(135deg, transparent 0 18px, rgba(99,102,241,0.04) 18px 20px);
+  border-radius: 10px;
+  pointer-events: none;
+}
+.sample-tag { margin-left: auto; background: #fef3c7; color: #92400e; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: 999px; letter-spacing: 0.04em; text-transform: uppercase; }
+.placeholder-foot { padding: 4px 16px 14px; font-size: 12px; line-height: 1.5; }
+
 /* ===== Call rating ===== */
 .rating-row {
   display: flex; align-items: center; gap: 10px;

@@ -3112,13 +3112,13 @@ function actionTimelineBlock(leadId) {
 }
 
 function recordingsBlock(leadId) {
-  const wrap = h('div', { class: 'recordings-block' }, h('h4', {}, '📼 Call recordings'));
+  const wrap = h('div', { class: 'recordings-block' }, h('h4', {}, '📼 Call recordings & AI Summary'));
   const list = h('ul', { class: 'rec-list' }, h('li', { class: 'muted' }, 'Loading…'));
   wrap.appendChild(list);
   api('api_leads_recordings', leadId).then(rows => {
     list.innerHTML = '';
     if (!rows || rows.length === 0) {
-      list.appendChild(h('li', { class: 'muted' }, 'No recordings yet.'));
+      list.appendChild(aiSummaryPlaceholder());
       return;
     }
     rows.forEach(r => list.appendChild(renderRecordingItem(r)));
@@ -3127,6 +3127,42 @@ function recordingsBlock(leadId) {
     list.appendChild(h('li', { class: 'muted' }, 'Could not load: ' + e.message));
   });
   return wrap;
+}
+
+// Placeholder shown when a lead has no recordings yet — gives users a
+// preview of what the AI Summary section will look like once a call is logged.
+function aiSummaryPlaceholder() {
+  return h('li', { class: 'rec-item rec-placeholder' },
+    h('div', { class: 'placeholder-banner' },
+      h('div', { class: 'placeholder-title' }, '🤖 AI Call Summary will appear here'),
+      h('div', { class: 'placeholder-sub' },
+        'Once a call is recorded for this lead, our AI automatically transcribes the conversation and shows the summary, sentiment, action items, suggested next status & a quality rating — all in this space.'
+      )
+    ),
+    h('div', { class: 'ai-summary-card sample' },
+      h('div', { class: 'ai-header' },
+        h('span', { class: 'ai-badge' }, '🤖 AI Summary'),
+        h('span', { class: 'ai-sentiment', style: 'color:#10b981' }, '😊 Positive'),
+        h('span', { class: 'sample-tag' }, 'Sample preview')
+      ),
+      h('div', { class: 'ai-summary-text' },
+        'Customer is interested in a 2BHK unit, budget around ₹85L. Discussed floor plans, payment schedule and possession timeline. Asked about home-loan tie-ups with HDFC.'
+      ),
+      h('div', { class: 'ai-insight' }, '💡 High-intent buyer — wants a site visit this weekend.'),
+      h('div', { class: 'ai-actions' },
+        h('div', { class: 'ai-actions-title' }, '✓ Action items'),
+        h('div', { class: 'ai-action-item' }, '• Share 2BHK floor plan PDF on WhatsApp'),
+        h('div', { class: 'ai-action-item' }, '• Confirm Saturday 11 AM site visit'),
+        h('div', { class: 'ai-action-item' }, '• Send HDFC pre-approval form')
+      ),
+      h('div', { class: 'ai-apply-row' },
+        h('span', { class: 'muted' }, '⭐ Suggested rating: 5/5  ·  ⏰ Follow up in 2 days  ·  🎯 Suggested status: Hot lead')
+      )
+    ),
+    h('div', { class: 'placeholder-foot muted' },
+      '↑ This is what you will see here after the first call is recorded. Upload a recording or call from the dialler to generate a real AI summary.'
+    )
+  );
 }
 
 function renderRecordingItem(r) {
