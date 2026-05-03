@@ -222,7 +222,13 @@ const SCHEMA = {
   lead_recordings: {
     columns: ['lead_id', 'user_id', 'phone', 'direction', 'duration_s',
               'device_path', 'mime_type', 'size_bytes', 'audio_bytes',
-              'started_at', 'created_at'],
+              'started_at', 'created_at',
+              'transcript', 'summary', 'action_items', 'sentiment',
+              'suggested_status_id', 'next_followup_days', 'key_insight',
+              'ai_processed_at', 'ai_provider', 'ai_model', 'ai_error',
+              'rating', 'rating_by', 'rating_notes', 'rated_at',
+              'ai_suggested_rating',
+              'ai_input_tokens', 'ai_output_tokens', 'ai_cost_usd', 'ai_cost_inr'],
     json: []
   },
   call_events: {
