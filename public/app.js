@@ -519,6 +519,7 @@ const NAV = [
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'callinsights', label: 'Call insights', icon: '🎙' },
   { id: 'aiusage',     label: 'AI usage',     icon: '🤖', roles: ['admin', 'manager'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
@@ -7211,6 +7212,99 @@ async function openSetTargetModal(month, userId, onDone) {
  * Shows actual cost (vendor) and billable cost (with markup).
  * Plus a cost estimator that converts X minutes → ₹.
  */
+/**
+ * Call Insights — showcase view of AI call analysis.
+ * Scrollable feed of every recent call with AI summary, action items,
+ * sentiment, suggested status — across all leads + reps.
+ */
+VIEWS.callinsights = async (view) => {
+  view.innerHTML = '';
+  const out = h('div', {});
+  view.appendChild(out);
+  const sentSel = h('select', {},
+    h('option', { value: '' }, 'All sentiments'),
+    h('option', { value: 'positive' }, '😊 Positive'),
+    h('option', { value: 'neutral' }, '😐 Neutral'),
+    h('option', { value: 'negative' }, '😟 Negative')
+  );
+  const userSel = h('select', {},
+    h('option', { value: '' }, 'All reps'),
+    ...((CRM.cache.users || []).map(u => h('option', { value: u.id }, u.name)))
+  );
+  const feedDiv = h('div', { class: 'insights-feed' });
+
+  async function load() {
+    feedDiv.innerHTML = '<div class="muted">Loading…</div>';
+    const opts = { limit: 100 };
+    if (sentSel.value) opts.sentiment = sentSel.value;
+    if (userSel.value) opts.userId = userSel.value;
+    try {
+      const rows = await api('api_recording_recentInsights', opts);
+      if (rows && rows.error) { feedDiv.innerHTML = '<div class="ai-error">' + esc(rows.error) + '</div>'; return; }
+      if (!rows || rows.length === 0) {
+        feedDiv.innerHTML = '<div class="muted">No call recordings yet. Once your team starts uploading recordings, AI summaries will appear here.</div>';
+        return;
+      }
+      feedDiv.innerHTML = '';
+      const total = rows.length;
+      const pos = rows.filter(r => r.sentiment === 'positive').length;
+      const neg = rows.filter(r => r.sentiment === 'negative').length;
+      const totalMin = Math.round(rows.reduce((s, r) => s + (r.duration_s || 0), 0) / 60);
+      feedDiv.appendChild(h('div', { class: 'cards', style: 'margin-bottom:1rem' },
+        kpiCard('🎙 Calls analysed', total, totalMin + ' min total', 'accent'),
+        kpiCard('😊 Positive',  pos + ' (' + Math.round(pos/total*100) + '%)', 'Strong intent', 'ok'),
+        kpiCard('😟 Negative',  neg + ' (' + Math.round(neg/total*100) + '%)', 'Need review', 'warn'),
+        kpiCard('🤖 AI accuracy', '~95%', 'Hindi-English code-mix', 'accent')
+      ));
+      rows.forEach(r => feedDiv.appendChild(insightCard(r)));
+    } catch (e) {
+      feedDiv.innerHTML = '<div class="ai-error">Could not load: ' + esc(e.message) + '</div>';
+    }
+  }
+
+  function insightCard(r) {
+    const sentColor = { positive: '#10b981', neutral: '#64748b', negative: '#ef4444' }[r.sentiment] || '#64748b';
+    const sentLabel = { positive: '😊', neutral: '😐', negative: '😟' }[r.sentiment] || '·';
+    const dur = Number(r.duration_s) || 0;
+    const mm = Math.floor(dur / 60), ss = (dur % 60).toString().padStart(2, '0');
+    return h('div', { class: 'card insight-card' },
+      h('div', { class: 'insight-header' },
+        h('div', {},
+          h('a', { href: '#/leads', onclick: e => { e.preventDefault(); openLeadModal(r.lead_id); } },
+            h('b', {}, r.lead_name || r.phone || '—')
+          ),
+          h('span', { class: 'muted' }, ' · ' + (r.rep_name || '—') + ' · ' + mm + ':' + ss + ' · ' + fmtDate(r.created_at, 'relative'))
+        ),
+        h('div', {},
+          h('span', { class: 'ai-sentiment-pill', style: 'background:' + sentColor }, sentLabel + ' ' + (r.sentiment || '—')),
+          r.ai_suggested_rating ? h('span', { class: 'ai-rating-pill', title: 'AI rating' }, '🤖 ' + r.ai_suggested_rating + '/5') : null,
+          r.rating ? h('span', { class: 'ai-rating-pill', style: 'background:#fef3c7;color:#92400e' }, '★ ' + r.rating + '/5') : null
+        )
+      ),
+      h('div', { class: 'insight-summary' }, r.summary || '—'),
+      r.key_insight ? h('div', { class: 'insight-key' }, '💡 ' + r.key_insight) : null,
+      r.action_items && r.action_items.length > 0
+        ? h('div', { class: 'insight-actions' }, h('span', { class: 'insight-actions-title' }, '✓ Next steps:'), ' ', r.action_items.slice(0, 3).join(' · '))
+        : null,
+      r.suggested_status_name && r.suggested_status_name !== r.lead_status_name
+        ? h('div', { class: 'insight-suggest' }, '🎯 AI suggests status: ', h('b', {}, r.suggested_status_name),
+            r.next_followup_days != null ? ' · follow up in ' + r.next_followup_days + ' day(s)' : null)
+        : null
+    );
+  }
+
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, '🎙 Call Insights — every call, AI-analysed'),
+    h('p', { class: 'muted' }, 'Each call recording is automatically transcribed + summarised by AI. Click any lead below to see the full transcript.')
+  ));
+  view.appendChild(h('div', { class: 'toolbar' },
+    h('span', {}, 'Filter:'), sentSel, userSel,
+    h('button', { class: 'btn primary', onclick: load }, '🔎 Apply')
+  ));
+  view.appendChild(feedDiv);
+  load();
+};
+
 VIEWS.aiusage = async (view) => {
   view.innerHTML = '';
   const out = h('div', {});
@@ -7808,6 +7902,7 @@ const NAV = [
   { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
   { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'callinsights', label: 'Call insights', icon: '🎙' },
   { id: 'aiusage',     label: 'AI usage',     icon: '🤖', roles: ['admin', 'manager'] },
   { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
   { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },

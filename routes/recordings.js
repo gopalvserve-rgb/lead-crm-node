@@ -523,6 +523,62 @@ async function api_recording_applySuggestion(token, recId, opts) {
   return { ok: true, status_changed: !!updates.status_id, followup_id };
 }
 
+async function api_recording_recentInsights(token, opts) {
+  const me = await authUser(token);
+  opts = opts || {};
+  const limit = Math.min(Number(opts.limit) || 50, 200);
+  const where = ['lr.ai_processed_at IS NOT NULL'];
+  const params = [];
+  let p = 1;
+  if (me.role === 'sales' || me.role === 'employee') {
+    where.push(`lr.user_id = $${p++}`); params.push(me.id);
+  } else if (me.role === 'team_leader') {
+    where.push(`(lr.user_id = $${p} OR lr.user_id IN (SELECT id FROM users WHERE parent_id = $${p}))`);
+    params.push(me.id); p++;
+  }
+  if (opts.sentiment) { where.push(`lr.sentiment = $${p++}`); params.push(opts.sentiment); }
+  if (opts.userId)    { where.push(`lr.user_id = $${p++}`);   params.push(Number(opts.userId)); }
+  params.push(limit);
+  const sql = `SELECT lr.id, lr.lead_id, lr.user_id, lr.phone, lr.duration_s, lr.direction,
+           lr.created_at, lr.ai_processed_at, lr.sentiment, lr.summary,
+           lr.action_items, lr.key_insight, lr.suggested_status_id,
+           lr.next_followup_days, lr.rating, lr.ai_suggested_rating,
+           l.name AS lead_name, l.status_id AS lead_status_id,
+           u.name AS rep_name, u.role AS rep_role,
+           s.name AS suggested_status_name, ls.name AS lead_status_name
+      FROM lead_recordings lr
+      LEFT JOIN leads    l  ON l.id  = lr.lead_id
+      LEFT JOIN users    u  ON u.id  = lr.user_id
+      LEFT JOIN statuses s  ON s.id  = lr.suggested_status_id
+      LEFT JOIN statuses ls ON ls.id = l.status_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY lr.created_at DESC
+     LIMIT $${p}`;
+  try {
+    const { rows } = await db.query(sql, params);
+    return rows.map(r => {
+      let ai = [];
+      try { ai = JSON.parse(r.action_items || '[]'); } catch (_) {}
+      return {
+        id: r.id, lead_id: r.lead_id, lead_name: r.lead_name,
+        lead_status_name: r.lead_status_name, phone: r.phone,
+        duration_s: r.duration_s, direction: r.direction, created_at: r.created_at,
+        rep_name: r.rep_name, rep_role: r.rep_role,
+        sentiment: r.sentiment, summary: r.summary, action_items: ai,
+        key_insight: r.key_insight,
+        suggested_status_name: r.suggested_status_name,
+        next_followup_days: r.next_followup_days,
+        rating: r.rating, ai_suggested_rating: r.ai_suggested_rating
+      };
+    });
+  } catch (e) {
+    if (/column .* does not exist/i.test(e.message)) {
+      return { error: 'AI columns not migrated yet — restart the service.', rows: [] };
+    }
+    throw e;
+  }
+}
+
 module.exports = {
   api_call_logEvent,
   api_call_hasRecentEvent,
@@ -536,5 +592,6 @@ module.exports = {
   api_recording_aiReprocess,
   api_recording_applySuggestion,
   api_recording_rate,
-  _findLeadByPhone
+  _findLeadByPhone,
+  api_recording_recentInsights
 };
