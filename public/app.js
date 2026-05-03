@@ -11771,16 +11771,30 @@ async function syncRecordings(opts) {
       skippedNoMatch++;
       continue;
     }
-    const lead = digits ? (CRM.cache.lastLeads || []).find(l =>
-      String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
-    ) : null;
+    // Match the recording's phone number against every lead's
+    // phone/whatsapp/alt_phone — last 10 digits comparison so country-code
+    // variations (+91, 91, none) don't break the join.
+    const tail10 = digits.slice(-10);
+    const lead = digits ? (CRM.cache.lastLeads || []).find(l => {
+      for (const fld of ['phone', 'whatsapp', 'alt_phone']) {
+        const d = String(l[fld] || '').replace(/\D/g, '');
+        if (d && d.endsWith(tail10)) return true;
+      }
+      return false;
+    }) : null;
     const leadId = lead ? String(lead.id) : '';
 
-    // Stricter filter: only upload if there was a CRM-logged call event
-    // for this phone in the last 30 minutes. Stops the sync from grabbing
-    // recordings of personal calls to customers (calls outside the CRM
-    // context). Skipped silently if includeUnmatched is on.
-    if (!includeUnmatched && digits) {
+    // If the filename's phone number maps to a lead, that's all the
+    // evidence we need — the recording belongs to that lead, period.
+    // Earlier we also required a recent call_event from the CRM, which
+    // dropped recordings for any call made directly from the phone
+    // (without auto-dial / dial-from-CRM). For real-world reps this
+    // hid 80%+ of recordings. Now: lead-match wins.
+    //
+    // The call_event check is only used as a fallback when the phone
+    // doesn't match any lead but DOES match a knownTail (alt-format
+    // shorthand). Helps catch typos / saved-without-country-code cases.
+    if (!includeUnmatched && !lead && digits) {
       try {
         const hr = await api('api_call_hasRecentEvent', meta.phone, 30);
         if (!hr || !hr.matched) {
