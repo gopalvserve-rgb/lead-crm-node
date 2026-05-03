@@ -885,3 +885,23 @@ CREATE INDEX IF NOT EXISTS idx_sheet_int_token ON sheet_integrations(webhook_tok
 -- pull required). The legacy NOT NULL constraint blocked admins from
 -- switching an existing integration over to push mode.
 ALTER TABLE sheet_integrations ALTER COLUMN sheet_id DROP NOT NULL;
+
+-- ===========================================================
+-- v15: AI call summary (Gemini 2.5 Flash powered)
+-- Columns added to lead_recordings to hold the AI-generated
+-- transcript, summary, action items, sentiment, and a suggested
+-- next status. The background worker (utils/aiCallSummary.js)
+-- picks up rows where ai_processed_at IS NULL and fills these in.
+-- ===========================================================
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS transcript          TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS summary             TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS action_items        TEXT;       -- JSON array
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS sentiment           TEXT;       -- positive | neutral | negative
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS suggested_status_id INTEGER REFERENCES statuses(id) ON DELETE SET NULL;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS next_followup_days  INTEGER;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS key_insight         TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_processed_at     TIMESTAMPTZ;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_provider         TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_model            TEXT;
+ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_error            TEXT;
+CREATE INDEX IF NOT EXISTS idx_lead_rec_ai_processed ON lead_recordings(ai_processed_at);

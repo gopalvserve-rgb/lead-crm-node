@@ -373,6 +373,117 @@ async function api_call_handleEnded(token, payload) {
   };
 }
 
+/**
+ * Fetch the AI summary for a recording (transcript + summary +
+ * action items + sentiment + suggested status). If not yet processed,
+ * returns { status: 'pending' }. If failed, returns { status: 'failed' }.
+ */
+async function api_recording_aiSummary(token, recId) {
+  await authUser(token);
+  const id = Number(recId);
+  if (!id) throw new Error('Missing recording id');
+  const { rows } = await db.query(
+    `SELECT id, summary, transcript, action_items, sentiment, suggested_status_id,
+            next_followup_days, key_insight, ai_processed_at, ai_provider,
+            ai_model, ai_error, lead_id, phone, duration_s
+       FROM lead_recordings WHERE id = $1`,
+    [id]
+  );
+  const r = rows[0];
+  if (!r) throw new Error('Recording not found');
+  if (!r.ai_processed_at) return { status: 'pending' };
+  if (r.ai_error) return { status: 'failed', error: r.ai_error };
+  let action_items = [];
+  try { action_items = JSON.parse(r.action_items || '[]'); } catch (_) { action_items = []; }
+  return {
+    status: 'done',
+    summary: r.summary,
+    transcript: r.transcript,
+    action_items,
+    sentiment: r.sentiment,
+    suggested_status_id: r.suggested_status_id,
+    next_followup_days: r.next_followup_days,
+    key_insight: r.key_insight,
+    processed_at: r.ai_processed_at,
+    provider: r.ai_provider,
+    model: r.ai_model,
+    lead_id: r.lead_id,
+    phone: r.phone,
+    duration_s: r.duration_s
+  };
+}
+
+/**
+ * Admin / rep can trigger re-processing — clears the AI fields and
+ * the worker will pick the row up on the next tick.
+ */
+async function api_recording_aiReprocess(token, recId) {
+  const me = await authUser(token);
+  const id = Number(recId);
+  if (!id) throw new Error('Missing recording id');
+  await db.query(
+    `UPDATE lead_recordings SET
+        ai_processed_at = NULL, ai_error = NULL, summary = NULL,
+        transcript = NULL, action_items = NULL, sentiment = NULL,
+        suggested_status_id = NULL, key_insight = NULL, next_followup_days = NULL
+      WHERE id = $1`,
+    [id]
+  );
+  // Kick the worker immediately rather than waiting for the next tick.
+  try {
+    const { processRecording } = require('../utils/aiCallSummary');
+    setImmediate(() => processRecording(id).catch(e => console.warn('[ai-summary] reprocess failed:', e.message)));
+  } catch (_) {}
+  return { ok: true, reprocessing: true, recording_id: id };
+}
+
+/**
+ * Apply the AI's suggested status to the lead and optionally schedule
+ * a follow-up at the suggested date. One-click "do what the AI said".
+ */
+async function api_recording_applySuggestion(token, recId, opts) {
+  const me = await authUser(token);
+  opts = opts || {};
+  const id = Number(recId);
+  if (!id) throw new Error('Missing recording id');
+  const { rows } = await db.query(
+    `SELECT lead_id, suggested_status_id, next_followup_days, summary
+       FROM lead_recordings WHERE id = $1`, [id]
+  );
+  const r = rows[0];
+  if (!r) throw new Error('Recording not found');
+  if (!r.lead_id) throw new Error('Recording has no lead — cannot apply suggestion');
+
+  const lead = await db.findById('leads', r.lead_id);
+  if (!lead) throw new Error('Lead not found');
+
+  const updates = {};
+  if (opts.applyStatus !== false && r.suggested_status_id && Number(r.suggested_status_id) !== Number(lead.status_id)) {
+    updates.status_id = r.suggested_status_id;
+    updates.last_status_change_at = db.nowIso();
+  }
+  if (Object.keys(updates).length > 0) {
+    await db.update('leads', lead.id, Object.assign(updates, { updated_at: db.nowIso() }));
+  }
+
+  // Schedule follow-up if requested + AI gave a time
+  let followup_id = null;
+  if (opts.applyFollowup !== false && r.next_followup_days != null) {
+    const due = new Date(Date.now() + Number(r.next_followup_days) * 86400000);
+    due.setHours(11, 0, 0, 0);
+    const ins = await db.insert('followups', {
+      lead_id: lead.id,
+      user_id: lead.assigned_to || me.id,
+      due_at: due.toISOString(),
+      note: 'AI-suggested follow-up: ' + (r.summary || '').slice(0, 200),
+      is_done: 0
+    }).catch(() => null);
+    followup_id = ins ? ins.id : null;
+  }
+
+  return { ok: true, status_changed: !!updates.status_id, followup_id };
+}
+
 module.exports = {
   api_call_logEvent,
   api_call_hasRecentEvent,
@@ -382,5 +493,8 @@ module.exports = {
   api_call_history,
   api_my_recordings,
   api_recordings_delete,
+  api_recording_aiSummary,
+  api_recording_aiReprocess,
+  api_recording_applySuggestion,
   _findLeadByPhone
 };

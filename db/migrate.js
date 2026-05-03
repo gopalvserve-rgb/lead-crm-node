@@ -27,8 +27,6 @@ const { pool } = require('./pg');
     console.error('✗ Migration connection failed:', e.message);
     exitCode = 1;
   }
-  // Don't await pool.end() — it can hang on some managed Postgres providers.
-  // Fire-and-forget and exit immediately so the `&&` chain can continue.
   pool.end().catch(() => {});
   setImmediate(() => process.exit(exitCode));
 })();

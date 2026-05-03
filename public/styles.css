@@ -2221,3 +2221,29 @@ code { background: var(--bg-alt); padding: 1px 6px; border-radius: 3px; font-siz
 .csv-warn.warn { background: #fef3c7; color: #92400e; border-left: 3px solid #f59e0b; }
 .csv-warn.ok   { background: #d1fae5; color: #065f46; border-left: 3px solid #10b981; }
 .csv-warn-ico { flex-shrink: 0; font-size: 1rem; line-height: 1.4; }
+
+/* ===== AI Call Summary ===== */
+.rec-ai-block { margin-top: 8px; }
+.ai-pending { padding: 10px 12px; background: #f3f4f6; border-radius: 6px; font-size: 13px; color: #64748b; }
+.ai-error   { padding: 8px 12px; background: #fee2e2; color: #991b1b; border-radius: 6px; font-size: 12px; }
+.ai-summary-card {
+  background: linear-gradient(135deg, #eef2ff 0%, #fae8ff 100%);
+  border: 1px solid #c7d2fe;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 6px;
+}
+.ai-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.ai-badge { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: #fff; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.ai-sentiment { font-size: 12px; font-weight: 600; }
+.ai-header button { margin-left: auto; }
+.ai-summary-text { font-size: 14px; line-height: 1.5; color: #1e293b; margin-bottom: 8px; }
+.ai-insight { background: #fef3c7; border-left: 3px solid #f59e0b; padding: 6px 10px; border-radius: 4px; font-size: 13px; color: #78350f; margin-bottom: 8px; }
+.ai-actions { margin-top: 8px; padding-top: 8px; border-top: 1px solid #c7d2fe; }
+.ai-actions-title { font-weight: 600; font-size: 12px; color: #4338ca; margin-bottom: 4px; }
+.ai-action-item { font-size: 13px; color: #334155; line-height: 1.5; }
+.ai-apply-row { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ai-transcript { margin-top: 8px; font-size: 12px; }
+.ai-transcript summary { cursor: pointer; color: #6366f1; font-weight: 500; }
+.ai-transcript pre { white-space: pre-wrap; font-family: -apple-system, sans-serif; font-size: 12px; line-height: 1.5; color: #475569; background: #fff; padding: 8px 10px; border-radius: 6px; margin-top: 6px; max-height: 240px; overflow-y: auto; }
+.btn.xs { padding: 2px 8px; font-size: 11px; border-radius: 4px; }

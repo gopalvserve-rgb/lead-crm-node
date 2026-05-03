@@ -31,9 +31,6 @@ const routes = {
   leads:       require('./routes/leads'),
   admin:       require('./routes/admin'),
   customFields:require('./routes/customFields'),
-  tags:        require('./routes/tags'),
-  tat:         require('./routes/tat'),
-  whatsbot:    require('./routes/whatsbot'),
   sources:     require('./routes/sources'),
   products:    require('./routes/products'),
   statuses:    require('./routes/statuses'),
@@ -45,17 +42,7 @@ const routes = {
   automations: require('./routes/automations'),
   whatsapp:    require('./routes/whatsapp'),
   permissions: require('./routes/permissions'),
-  recordings:  require('./routes/recordings'),
-  push:        require('./routes/push'),
-  knowledge:   require('./routes/knowledgeBase'),
-  announcements: require('./routes/announcements'),
-  chat:        require('./routes/chat'),
-  savedFilters: require('./routes/savedFilters'),
-  targets:     require('./routes/targets'),
-  inventory:   require('./routes/inventory'),
-  projectStages: require('./routes/projectStages'),
-  personalWa:    require('./routes/personalWaTemplates'),
-  integrations:  require('./routes/integrations')
+  recordings:  require('./routes/recordings')
 };
 const webhooks = require('./routes/webhooks');
 
@@ -71,10 +58,6 @@ Object.values(routes).forEach(module => {
 
 const app = express();
 app.use(bodyParser.json({ limit: '10mb' }));
-// Some forwarders / Postman-default-Body-raw send the WhatsApp webhook
-// body as text/plain. Catch those too — the webhook handler attempts
-// JSON.parse on string bodies. Empty content-type also lands here.
-app.use(bodyParser.text({ type: ['text/plain', 'application/octet-stream'], limit: '10mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -86,7 +69,7 @@ app.post('/api', async (req, res) => {
     // Pass request metadata to api_login so it can fingerprint the device
     // for the "new device login" notification.
     const finalArgs = (args || []).slice();
-    if (fn === 'api_login' || fn === 'api_login_otp_verify') {
+    if (fn === 'api_login') {
       finalArgs.push({
         ua: String(req.headers['user-agent'] || ''),
         ip: String(req.headers['x-forwarded-for'] || req.connection?.remoteAddress || '').split(',')[0].trim()
@@ -188,25 +171,8 @@ app.get('/hook/meta',      webhooks.metaVerify);
 app.post('/hook/meta',     webhooks.metaEvent);
 app.get('/hook/whatsapp',  webhooks.whatsappVerify);
 app.post('/hook/whatsapp', webhooks.whatsappEvent);
-// New full-featured WhatsBot webhook (used by Meta when configured via the UI)
-app.get('/hook/whatsapp_webhook',  routes.whatsbot.expressVerify);
-app.post('/hook/whatsapp_webhook', routes.whatsbot.expressEvent);
 app.post('/hook/website',  webhooks.websiteHook);
 app.post('/hook/other',    webhooks.otherHook);
-// Calendly per-rep webhook — token in URL identifies the rep.
-app.post('/hook/calendly/:token', webhooks.calendlyEvent);
-// Lead-source webhooks — one URL per vendor (indiamart, magicbricks,
-// justdial, tradeindia, 99acres, housing, generic). Auto-maps each
-// vendor's payload format to the CRM lead shape.
-app.post('/hook/leadsource/:source/:key', routes.integrations.leadSourceWebhook);
-// Sheet push webhook — Apps Script in a private sheet POSTs each new
-// row here. Token in URL identifies the integration; sheet stays
-// fully private (no "Anyone with link" sharing required).
-app.post('/hook/sheet/:token', routes.integrations.sheetPushWebhook);
-
-// Facebook OAuth callback — server-side flow that bypasses the JS SDK.
-// User clicks Connect → redirected here with code → we fetch pages → redirect back.
-app.get('/fb/auth/callback', routes.fb.expressOAuthCallback);
 
 // Lead sample CSV + website API docs
 app.get('/api/docs', (req, res) => {
@@ -279,119 +245,15 @@ app.get('/api-docs', (req, res) => {
   res.type('html').send(apiDocsHtml(host));
 });
 
-/**
- * /api/sample.csv — comprehensive migration template.
- *
- * Pulls real custom-field keys from the DB so the column list mirrors THIS
- * deployment's lead form exactly. Migrators can paste their old data into
- * the matching columns and bulk-upload in one pass.
- *
- * Columns are grouped:
- *   1. Contact & identity      (name, phone, alt_phone, whatsapp, email)
- *   2. Routing                 (status, source, source_ref, product, assigned_to)
- *   3. Address                 (address, city, state, pincode, country, company)
- *   4. Qualification           (value, currency, qualified, tags)
- *   5. Activity                (next_followup_at, notes)
- *   6. Marketing attribution   (gclid, gad_campaignid, utm_*)
- *   7. Custom fields           (cf_<key> for every custom field defined)
- *
- * status / source / product values are matched by NAME (case-insensitive,
- * auto-created if missing). assigned_to accepts ID, email or full name.
- * Dates: ISO (2026-05-01 10:00) or YYYY-MM-DD HH:mm. qualified: 1 or 0.
- */
-function _csvCell(v) {
-  const s = v == null ? '' : String(v);
-  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-}
-app.get('/api/sample.csv', async (req, res) => {
-  // Pull custom fields so the template includes every cf_<key> column
-  // currently defined in this deployment.
-  let customFields = [];
-  try {
-    const db = require('./db/pg');
-    customFields = (await db.getAll('custom_fields'))
-      .filter(c => Number(c.is_active) !== 0 && c.key)
-      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0));
-  } catch (_) { /* empty deployment is fine — fall through with no cf_ columns */ }
-
-  const baseCols = [
-    // 1. Contact
-    'name', 'phone', 'alt_phone', 'whatsapp', 'email',
-    // 2. Routing — status / source / product accepted by NAME, assigned_to by email-or-name-or-id
-    'status', 'source', 'source_ref', 'product', 'assigned_to',
-    // 3. Address
-    'address', 'city', 'state', 'pincode', 'country', 'company',
-    // 4. Qualification
-    'value', 'currency', 'qualified', 'tags',
-    // 5. Activity
-    'next_followup_at', 'notes',
-    // 6. Migration timestamps — accepted only when imported by an admin.
-    //    Use ISO 8601 (2024-03-15 14:30) or any Date.parse'able string.
-    //    Empty values fall back to "now".
-    'created_at', 'last_status_change_at',
-    // 7. Marketing attribution (Google Ads / UTM)
-    'gclid', 'gad_campaignid',
-    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'
-  ];
-  const cfCols = customFields.map(c => 'cf_' + c.key);
-  const headers = [...baseCols, ...cfCols];
-
-  const sampleRow = (overrides = {}) => {
-    const row = {
-      name: '', phone: '', alt_phone: '', whatsapp: '', email: '',
-      status: '', source: '', source_ref: '', product: '', assigned_to: '',
-      address: '', city: '', state: '', pincode: '', country: '', company: '',
-      value: '', currency: '', qualified: '', tags: '',
-      next_followup_at: '', notes: '',
-      created_at: '', last_status_change_at: '',
-      gclid: '', gad_campaignid: '',
-      utm_source: '', utm_medium: '', utm_campaign: '', utm_term: '', utm_content: ''
-    };
-    // Default empty string for every custom-field column
-    customFields.forEach(c => { row['cf_' + c.key] = ''; });
-    return Object.assign(row, overrides);
-  };
-
-  // Three rows showing: (1) fully-filled hot lead, (2) website-form lead with
-  // attribution, (3) bare-minimum import. Migrators see what valid values
-  // look like at every level of detail.
-  const rows = [
-    sampleRow({
-      name: 'John Doe', phone: '+919876543210', whatsapp: '+919876543210',
-      email: 'john@example.com',
-      status: 'New', source: 'Website', product: 'Basic Plan',
-      assigned_to: 'sales1@yourcompany.com',
-      address: '12 MG Road', city: 'Mumbai', state: 'MH',
-      pincode: '400001', country: 'India', company: 'Acme Corp',
-      value: '50000', currency: 'INR', qualified: '1',
-      tags: 'hot,vip',
-      next_followup_at: '2026-05-01 10:00',
-      // Migration columns: when importing from another CRM, fill these
-      // so the lead's age + status TAT match the source system. Leave
-      // blank for new leads — defaults to "now".
-      created_at: '2025-12-15 09:30',
-      last_status_change_at: '2026-04-22 11:45',
-      notes: 'Demo requested — interested in premium tier'
-    }),
-    sampleRow({
-      name: 'Jane Smith', phone: '+919876543211', email: 'jane@example.com',
-      status: 'Contacted', source: 'Facebook Lead Ad',
-      assigned_to: 'Rajesh Kumar',
-      city: 'Delhi', tags: 'vip',
-      utm_source: 'facebook', utm_medium: 'paid_social',
-      utm_campaign: 'spring_2026'
-    }),
-    sampleRow({
-      name: 'Alex Kumar', phone: '+917777777777',
-      source: 'WhatsApp', city: 'Bangalore'
-    })
-  ];
-
-  const lines = [
-    headers.join(','),
-    ...rows.map(r => headers.map(h => _csvCell(r[h])).join(','))
-  ];
-  res.type('text/csv').attachment('lead-crm-sample.csv').send(lines.join('\n'));
+app.get('/api/sample.csv', (req, res) => {
+  const csv = [
+    'name,phone,email,whatsapp,source,product,city,tags,notes,next_followup_at,assigned_to',
+    // assigned_to accepts an employee email OR full name. Leave blank to use assignment rules.
+    'John Doe,+911234567890,john@example.com,+911234567890,Website,Basic Plan,Mumbai,"hot,vip","Demo requested",2026-05-01 10:00,sales1@yourcompany.com',
+    'Jane Smith,+919876543210,jane@example.com,+919876543210,Facebook Lead Ad,Premium,Delhi,vip,"Referred by John",,Rajesh Kumar',
+    'Alex Kumar,+917777777777,,,WhatsApp,,Bangalore,cold,,,'
+  ].join('\n');
+  res.type('text/csv').attachment('lead-crm-sample.csv').send(csv);
 });
 
 // Config for the frontend (non-secret; used to pre-populate CRM.webAppUrl etc.).
@@ -406,9 +268,6 @@ app.get('/config.json', async (req, res) => {
   res.json({
     company_name:     cfg.COMPANY_NAME     || process.env.COMPANY_NAME     || 'Lead CRM',
     company_logo_url: cfg.COMPANY_LOGO_URL || process.env.COMPANY_LOGO_URL || '',
-    // CSV of NAV item IDs the admin has hidden for everyone in this tenant.
-    // The frontend filters NAV by this list. Empty = show everything.
-    hidden_nav_ids:   cfg.HIDDEN_NAV_IDS   || '',
     base_url: (req.protocol + '://' + req.get('host'))
   });
 });
@@ -602,9 +461,7 @@ function apiDocsHtml(host) {
       <tr><td class="field"><code>currency</code></td><td>string</td><td>e.g. <code>INR</code>, <code>USD</code></td></tr>
       <tr><td class="field"><code>next_followup_at</code></td><td>ISO datetime</td><td>e.g. <code>2026-05-01T10:00:00Z</code></td></tr>
       <tr><td class="field"><code>source_ref</code></td><td>string</td><td>External reference — campaign ID, ad ID. Alias: <code>utm_campaign</code></td></tr>
-      <tr><td class="field"><code>gclid</code> <span style="color:#3b82f6;font-weight:600">★</span></td><td>string</td><td><b>Google Click ID.</b> Stored on its own <code>gclid</code> column for filtering / Google Ads conversion upload. Pass it as you receive it from your landing page query string.</td></tr>
-      <tr><td class="field"><code>gad_campaignid</code></td><td>string</td><td>Google Ads campaign ID (the <code>gad_campaignid</code> URL param). Stored on its own column.</td></tr>
-      <tr><td class="field"><code>utm_source</code> / <code>utm_medium</code> / <code>utm_campaign</code> / <code>utm_term</code> / <code>utm_content</code></td><td>string</td><td><b>UTM parameters.</b> Each one is now stored on its own column on the lead row, plus mirrored in <code>meta_json</code> for backwards compatibility. Filterable from the leads list and reports.</td></tr>
+      <tr><td class="field"><code>utm_source</code> / <code>utm_medium</code> / <code>utm_campaign</code> / <code>utm_term</code> / <code>utm_content</code></td><td>string</td><td>UTM parameters — auto-stored in lead's <code>meta_json</code> for reporting</td></tr>
       <tr><td class="field"><code>landing_page</code></td><td>string</td><td>URL the lead submitted from</td></tr>
       <tr><td class="field"><code>meta</code></td><td>object</td><td>Any additional structured data (kept on the lead)</td></tr>
     </tbody>
@@ -640,12 +497,7 @@ curl -X POST <span class="s">'${endpoint}'</span> \\
     "value": 50000,
     "currency": "INR",
     "utm_source": "google",
-    "utm_medium": "cpc",
-    "utm_campaign": "Gg-Search_TM-Registration",
-    "utm_term": "Trademark Registration",
-    "utm_content": "Gg-Search-TM-Registration_Ad3",
-    "gclid": "CjwKCAiAkvDMBhBMEiwAnUA9Bab628Em7EX9ZLHLHFuhyP76UbYta2VJ2MkuDvgJeZX_TFWNHc6XzhoC7xIQAvD_BwE",
-    "gad_campaignid": "12385691702"
+    "utm_campaign": "summer-sale"
   }'</span></pre>
   </div>
 
@@ -855,28 +707,8 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
   await bootstrap();
   try { require('./utils/reminders').start(); }
   catch (e) { console.error('[boot] reminders start failed:', e.message); }
-  try { require('./routes/tat').startTatWorker(); }
-  catch (e) { console.error('[boot] tat worker start failed:', e.message); }
-  try { require('./routes/whatsbot').startCampaignWorker(); }
-  catch (e) { console.error('[boot] wb campaign worker start failed:', e.message); }
-  try { require('./utils/aiCallSummary').startWorker(); }
-  catch (e) { console.error('[boot] ai-summary worker start failed:', e.message); }
-  // Hourly trim of WhatsApp activity log — drops rows older than 24h.
-  // Keeps the table small + the Activity Log render snappy. First run
-  // 5 min after boot, then every 60 min.
-  try {
-    const wb = require('./routes/whatsbot');
-    setTimeout(() => wb.trimActivityLog().catch(() => {}), 5 * 60 * 1000);
-    setInterval(() => wb.trimActivityLog().catch(() => {}), 60 * 60 * 1000);
-  } catch (e) { console.error('[boot] activity-log trim scheduler failed:', e.message); }
-  // Background poller for Google Sheet integrations. Each integration
-  // has its own poll_interval_min; the runner just checks who is due.
-  // First run after 60s so the boot finishes cleanly, then every 60s.
-  try {
-    const integrations = require('./routes/integrations');
-    setTimeout(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] initial run failed:', e.message)), 60_000);
-    setInterval(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] tick failed:', e.message)), 60_000);
-  } catch (e) { console.error('[boot] sheet sync poller failed to start:', e.message); }
+  try { require('./utils/mailer').startDailyCron(); console.log('[boot] mailer cron started (9 AM IST + 7 PM IST)'); }
+  catch (e) { console.error('[boot] mailer cron start failed:', e.message); }
   app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);
