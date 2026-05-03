@@ -756,9 +756,9 @@ VIEWS.dashboard = async (view) => {
   // at a glance from the dashboard without having to filter the leads list.
   view.append(
     h('div', { class: 'cards' },
-      card('Total Leads',  summary.totals.total,      'accent', '🎯'),
+      card('Total Leads',  summary.totals.total,      'accent', '🎯', '#/leads'),
       card('New today',    due.counts.new_today || 0, 'accent', '✨', '#/leads?filter=new_today'),
-      card('Won',          summary.totals.won,        'ok',     '🏆'),
+      card('Won',          summary.totals.won,        'ok',     '🏆', '#/leads?filter=won'),
       card('Due today',    due.counts.due_today,      'warn',   '📅', '#/followups?tab=due'),
       card('Overdue',      due.counts.overdue,        'err',    '⚠️', '#/followups?tab=overdue')
     )
