@@ -87,7 +87,7 @@ async function api_reports_aiUsage(token, filters) {
              lr.ai_processed_at, lr.created_at
         FROM lead_recordings lr
         LEFT JOIN users u ON u.id = lr.user_id
-       WHERE lr.ai_provider IN ('gemini')
+       WHERE lr.ai_provider IN ('gemini', 'gemini-demo')
     )
     SELECT
       COUNT(*)                                    AS all_calls,
@@ -150,7 +150,7 @@ async function api_reports_aiUsage(token, filters) {
       FROM lead_recordings lr
       LEFT JOIN users u ON u.id = lr.user_id
      WHERE lr.ai_processed_at >= $1
-       AND lr.ai_provider = 'gemini'
+       AND lr.ai_provider IN ('gemini', 'gemini-demo')
      GROUP BY lr.user_id, u.name
      ORDER BY cost_inr DESC NULLS LAST
   `;
@@ -172,7 +172,7 @@ async function api_reports_aiUsage(token, filters) {
            COALESCE(SUM(ai_cost_inr),0) AS cost_inr
       FROM lead_recordings
      WHERE ai_processed_at >= NOW() - INTERVAL '30 days'
-       AND ai_provider = 'gemini'
+       AND ai_provider IN ('gemini', 'gemini-demo')
      GROUP BY DATE(ai_processed_at)
      ORDER BY day DESC
   `;
