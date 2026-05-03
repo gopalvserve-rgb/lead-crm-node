@@ -7216,6 +7216,7295 @@ VIEWS.aiusage = async (view) => {
   const out = h('div', {});
   view.appendChild(out);
   out.innerHTML = '<div class="muted">Loading AI usage…</div>';
+  try {
+    const u = await api('api_reports_aiUsage', {});
+    if (u.error) { out.innerHTML = '<div class="ai-error">' + esc(u.error) + '</div>'; return; }
+    out.innerHTML = '';
+    const m = u.this_month || {}, a = u.all_time || {};
+    out.appendChild(h('div', { class: 'cards', style: 'margin-bottom:1rem' },
+      kpiCard('💸 This month', '₹' + (m.cost_inr_billable || 0).toFixed(2), 'Total AI transcription cost', 'accent'),
+      kpiCard('📞 Calls analysed', m.calls || 0, (m.audio_minutes || 0) + ' min audio processed', 'ok'),
+      kpiCard('📈 Forecast', '₹' + (u.forecast_monthly_inr || 0).toFixed(0), 'Projected monthly cost @ current pace', 'warn'),
+      kpiCard('🔢 All-time', '₹' + (a.cost_inr_billable || 0).toFixed(2), a.calls + ' calls · ' + a.audio_minutes + ' min total', 'accent')
+    ));
+    const perMinInr = m.audio_minutes > 0 ? (m.cost_inr_billable / m.audio_minutes) : 0;
+    const perCallInr = m.calls > 0 ? (m.cost_inr_billable / m.calls) : 0;
+    out.appendChild(h('div', { class: 'card' },
+      h('h3', {}, '📊 This month — ' + u.month),
+      h('table', { class: 'mini-table' }, h('tbody', {},
+        row('Calls analysed', m.calls),
+        row('Audio processed', (m.audio_minutes || 0) + ' minutes'),
+        row('Average per minute', '₹' + perMinInr.toFixed(3)),
+        row('Average per call', '₹' + perCallInr.toFixed(2)),
+        row('Total cost', h('b', { style: 'color:#10b981;font-size:16px' }, '₹' + (m.cost_inr_billable || 0).toFixed(2)))
+      ))
+    ));
+    if (u.by_user && u.by_user.length > 0) {
+      const tbl = h('table', { class: 'call-rating-report' });
+      tbl.appendChild(h('thead', {}, h('tr', {},
+        h('th', {}, 'Rep'),
+        h('th', { style: 'text-align:right' }, 'Calls'),
+        h('th', { style: 'text-align:right' }, 'Audio (min)'),
+        h('th', { style: 'text-align:right' }, 'Cost')
+      )));
+      const tb = h('tbody', {});
+      tbl.appendChild(tb);
+      u.by_user.forEach(ru => tb.appendChild(h('tr', {},
+        h('td', {}, h('b', {}, ru.user_name)),
+        h('td', { style: 'text-align:right' }, ru.calls),
+        h('td', { style: 'text-align:right' }, ru.audio_minutes),
+        h('td', { style: 'text-align:right;color:#10b981;font-weight:600' }, '₹' + ru.cost_inr_billable.toFixed(2))
+      )));
+      out.appendChild(h('div', { class: 'card call-rating-report' }, h('h3', {}, '👥 By rep — this month'), tbl));
+    }
+    const estCard = h('div', { class: 'card' });
+    estCard.appendChild(h('h3', {}, '🧮 Cost estimator'));
+    estCard.appendChild(h('p', { class: 'muted' }, 'Forecast what N minutes of AI call analysis will cost.'));
+    const minsInp = h('input', { type: 'number', value: 100, min: 1, step: 10, style: 'width:100px' });
+    const callMinInp = h('input', { type: 'number', value: 5, min: 0.5, step: 0.5, style: 'width:80px' });
+    const estOut = h('div', { style: 'margin-top:12px' });
+    estCard.appendChild(h('div', { class: 'toolbar' },
+      h('span', {}, 'Total minutes:'), minsInp,
+      h('span', {}, 'Avg call (min):'), callMinInp,
+      h('button', { class: 'btn primary', onclick: async () => {
+        try {
+          const r = await api('api_reports_aiCostEstimator', { minutes: Number(minsInp.value), avgCallMinutes: Number(callMinInp.value) });
+          estOut.innerHTML = '';
+          estOut.appendChild(h('div', { class: 'cards' },
+            kpiCard('💰 Total cost', '₹' + r.cost_inr_billable.toFixed(2), 'For ' + r.minutes + ' min · ~' + r.calls + ' calls', 'ok'),
+            kpiCard('Per minute', '₹' + r.per_minute_inr_billable.toFixed(3), '', 'warn'),
+            kpiCard('Per call', '₹' + r.per_call_inr_billable.toFixed(3), '@ ' + r.avg_call_minutes + ' min/call', 'accent')
+          ));
+          const exTbl = h('table', { class: 'mini-table', style: 'margin-top:1rem' });
+          exTbl.appendChild(h('thead', {}, h('tr', {},
+            h('th', {}, 'Volume'), h('th', { style: 'text-align:right' }, 'Cost (₹)')
+          )));
+          const exB = h('tbody', {});
+          exTbl.appendChild(exB);
+          (r.examples || []).forEach(e => exB.appendChild(h('tr', {},
+            h('td', {}, e.label),
+            h('td', { style: 'text-align:right;color:#10b981;font-weight:600' }, '₹' + e.cost_inr_billable.toFixed(2))
+          )));
+          estOut.appendChild(h('h4', { style: 'margin-top:1rem' }, 'Quick reference'));
+          estOut.appendChild(exTbl);
+        } catch (e) { estOut.innerHTML = '<div class="ai-error">' + esc(e.message) + '</div>'; }
+      } }, '🔢 Calculate')
+    ));
+    estCard.appendChild(estOut);
+    out.appendChild(estCard);
+  } catch (e) { out.innerHTML = '<div class="ai-error">Could not load: ' + esc(e.message) + '</div>'; }
+};rage.getItem('crm_token') || null,
+  user: null,
+  config: { company_name: 'Lead CRM', company_logo_url: '', base_url: location.origin },
+  cache: {},
+  prefs: {
+    columns: JSON.parse(localStorage.getItem('crm_cols') || '["name","phone","source","status","assigned","followup","last_change","remark","created"]'),
+    filters: JSON.parse(localStorage.getItem('crm_filters') || '{}'),
+    showHeader: localStorage.getItem('crm_show_header') !== '0'
+  }
+};
+
+/* ---------------- API helper ---------------- */
+// Global "in-flight" counter — drives the top loading bar.
+let _apiInFlight = 0;
+function _bumpApiLoader(delta) {
+  _apiInFlight = Math.max(0, _apiInFlight + delta);
+  let bar = document.getElementById('global-loader');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'global-loader';
+    bar.innerHTML = '<div class="gl-fill"></div>';
+    document.body.appendChild(bar);
+  }
+  bar.classList.toggle('active', _apiInFlight > 0);
+}
+
+// Endpoints we DON'T want to show the top loader for (background pollers):
+const _SILENT_FNS = new Set([
+  'api_notifications_mine', 'api_call_logEvent', 'api_company_info'
+]);
+
+async function api(fn, ...args) {
+  const silent = _SILENT_FNS.has(fn);
+  if (!silent) _bumpApiLoader(+1);
+  try {
+    const res = await fetch('/api', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fn, args: [CRM.token, ...args] })
+    });
+    const j = await res.json();
+    if (!res.ok || j.error) {
+      if (j.error && /token|User inactive/i.test(j.error)) logout();
+      throw new Error(j.error || 'API error');
+    }
+    return j.result;
+  } finally {
+    if (!silent) _bumpApiLoader(-1);
+  }
+}
+async function apiRaw(fn, ...args) {
+  const res = await fetch('/api', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fn, args })
+  });
+  const j = await res.json();
+  if (!res.ok || j.error) throw new Error(j.error || 'API error');
+  return j.result;
+}
+
+/* ---------------- Boot ---------------- */
+(async () => {
+  try {
+    const r = await fetch('/config.json');
+    if (r.ok) CRM.config = Object.assign(CRM.config, await r.json());
+  } catch (_) {}
+  document.title = CRM.config.company_name || 'Lead CRM';
+
+  if (CRM.token) {
+    try {
+      CRM.user = await api('api_me');
+      renderShell();
+      await warmCache();
+      // Resolve chat access for the current user — admin can disable chat
+      // for specific roles. Stored in CRM.access.can_chat so renderShell's
+      // nav rendering and gates check it consistently.
+      try {
+        const acc = await api('api_chat_myAccess');
+        CRM.access = Object.assign(CRM.access || {}, {
+          can_chat: !!acc.can_chat, chat_allowed_roles: acc.allowed_roles || []
+        });
+      } catch (_) {
+        CRM.access = Object.assign(CRM.access || {}, { can_chat: true });
+      }
+      navigateTo(parseHashView() || 'dashboard');
+      startFollowupPolling();
+      refreshNotifs();
+      // Load + render any active announcement banners. Polls every 60s so a
+      // freshly-posted admin announcement appears for already-logged-in users
+      // without them needing to refresh.
+      refreshAnnouncements();
+      setInterval(() => refreshAnnouncements().catch(() => {}), 60_000);
+      // In-app chat notification popup — polls every 10s while the user is
+      // anywhere in the CRM. Always starts (the backend endpoint silently
+      // refuses for users with chat disabled). Skips popping when the chat
+      // tab is open with that exact room visible.
+      startChatNotificationPolling();
+      // Register Web Push so the user's phone gets SMS-style banners even
+      // when the CRM tab / installed PWA is closed. Runs after a short delay
+      // so it doesn't block initial render. Silently skips on browsers that
+      // don't support push or where the user declines permission.
+      setTimeout(() => registerWebPush().catch(() => {}), 2000);
+      // Native push (Capacitor APK only) — talks to Firebase Cloud Messaging.
+      // No-ops in regular browsers / installed PWAs (those use Web Push above).
+      setTimeout(() => registerCapacitorPush().catch(() => {}), 2500);
+      // If a notification tap launched the app cold and we stashed the
+      // target URL before the router was ready, apply it now that we're in.
+      try {
+        const pending = sessionStorage.getItem('pendingPushUrl');
+        if (pending) {
+          sessionStorage.removeItem('pendingPushUrl');
+          setTimeout(() => applyPushUrl(pending), 1000);
+        }
+      } catch (_) {}
+      // Resume any pending call (WebView may have been killed during the call).
+      // Runs after warmCache so the lead's status options etc are loaded.
+      setTimeout(() => _resumePendingCall('boot'), 1500);
+      // First-run onboarding (APK only) — if user has never picked a
+      // call-recordings folder, prompt them with a clear modal so they
+      // don't have to discover it via the Dialer tab.
+      setTimeout(() => firstRunRecordingPrompt().catch(() => {}), 2500);
+      // If user is already checked in today (came back to app later in
+      // the day), resume the 30-min location-ping loop so the trail
+      // continues from where the previous session left off.
+      setTimeout(() => _resumeLocationPingsIfCheckedIn().catch(() => {}), 3000);
+      // Silent background sweep: pick up any missed recordings.
+      setTimeout(() => silentBackgroundSync(), 4000);
+    } catch (_) { logout(); }
+  } else {
+    renderLogin();
+  }
+
+  // When the service worker fires a notificationclick, it posts a 'navigate'
+  // message back to the page — route to the URL the push payload pointed at.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', ev => {
+      const m = ev && ev.data;
+      if (m && m.type === 'navigate' && m.url) {
+        try { location.assign(m.url); } catch (_) { location.href = m.url; }
+      }
+    });
+  }
+
+  window.addEventListener('hashchange', () => {
+    if (!CRM.user) return;
+    navigateTo(parseHashView() || 'dashboard');
+  });
+})();
+
+function parseHashView() {
+  const m = String(location.hash).match(/^#\/([a-z_-]+)/i);
+  return m ? m[1] : null;
+}
+
+async function warmCache() {
+  const [statuses, sources, products, users, customFields] = await Promise.all([
+    api('api_statuses_list'),
+    api('api_sources_list'),
+    api('api_products_list'),
+    api('api_users_list'),
+    api('api_customFields_list').catch(() => [])
+  ]);
+  CRM.cache = { statuses, sources, products, users, customFields };
+}
+
+/* ---------------- utility ---------------- */
+const $ = (sel, ctx) => (ctx || document).querySelector(sel);
+const $$ = (sel, ctx) => [...(ctx || document).querySelectorAll(sel)];
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k === 'class') el.className = v;
+    else if (k === 'html') el.innerHTML = v;
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (v === true) el.setAttribute(k, '');
+    else if (v === false || v == null) {}
+    else el.setAttribute(k, v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function fmtDate(s, opts) {
+  if (!s) return '';
+  try {
+    const d = new Date(s);
+    if (opts === 'short') return d.toLocaleDateString();
+    if (opts === 'time') return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (opts === 'relative') {
+      const diff = Date.now() - d.getTime();
+      const abs = Math.abs(diff);
+      const min = Math.round(abs / 60000);
+      const rel = diff >= 0 ? ago => ago + ' ago' : ago => 'in ' + ago;
+      if (min < 1) return 'just now';
+      if (min < 60) return rel(min + 'm');
+      const hr = Math.round(min / 60);
+      if (hr < 24) return rel(hr + 'h');
+      return rel(Math.round(hr / 24) + 'd');
+    }
+    return d.toLocaleString();
+  } catch (_) { return String(s); }
+}
+
+/**
+ * Convert any datetime stored in the DB (ISO UTC, or naive Postgres timestamp)
+ * to a "YYYY-MM-DDTHH:mm" string in the user's LOCAL timezone, suitable for
+ * a datetime-local input. Without this, a UTC value like 2026-04-25T15:10:00Z
+ * shows in the form as 15:10 instead of the local 20:40.
+ */
+function isoToLocalDtInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 16);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Inverse of isoToLocalDtInput. Converts a "YYYY-MM-DDTHH:mm" datetime-local
+ * value (interpreted as the user's local time) into a UTC ISO string the
+ * server can store and round-trip safely. JavaScript's Date constructor parses
+ * datetime-local strings as local time — toISOString() then emits proper UTC.
+ */
+function localDtInputToIso(s) {
+  const v = String(s || '').trim();
+  if (!v) return null;
+  const d = new Date(v);
+  if (isNaN(d)) return null;
+  return d.toISOString();
+}
+function toast(msg, type = 'ok') {
+  const t = h('div', { class: `toast toast-${type}` }, msg);
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3000);
+}
+function confirmDialog(msg) {
+  return new Promise(resolve => {
+    const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) { modal.remove(); resolve(false); } } },
+      h('div', { class: 'modal modal-sm' },
+        h('p', {}, msg),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => { modal.remove(); resolve(false); } }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: () => { modal.remove(); resolve(true); } }, 'OK')
+        )
+      )
+    );
+    document.body.appendChild(modal);
+  });
+}
+
+function logout() {
+  localStorage.removeItem('crm_token');
+  CRM.token = null; CRM.user = null;
+  location.hash = '';
+  location.reload();
+}
+
+/* ---------------- Login ---------------- */
+function renderLogin() {
+  const app = $('#app');
+  app.innerHTML = `
+    <div class="login-screen">
+      <div class="login-card">
+        <div class="login-brand">
+          ${CRM.config.company_logo_url ? `<img src="${esc(CRM.config.company_logo_url)}" class="login-logo" alt="" />` : '<div class="login-logo-dot">🎯</div>'}
+          <h1>${esc(CRM.config.company_name || 'Lead CRM')}</h1>
+          <p class="muted">Sign in to continue</p>
+        </div>
+        <form id="login-form">
+          <label>Email</label>
+          <input type="email" name="email" autocomplete="username" required autofocus />
+          <label>Password</label>
+          <input type="password" name="password" autocomplete="current-password" required />
+          <button type="submit" class="btn primary block">Sign in</button>
+          <p id="login-err" class="error"></p>
+        </form>
+      </div>
+    </div>`;
+  $('#login-form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = ev.target;
+    $('#login-err').textContent = '';
+    try {
+      const r = await apiRaw('api_login', f.email.value, f.password.value);
+      // 2FA path — server returned a challenge token instead of a session.
+      // Swap the form for an OTP entry step. The user's challenge expires
+      // in 5 minutes; api_login_otp_verify exchanges it for the real token.
+      if (r && r.needs_otp && r.challenge_token) {
+        showOtpStep(r.challenge_token, r.user || { email: f.email.value });
+        return;
+      }
+      CRM.token = r.token; CRM.user = r.user;
+      localStorage.setItem('crm_token', r.token);
+      location.reload();
+    } catch (e) { $('#login-err').textContent = e.message; }
+  });
+}
+
+/**
+ * Security modal — change password + manage 2FA (Google Authenticator).
+ *
+ * 2FA flow:
+ *   1. User clicks "Set up 2FA" → server generates a fresh secret (saved
+ *      with totp_enabled=0 so the half-set-up state can't lock anyone out).
+ *   2. We render a QR code (qrcode.js loaded from cdnjs) plus the raw
+ *      base32 for manual entry.
+ *   3. User scans, types one code, clicks Verify → server flips the
+ *      totp_enabled flag to 1.
+ *   4. From the next login onwards, the OTP step in the login form fires.
+ *
+ * Disable requires the current password AND a current OTP — defends
+ * against both a hijacked session token and a stolen/known password.
+ */
+async function openSecurityModal() {
+  let me;
+  try { me = await api('api_me'); }
+  catch (e) { return toast(e.message, 'err'); }
+
+  const status = h('div', { class: 'sec-status' });
+  const renderStatus = () => {
+    status.innerHTML = '';
+    const enabled = !!me.totp_enabled;
+    status.appendChild(h('div', {
+      style: { padding: '10px 12px', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+               background: enabled ? 'var(--ok-soft)' : 'var(--warn-soft)',
+               color: enabled ? 'var(--ok)' : 'var(--warn)', fontWeight: 500 } },
+      h('span', {}, enabled ? '✓ Two-factor authentication is enabled' : '⚠ Two-factor authentication is not enabled'),
+      enabled
+        ? h('button', { class: 'btn sm', onclick: () => disable2FA() }, 'Disable')
+        : h('button', { class: 'btn sm primary', onclick: () => setup2FA() }, 'Set up 2FA')
+    ));
+  };
+
+  const setup2FA = async () => {
+    let r;
+    try { r = await api('api_2fa_setup_start'); }
+    catch (e) { return toast(e.message, 'err'); }
+
+    const qrHolder = h('div', { id: 'sec-qr', style: { width: '180px', height: '180px', background: '#fff', border: '1px solid var(--border)', padding: '8px', borderRadius: '6px' } });
+    const otpInput = h('input', { name: 'otp', maxlength: '6', inputmode: 'numeric', placeholder: '000000',
+      style: { fontSize: '1.2rem', letterSpacing: '.3em', textAlign: 'center', fontFamily: 'monospace' } });
+
+    const setupModal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '🔒 Set up two-factor authentication'),
+        h('button', { class: 'btn icon', onclick: () => setupModal.remove() }, '✕')
+      ),
+      h('ol', { style: { paddingLeft: '1.2rem', fontSize: '.88rem', lineHeight: '1.55' } },
+        h('li', {}, 'Install Google Authenticator (or Microsoft Authenticator / Authy / 1Password) on your phone.'),
+        h('li', {}, 'Open the app and tap +, choose ', h('b', {}, 'Scan QR code'), '.'),
+        h('li', {}, 'Scan this code:')
+      ),
+      h('div', { style: { display: 'flex', gap: '14px', alignItems: 'center', justifyContent: 'center', margin: '10px 0', flexWrap: 'wrap' } },
+        qrHolder,
+        h('div', { style: { fontSize: '.8rem' } },
+          h('div', { class: 'muted' }, 'Or type this secret manually:'),
+          h('code', { style: { display: 'inline-block', padding: '4px 8px', marginTop: '4px', background: 'var(--bg-alt)', borderRadius: '4px', fontSize: '.85rem', wordBreak: 'break-all' } }, r.secret),
+          h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Issuer: ' + (r.issuer || 'CRM')),
+          h('div', { class: 'muted' }, 'Account: ' + (r.account || me.email))
+        )
+      ),
+      h('label', {}, '4. Enter the 6-digit code shown in your authenticator:'),
+      otpInput,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => setupModal.remove() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          try {
+            await api('api_2fa_setup_verify', otpInput.value.trim());
+            toast('2FA enabled — you\'ll need your authenticator app to sign in next time');
+            me.totp_enabled = true;
+            setupModal.remove();
+            renderStatus();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Verify and enable')
+      )
+    ));
+    document.body.appendChild(setupModal);
+
+    // Render QR code. Library is ~16KB from cdnjs, loaded once and cached.
+    const drawQr = () => {
+      if (!window.QRCode) return setTimeout(drawQr, 200);
+      qrHolder.innerHTML = '';
+      new window.QRCode(qrHolder, { text: r.otpauth_url, width: 168, height: 168, correctLevel: window.QRCode.CorrectLevel.M });
+    };
+    if (!window.QRCode) {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+      s.onload = drawQr;
+      document.head.appendChild(s);
+    } else { drawQr(); }
+  };
+
+  const disable2FA = async () => {
+    const pwInput = h('input', { type: 'password', autocomplete: 'current-password' });
+    const otpInput = h('input', { name: 'otp', maxlength: '6', inputmode: 'numeric', placeholder: '000000',
+      style: { letterSpacing: '.2em', textAlign: 'center', fontFamily: 'monospace' } });
+    const disableModal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal modal-sm' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, 'Disable 2FA'),
+        h('button', { class: 'btn icon', onclick: () => disableModal.remove() }, '✕')
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.85rem' } }, 'Confirm your password and a current 6-digit code to disable two-factor authentication.'),
+      h('label', {}, 'Password'),
+      pwInput,
+      h('label', { style: { marginTop: '8px' } }, 'Current 6-digit code'),
+      otpInput,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => disableModal.remove() }, 'Cancel'),
+        h('button', { class: 'btn danger', onclick: async () => {
+          try {
+            await api('api_2fa_disable', pwInput.value, otpInput.value.trim());
+            toast('2FA disabled');
+            me.totp_enabled = false;
+            disableModal.remove();
+            renderStatus();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Disable')
+      )
+    ));
+    document.body.appendChild(disableModal);
+  };
+
+  // Change password section
+  const cpOld = h('input', { type: 'password', autocomplete: 'current-password' });
+  const cpNew = h('input', { type: 'password', autocomplete: 'new-password', minlength: '6' });
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '🔒 Security'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+
+    h('h4', { style: { margin: '4px 0 8px' } }, 'Two-factor authentication'),
+    status,
+    h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '6px' } },
+      'Adds a 6-digit code from your phone on top of your password. Strongly recommended for admins and managers.'),
+
+    h('hr', { style: { margin: '18px 0', border: '0', borderTop: '1px solid var(--border-light)' } }),
+
+    h('h4', { style: { margin: '4px 0 8px' } }, 'Change password'),
+    h('label', {}, 'Current password'), cpOld,
+    h('label', { style: { marginTop: '8px' } }, 'New password'), cpNew,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Close'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        if (!cpOld.value || !cpNew.value) return toast('Both fields required', 'err');
+        if (cpNew.value.length < 6) return toast('New password must be at least 6 characters', 'err');
+        try {
+          await api('api_changePassword', cpOld.value, cpNew.value);
+          toast('Password changed');
+          cpOld.value = ''; cpNew.value = '';
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Update password')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderStatus();
+}
+
+function showOtpStep(challengeToken, who) {
+  const card = document.querySelector('.login-card');
+  if (!card) return;
+  card.innerHTML = `
+    <div class="login-brand">
+      ${CRM.config && CRM.config.company_logo_url ? `<img src="${esc(CRM.config.company_logo_url)}" class="login-logo" alt="" />` : '<div class="login-logo-dot">🔒</div>'}
+      <h1>Two-step verification</h1>
+      <p class="muted">Enter the 6-digit code from your authenticator app for ${esc(who.email || '')}.</p>
+    </div>
+    <form id="login-otp-form">
+      <label>6-digit code</label>
+      <input type="text" name="otp" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" pattern="[0-9]{6}" required autofocus
+             style="font-size:1.4rem;letter-spacing:.4em;text-align:center;font-family:var(--font-mono,monospace);" />
+      <button type="submit" class="btn primary block">Verify and sign in</button>
+      <p id="login-err" class="error"></p>
+      <button type="button" class="btn ghost block" id="login-otp-back" style="margin-top:.5rem;">← Use a different account</button>
+    </form>`;
+  document.getElementById('login-otp-back').addEventListener('click', () => location.reload());
+  document.getElementById('login-otp-form').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const otp = ev.target.otp.value.trim();
+    document.getElementById('login-err').textContent = '';
+    try {
+      const r = await apiRaw('api_login_otp_verify', challengeToken, otp);
+      CRM.token = r.token; CRM.user = r.user;
+      localStorage.setItem('crm_token', r.token);
+      location.reload();
+    } catch (e) { document.getElementById('login-err').textContent = e.message; }
+  });
+}
+
+/* ---------------- Shell ---------------- */
+const NAV = [
+  { id: 'dashboard',  label: 'Dashboard',    icon: '📊' },
+  { id: 'leads',      label: 'Leads',        icon: '🎯' },
+  { id: 'newleads',   label: 'New leads',    icon: '✨', countKey: 'new_today' },
+  { id: 'overdue',    label: 'Overdue',      icon: '⚠️', countKey: 'overdue' },
+  { id: 'duetoday',   label: 'Due today',    icon: '📅', countKey: 'due_today' },
+  { id: 'upcoming',   label: 'Upcoming',     icon: '⏰', countKey: 'upcoming' },
+  { id: 'dialer',     label: 'Dialer',       icon: '📞' },
+  { id: 'pipeline',   label: 'Pipeline',     icon: '📈' },
+  { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
+  { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
+  { id: 'calendar',   label: 'Calendar',     icon: '📅' },
+  { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
+  { id: 'inventory',  label: 'Inventory',    icon: '📦' },
+  { id: 'projects',   label: 'Projects',     icon: '🚚' },
+  { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
+  { id: 'aiusage',     label: 'AI usage',     icon: '🤖', roles: ['admin', 'manager'] },
+  { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
+  { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
+  { id: 'teamchat',   label: 'Team chat',    icon: '👥', countKey: 'chat_unread' },
+  { id: 'tasks',      label: 'Tasks',        icon: '✅' },
+  { id: 'attendance', label: 'Attendance',   icon: '🕒' },
+  { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
+  { id: 'salary',     label: 'Salary',       icon: '💰' },
+  { id: 'bank',       label: 'Bank',         icon: '🏦' },
+  { id: 'users',      label: 'Users',        icon: '👥', roles: ['admin', 'manager'] },
+  { id: 'admin',      label: 'Settings',     icon: '⚙️', roles: ['admin'] }
+];
+
+function renderShell() {
+  const initials = (CRM.user.name || '?').split(/\s+/).map(s => s[0]).slice(0, 2).join('').toUpperCase();
+  $('#app').innerHTML = `
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          ${CRM.config.company_logo_url ? `<img src="${esc(CRM.config.company_logo_url)}" class="sidebar-logo" alt="" />` : '<span class="brand-dot">🎯</span>'}
+          <span class="brand-name">${esc(CRM.config.company_name)}</span>
+        </div>
+        <nav id="nav"></nav>
+        <div class="sidebar-footer">
+          <div class="me">
+            <span class="avatar">${esc(initials)}</span>
+            <div class="me-meta">
+              <div class="name">${esc(CRM.user.name)}</div>
+              <div class="role">${esc(CRM.user.role)}</div>
+            </div>
+          </div>
+          <button class="btn ghost block" id="btn-security" style="margin-bottom:.35rem;">🔒 Security</button>
+          <button class="btn ghost block" id="btn-logout">Logout</button>
+        </div>
+      </aside>
+      <main class="main">
+        <div id="announce-bar"></div>
+        <header class="topbar">
+          <button class="btn icon topbar-mobile-menu" id="btn-more" title="Menu">☰</button>
+          <h2 id="page-title">Dashboard</h2>
+          <div class="topbar-right">
+            <a class="btn ghost topbar-chip" href="#/newleads" title="New leads"><span>✨</span><span class="topbar-chip-label">New</span><span class="nav-count" data-count-key="new_today" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/overdue"  title="Overdue follow-ups"><span>⚠️</span><span class="topbar-chip-label">Overdue</span><span class="nav-count" data-count-key="overdue" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/duetoday" title="Follow-ups due today"><span>📅</span><span class="topbar-chip-label">Due today</span><span class="nav-count" data-count-key="due_today" hidden>0</span></a>
+            <a class="btn ghost topbar-chip" href="#/upcoming" title="Upcoming follow-ups"><span>⏰</span><span class="topbar-chip-label">Upcoming</span><span class="nav-count" data-count-key="upcoming" hidden>0</span></a>
+            <button class="btn ghost" id="btn-getapp" title="Install / Download the app"><span>📱</span><span class="topbar-getapp-text">Get app</span></button>
+            <button class="btn ghost" id="btn-notif" title="Notifications">🔔<span class="badge" id="notif-count" hidden>0</span></button>
+          </div>
+        </header>
+        <section id="view"></section>
+      </main>
+      <nav class="bottom-nav" id="bottom-nav"></nav>
+    </div>`;
+  const nav = $('#nav');
+  const mobileNav = $('#bottom-nav');
+  // Mobile bottom bar: 4 main + More
+  const mobilePrimary = ['dashboard', 'leads', 'dialer', 'followups'];
+  // Items the admin has hidden via Settings → Menu visibility (CSV in
+  // hidden_nav_ids served by /config.json). The three quick-action
+  // shortcuts (newleads / overdue / upcoming) are hidden by default
+  // since they now live as chips in the topbar; admin can re-enable
+  // them in Settings if they prefer the sidebar links.
+  const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,duetoday,upcoming,dialer')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  NAV.forEach(item => {
+    if (item.roles && !item.roles.includes(CRM.user.role)) return;
+    if (hiddenNavIds.includes(item.id)) return;
+    // Hide Team chat for users whose role admin has disabled chat for.
+    // CRM.access.can_chat is fetched right after login.
+    if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return;
+    // Count badge — populated later by refreshNavCounts() when notifications load.
+    const countBadge = item.countKey
+      ? h('span', { class: 'nav-count', 'data-count-key': item.countKey, hidden: 'hidden' }, '0')
+      : null;
+    const a = h('a', { href: '#/' + item.id, 'data-view': item.id },
+      h('span', { class: 'nav-icon' }, item.icon),
+      h('span', {}, item.label),
+      countBadge);
+    nav.appendChild(a);
+    if (mobilePrimary.includes(item.id)) {
+      const ma = h('a', { href: '#/' + item.id, 'data-view': item.id },
+        h('span', { class: 'bn-ico' }, item.icon),
+        h('span', {}, item.label));
+      mobileNav.appendChild(ma);
+    }
+  });
+  // "More" button opens the full menu as a bottom sheet
+  mobileNav.appendChild(h('a', { href: '#', onclick: ev => { ev.preventDefault(); showMobileMore(); } },
+    h('span', { class: 'bn-ico' }, '⋯'), h('span', {}, 'More')));
+
+  $('#btn-logout').onclick = logout;
+  const _btnSec = $('#btn-security'); if (_btnSec) _btnSec.onclick = openSecurityModal;
+  $('#btn-notif').onclick = showNotifs;
+  $('#btn-more').onclick = showMobileMore;
+  const _ga = $('#btn-getapp'); if (_ga) _ga.onclick = showGetApp;
+}
+
+/**
+ * Get App modal — shows the user how to install the CRM as a PWA on their
+ * phone (Chrome → Add to Home Screen) and offers a direct download link
+ * for the Android APK if one is hosted in /public/.
+ */
+function showGetApp() {
+  const apkHref = '/LeadCRM.apk';
+  const ua = navigator.userAgent || '';
+  const isAndroid = /android/i.test(ua);
+  const isIOS = /iphone|ipad|ipod/i.test(ua);
+  const url = location.origin + '/';
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📱 Get the CRM on your phone'),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('p', { class: 'muted', style: { marginTop: 0 } },
+          'Install the CRM on your phone so you get push notifications even when the browser is closed.'),
+        h('div', { class: 'cards', style: { gap: '.75rem' } },
+          h('div', { class: 'card' },
+            h('h4', { style: { margin: '0 0 .5rem' } }, '📱 Install as PWA (recommended)'),
+            h('ol', { style: { paddingLeft: '1.2rem', margin: 0 } },
+              h('li', {}, 'Open this site in Chrome on your phone: ', h('code', {}, url)),
+              h('li', {}, isIOS
+                ? 'Tap the Share button (square + arrow) → "Add to Home Screen".'
+                : 'Tap the ⋮ menu in Chrome → "Install app" or "Add to Home screen".'),
+              h('li', {}, 'Open the new icon and allow notifications when prompted.')
+            )
+          ),
+          isAndroid || !isIOS ? h('div', { class: 'card' },
+            h('h4', { style: { margin: '0 0 .5rem' } }, '⬇️ Direct APK (Android)'),
+            h('p', { class: 'muted', style: { marginTop: 0 } },
+              'For Android only. You may have to allow "Install from unknown sources".'),
+            h('a', { class: 'btn primary', href: apkHref, download: '' }, 'Download LeadCRM.apk')
+          ) : null
+        )
+      )
+    )
+  );
+  document.body.appendChild(m);
+}
+
+function showMobileMore() {
+  const sheet = h('div', { class: 'modal-backdrop bottom-nav-more-modal', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) sheet.remove(); } },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, esc(CRM.config.company_name || 'Menu')),
+        h('button', { class: 'btn icon', onclick: () => sheet.remove() }, '✕')
+      ),
+      h('div', { class: 'me', style: { padding: '.5rem 0' } },
+        h('span', { class: 'avatar' }, (CRM.user.name || '?').split(/\s+/).map(s => s[0]).slice(0, 2).join('').toUpperCase()),
+        h('div', { class: 'me-meta' },
+          h('div', { class: 'name' }, CRM.user.name),
+          h('div', { class: 'role muted' }, CRM.user.role + ' · ' + CRM.user.email)
+        )
+      ),
+      h('div', { class: 'mobile-menu-grid' },
+        ...NAV.filter(item => {
+          if (item.roles && !item.roles.includes(CRM.user.role)) return false;
+          if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return false;
+          return true;
+        }).map(item =>
+          h('a', { href: '#/' + item.id, class: 'menu-tile', onclick: () => sheet.remove() },
+            h('span', { class: 'menu-tile-icon' }, item.icon),
+            h('span', {}, item.label))
+        )
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn block', onclick: () => { sheet.remove(); logout(); } }, 'Logout')
+      )
+    )
+  );
+  document.body.appendChild(sheet);
+}
+
+function navigateTo(id) {
+  // Stop any running view-scoped timers (e.g. the WhatsBot Chat polling) so
+  // they don't keep hammering the API after the user has navigated away to
+  // a different section. Each view that creates timers is responsible for
+  // parking them on `window._<viewname>Timers`.
+  if (id !== 'whatsbot' && window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+    window._wbChatTimers = null;
+  }
+  if (id !== 'teamchat' && window._tcTimers) {
+    clearInterval(window._tcTimers.list);
+    clearInterval(window._tcTimers.thread);
+    window._tcTimers = null;
+  }
+
+  // Catch the "user just made a call from CRM and came back to the app"
+  // case — _resumePendingCall is idempotent and bails when not relevant,
+  // so safe to call on every navigation. Belt-and-braces in addition to
+  // the visibilitychange / focus / pageshow listeners.
+  if (typeof _resumePendingCall === 'function') {
+    setTimeout(() => _resumePendingCall('navigate').catch?.(() => {}), 100);
+  }
+
+  // Routes that exist as VIEWS but aren't in the sidebar NAV (e.g. /dial,
+  // /newleads, /overdue) should still render — don't fall back to NAV[0]
+  // when a valid VIEW exists. Falling back was redirecting the call-from-
+  // mobile dial route to dashboard on cold-start.
+  let item = NAV.find(n => n.id === id);
+  if (!item && VIEWS[id]) {
+    item = { id, label: id.charAt(0).toUpperCase() + id.slice(1) };
+  }
+  if (!item) item = NAV[0];
+  $$('.sidebar nav a, #bottom-nav a').forEach(a => a.classList.toggle('active', a.dataset.view === item.id));
+  $('#page-title').textContent = item.label;
+  const view = $('#view');
+  view.innerHTML = '<div class="loading">Loading…</div>';
+  if (parseHashView() !== item.id) location.hash = '#/' + item.id;
+  const fn = VIEWS[item.id];
+  Promise.resolve(fn ? fn(view) : null).catch(e => {
+    view.innerHTML = `<div class="error-box">${esc(e.message)}</div>`;
+  });
+}
+
+const VIEWS = {};
+
+/* ---------------- Dashboard ---------------- */
+VIEWS.dashboard = async (view) => {
+  await ensureChartJs();
+  // Team follow-ups card — admin/manager/team_leader see how each rep is
+  // doing on overdue + due-today + TAT violations. Sales/employee don't
+  // (it's just their own numbers, already shown in the KPI cards above).
+  const showTeam = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const [summary, due, teamFu, teamTat] = await Promise.all([
+    api('api_reports_summary', {}),
+    api('api_notifications_mine'),
+    showTeam ? api('api_reports_followupsByUser').catch(() => [])      : Promise.resolve([]),
+    showTeam ? api('api_reports_tatViolationsByUser').catch(() => [])  : Promise.resolve([])
+  ]);
+  view.innerHTML = '';
+
+  // 5 KPI cards — added "New today" so users can see today's fresh leads
+  // at a glance from the dashboard without having to filter the leads list.
+  view.append(
+    h('div', { class: 'cards' },
+      card('Total Leads',  summary.totals.total,      'accent', '🎯', '#/leads'),
+      card('New today',    due.counts.new_today || 0, 'accent', '✨', '#/leads?filter=new_today'),
+      card('Won',          summary.totals.won,        'ok',     '🏆', '#/leads?filter=won'),
+      card('Due today',    due.counts.due_today,      'warn',   '📅', '#/followups?tab=due'),
+      card('Overdue',      due.counts.overdue,        'err',    '⚠️', '#/followups?tab=overdue')
+    )
+  );
+
+  // Two-column: upcoming follow-ups + pie chart
+  const grid = h('div', { class: 'dash-grid' });
+  view.appendChild(grid);
+
+  // Follow-ups card — three tabs in one box: Upcoming / Overdue / Due today.
+  // Renders the same row markup for each list so the user has a consistent
+  // glance at upcoming work no matter which tab they're on.
+  const fuCard = h('div', { class: 'card fu-tabs-card' });
+  const tabs = [
+    { key: 'upcoming',  label: 'Upcoming',  rows: due.upcoming || [] },
+    { key: 'overdue',   label: 'Overdue',   rows: due.overdue  || [] },
+    { key: 'due_today', label: 'Due today', rows: due.due_today || [] }
+  ];
+  const tabBar = h('div', { class: 'fu-tabbar' });
+  const tabBody = h('div', { class: 'fu-tabbody' });
+  function renderFuTab(activeKey) {
+    [...tabBar.children].forEach(btn => btn.classList.toggle('active', btn.dataset.key === activeKey));
+    const tab = tabs.find(t => t.key === activeKey);
+    tabBody.innerHTML = '';
+    if (!tab.rows.length) {
+      tabBody.appendChild(h('p', { class: 'muted', style: { padding: '.5rem' } },
+        activeKey === 'overdue' ? 'No overdue follow-ups. 🎉' :
+        activeKey === 'due_today' ? 'Nothing due today.' :
+        'No upcoming follow-ups.'));
+      return;
+    }
+    tabBody.appendChild(h('ul', { class: 'fu-dash-list' },
+      ...tab.rows.slice(0, 8).map(f => h('li', {},
+        h('div', { class: 'fu-name', onclick: () => openLeadModal(f.lead_id) }, f.lead_name || '—'),
+        h('div', { class: 'fu-phone muted' }, f.lead_phone || ''),
+        h('div', { class: 'fu-due ' + (new Date(f.due_at) < new Date() ? 'overdue' : '') }, fmtDate(f.due_at, 'relative'))
+      ))
+    ));
+    if (tab.rows.length > 8) {
+      tabBody.appendChild(h('div', { class: 'muted', style: { fontSize: '.8rem', textAlign: 'center', padding: '.4rem' } },
+        '+ ' + (tab.rows.length - 8) + ' more — see Follow-ups'));
+    }
+  }
+  tabs.forEach(t => tabBar.appendChild(
+    h('button', { class: 'fu-tab' + (t.key === 'upcoming' ? ' active' : ''), 'data-key': t.key,
+      onclick: () => renderFuTab(t.key) },
+      t.label, t.rows.length ? h('span', { class: 'fu-tab-count' }, t.rows.length) : null
+    )
+  ));
+  fuCard.appendChild(h('div', { class: 'fu-tabs-head' },
+    h('h3', { style: { margin: 0 } }, '⏰ Follow-ups'),
+    h('a', { href: '#/followups', class: 'btn sm ghost' }, 'See all →')
+  ));
+  fuCard.appendChild(tabBar);
+  fuCard.appendChild(tabBody);
+  renderFuTab('upcoming');
+  grid.appendChild(fuCard);
+
+  // Pie chart — leads by status
+  const pieCard = h('div', { class: 'card' },
+    h('h3', {}, '🎯 Leads by status'),
+    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-pie' }))
+  );
+  grid.appendChild(pieCard);
+
+  // Team follow-ups by caller — managers see who's drowning in overdue.
+  // Hidden for sales/employee since their own numbers are already in KPI tiles.
+  if (showTeam) {
+    const teamRows = teamFu || [];
+    const teamCard = h('div', { class: 'card card-wide' },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+        h('h3', { style: { margin: 0 } }, '👥 Follow-ups by caller'),
+        h('a', { href: '#/followups', class: 'btn sm ghost' }, 'See all →')
+      )
+    );
+    if (!teamRows.length) {
+      teamCard.appendChild(h('p', { class: 'muted' }, 'No team data available.'));
+    } else {
+      teamCard.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Caller'), h('th', {}, 'Role'),
+          h('th', { style: { textAlign: 'right' } }, '⚠️ Overdue'),
+          h('th', { style: { textAlign: 'right' } }, '📅 Due today'),
+          h('th', { style: { textAlign: 'right' } }, '⏰ Upcoming'),
+          h('th', { style: { textAlign: 'right' } }, 'Total open')
+        )),
+        h('tbody', {}, ...teamRows.map(r => h('tr', {},
+          h('td', {}, r.name || '—'),
+          h('td', { class: 'muted' }, r.role || ''),
+          h('td', { class: r.overdue > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.overdue > 0 ? 700 : 400 } }, r.overdue),
+          h('td', { class: r.due_today > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.due_today > 0 ? 700 : 400 } }, r.due_today),
+          h('td', { class: 'muted', style: { textAlign: 'right' } }, r.upcoming),
+          h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total_open)
+        )))
+      )));
+    }
+    grid.appendChild(teamCard);
+
+    // Team TAT violations by caller — same intent: who's accumulating
+    // escalations? Hidden if there are no open violations org-wide.
+    const tatRows = teamTat || [];
+    if (tatRows.length) {
+      const tatCard = h('div', { class: 'card card-wide' },
+        h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+          h('h3', { style: { margin: 0 } }, '🚨 TAT violations by caller'),
+          h('a', { href: '#/tatreport', class: 'btn sm ghost' }, 'See full TAT report →')
+        ),
+        h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+          h('thead', {}, h('tr', {},
+            h('th', {}, 'Caller'), h('th', {}, 'Role'),
+            h('th', { style: { textAlign: 'right' }, title: 'L3 — escalated to admin' }, '🚨 L3'),
+            h('th', { style: { textAlign: 'right' }, title: 'L2 — escalated to manager' }, '⚠️ L2'),
+            h('th', { style: { textAlign: 'right' }, title: 'L1 — employee reminder' }, '⏱️ L1'),
+            h('th', { style: { textAlign: 'right' } }, 'Total open')
+          )),
+          h('tbody', {}, ...tatRows.map(r => h('tr', {},
+            h('td', {}, r.name || '—'),
+            h('td', { class: 'muted' }, r.role || ''),
+            h('td', { class: r.l3 > 0 ? 'cell-err' : 'muted', style: { textAlign: 'right', fontWeight: r.l3 > 0 ? 700 : 400 } }, r.l3),
+            h('td', { class: r.l2 > 0 ? 'cell-warn' : 'muted', style: { textAlign: 'right', fontWeight: r.l2 > 0 ? 700 : 400 } }, r.l2),
+            h('td', { class: 'muted', style: { textAlign: 'right' } }, r.l1),
+            h('td', { style: { textAlign: 'right', fontWeight: 600 } }, r.total)
+          )))
+        ))
+      );
+      grid.appendChild(tatCard);
+    }
+  }
+
+  // By source bar chart
+  const srcCard = h('div', { class: 'card card-wide' },
+    h('h3', {}, 'Leads by source'),
+    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-src' }))
+  );
+  grid.appendChild(srcCard);
+
+  setTimeout(() => {
+    const statusData = (summary.by_status || []).filter(x => x.c > 0);
+    // User asked for the dashboard "Leads by status" to be a bar chart with
+    // visible numbers (not a pie). Bar chart with status colors and datalabels.
+    makeChart('dash-pie', 'bar', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
+    const srcData = summary.by_source || [];
+    makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
+  }, 50);
+
+  function card(label, val, klass, icon, href) {
+    const inner = h('div', { class: `card stat ${klass}` + (href ? ' clickable' : '') },
+      h('div', { class: 'stat-icon' }, icon || ''),
+      h('div', { class: 'stat-body' },
+        h('div', { class: 'stat-label' }, label),
+        h('div', { class: 'stat-value' }, val ?? 0)
+      )
+    );
+    if (href) inner.onclick = () => { location.hash = href; };
+    return inner;
+  }
+};
+
+/* ---------------- Leads ---------------- */
+const LEAD_COLUMNS = [
+  { key: 'name',        label: 'Name',          default: true },
+  { key: 'phone',       label: 'Phone',         default: true },
+  { key: 'email',       label: 'Email',         default: false },
+  { key: 'whatsapp',    label: 'WhatsApp',      default: false },
+  { key: 'source',      label: 'Source',        default: true },
+  { key: 'product',     label: 'Product',       default: false },
+  { key: 'status',      label: 'Status',        default: true },
+  { key: 'assigned',    label: 'Assigned',      default: true },
+  { key: 'tags',        label: 'Tags',          default: false },
+  { key: 'followup',    label: 'Follow-up',     default: true },
+  { key: 'last_change', label: 'Last change',   default: true },
+  { key: 'remark',      label: 'Recent remark', default: true },
+  { key: 'city',        label: 'City',          default: false },
+  { key: 'created',     label: 'Created',       default: true }
+];
+
+VIEWS.leads = async (view) => {
+  if (!CRM.cache.statuses) await warmCache();
+  const { statuses, sources, users } = CRM.cache;
+
+  view.innerHTML = '';
+
+  if (CRM.prefs.showHeader !== false) {
+    const header = h('div', { class: 'leads-header' },
+      h('div', { class: 'leads-status-chips', id: 'status-chips' }),
+      h('div', { class: 'header-actions' },
+        h('button', { class: 'btn sm ghost', title: 'Hide header', onclick: () => toggleHeader(false) }, '− Hide')
+      )
+    );
+    view.appendChild(header);
+  } else {
+    view.appendChild(h('div', { class: 'header-hidden-toggle' },
+      h('button', { class: 'btn sm ghost', onclick: () => toggleHeader(true) }, '▾ Show header')
+    ));
+  }
+
+  // Auto-apply filter on dropdown change + debounced search input. Without
+  // this, mobile users had to find the small 🔎 button after every change,
+  // which made filters feel "broken" in the Android APK.
+  //
+  // We attach BOTH change AND input event listeners — Android WebView is
+  // flaky about which one fires first on native dropdown selection, and
+  // some users reported filters not applying despite the JS being correct.
+  // addEventListener is more robust than .onchange (nothing can clobber it).
+  const applyFilters = () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); };
+  const wireFilter = (sel) => {
+    if (!sel) return sel;
+    sel.addEventListener('change', applyFilters);
+    sel.addEventListener('input', applyFilters); // Android WebView fallback
+    return sel;
+  };
+  let _searchTimer = null;
+  const debouncedSearch = () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(applyFilters, 350);
+  };
+  const searchInput = h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '' });
+  searchInput.addEventListener('input', debouncedSearch);
+  searchInput.addEventListener('keydown', ev => { if (ev.key === 'Enter') applyFilters(); });
+  const toolbar = h('div', { class: 'toolbar' },
+    searchInput,
+    wireFilter(selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id)),
+    wireFilter(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source)),
+    wireFilter(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to)),
+    wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
+    wireFilter(selectOpts('f-qualified', [
+      { id: '',  name: 'Any qualified' },
+      { id: '1', name: '⭐ Qualified only' },
+      { id: '0', name: 'Not qualified' }
+    ], CRM.prefs.filters.qualified)),
+    wireFilter(selectOpts('f-duplicate', [
+      { id: '', name: 'All leads' },
+      { id: 'only', name: '⚠️ Duplicates only' },
+      { id: 'unique', name: 'No duplicates' }
+    ], CRM.prefs.filters.duplicate)),
+    h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
+    h('button', { class: 'btn ghost', onclick: openSavedFiltersMenu, title: 'Saved filter presets' }, '📌'),
+    h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
+    h('button', { class: 'btn ghost', id: 'btn-refresh-leads', onclick: refreshLeads, title: 'Refresh leads list' }, '🔄'),
+    h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
+    h('button', { class: 'btn ghost', onclick: openBulkUpload, title: 'Upload CSV' }, '⬆️'),
+    h('button', { class: 'btn ghost', onclick: exportCSV, title: 'Export CSV' }, '⬇️'),
+    (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+      ? h('button', { class: 'btn ghost danger', onclick: deleteAllDuplicates, title: 'Delete every lead marked DUP' }, '🗑️ Dedupe')
+      : null,
+    (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+      ? h('button', { class: 'btn ghost', title: 'Move every lead with <10-digit phone to Junk', onclick: async () => {
+          if (!await confirmDialog('Scan all leads and move ones with phone < 10 digits to Junk? This is a one-shot cleanup; you can re-run later.')) return;
+          try { const r = await api('api_leads_cleanupJunk'); toast(`Moved ${r.moved} leads to Junk · ${r.skipped} skipped`); loadLeads(); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, '🧹 Junk cleanup')
+      : null,
+    h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
+  );
+  view.appendChild(toolbar);
+
+  view.appendChild(h('div', { class: 'bulk-bar', id: 'bulk-bar', hidden: true },
+    h('span', { id: 'bulk-count', class: 'bulk-count' }, '0 selected'),
+    h('button', { class: 'btn sm', onclick: bulkAssignPrompt }, '👤 Assign'),
+    h('button', { class: 'btn sm', onclick: bulkStatusPrompt }, '🏷️ Status'),
+    h('button', { class: 'btn sm', onclick: bulkAddTagPrompt }, '🏁 Add tag'),
+    h('button', { class: 'btn sm', onclick: bulkWhatsAppPrompt }, '💬 WhatsApp'),
+    h('button', { class: 'btn sm danger', onclick: bulkDelete }, '🗑️ Delete'),
+    h('button', { class: 'btn sm ghost', onclick: () => clearSelection() }, 'Clear')
+  ));
+
+  view.appendChild(h('div', { class: 'table-wrap' }, h('table', { id: 'leads-table', class: 'leads-table' })));
+  // Mobile card container (only visible on ≤ 780px via CSS)
+  view.appendChild(h('div', { class: 'leads-mobile', id: 'leads-mobile' }));
+  // Pagination footer placeholder (loadLeads populates it)
+  view.appendChild(h('div', { id: 'leads-pagination', class: 'pagination-bar' }));
+  // Mobile FAB
+  view.appendChild(h('button', { class: 'fab', onclick: () => openLeadModal(), title: 'New lead' }, '+'));
+
+  CRM._leadsPage = 1;
+  await loadLeads({ page: 1 });
+};
+
+function toggleHeader(show) {
+  CRM.prefs.showHeader = show;
+  localStorage.setItem('crm_show_header', show ? '1' : '0');
+  navigateTo('leads');
+}
+function clearFilters() {
+  CRM.prefs.filters = {};
+  localStorage.setItem('crm_filters', '{}');
+  navigateTo('leads');
+}
+
+/**
+ * Saved filter presets — modal to save the current filter combo under a
+ * name and one-click re-apply or delete saved presets. Admins can flag
+ * a preset as shared (visible to everyone in the org).
+ */
+async function openSavedFiltersMenu() {
+  const isAdmin = CRM.user && CRM.user.role === 'admin';
+  let saved;
+  try { saved = await api('api_filters_list', 'leads'); }
+  catch (e) { return toast(e.message, 'err'); }
+
+  const list = h('div', { class: 'sf-list', style: { display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '320px', overflowY: 'auto' } });
+  const renderList = (items) => {
+    list.innerHTML = '';
+    if (!items.length) {
+      list.appendChild(h('div', { class: 'muted', style: { padding: '8px', textAlign: 'center', fontSize: '.85rem' } }, 'No saved filters yet.'));
+      return;
+    }
+    items.forEach(f => {
+      const row = h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: '4px', background: 'var(--bg-alt)' } },
+        h('button', {
+          type: 'button', class: 'btn ghost',
+          style: { flex: '1', textAlign: 'left', padding: '4px 6px' },
+          onclick: () => {
+            const fObj = (typeof f.filter_json === 'string') ? JSON.parse(f.filter_json || '{}') : (f.filter_json || {});
+            CRM.prefs.filters = fObj;
+            localStorage.setItem('crm_filters', JSON.stringify(fObj));
+            modal.remove();
+            navigateTo('leads');
+          }
+        },
+          h('span', {}, f.name),
+          Number(f.is_shared) === 1 ? h('span', { class: 'muted', style: { fontSize: '.7rem', marginLeft: '6px' } }, '🌐 shared') : null
+        ),
+        (Number(f.user_id) === Number(CRM.user.id) || isAdmin)
+          ? h('button', { type: 'button', class: 'btn icon', title: 'Delete', onclick: async () => {
+              try { await api('api_filters_delete', f.id); toast('Filter deleted'); items.splice(items.indexOf(f), 1); renderList(items); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '🗑️')
+          : null
+      );
+      list.appendChild(row);
+    });
+  };
+
+  const nameInput = h('input', { placeholder: 'Filter name (e.g. "Mumbai · hot · negotiation")' });
+  const sharedBox = h('input', { type: 'checkbox' });
+  const shareRow = isAdmin
+    ? h('label', { style: { display: 'flex', gap: '6px', alignItems: 'center', fontSize: '.82rem', marginTop: '4px' } },
+        sharedBox,
+        ' Share with everyone in the org'
+      )
+    : null;
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal modal-sm' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '📌 Saved filters'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: 0 } },
+      'Save the current filter combination under a name, or click a saved preset to apply it.'),
+    list,
+    h('hr', { style: { margin: '12px 0', border: 0, borderTop: '1px solid var(--border-light)' } }),
+    h('label', { style: { fontSize: '.85rem' } }, 'Save current filters as:'),
+    nameInput,
+    shareRow,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Close'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const name = nameInput.value.trim();
+        if (!name) return toast('Give the filter a name', 'err');
+        try {
+          await api('api_filters_save', {
+            name,
+            view: 'leads',
+            filter: CRM.prefs.filters || {},
+            is_shared: (isAdmin && sharedBox.checked) ? 1 : 0
+          });
+          toast('Filter saved');
+          saved = await api('api_filters_list', 'leads');
+          renderList(saved);
+          nameInput.value = '';
+          if (isAdmin) sharedBox.checked = false;
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderList(saved);
+}
+
+async function loadLeads(opts) {
+  opts = opts || {};
+  const pageSize = Number(localStorage.getItem('crm_page_size') || 25);
+  const page = Number(opts.page || CRM._leadsPage || 1);
+  CRM._leadsPage = page;
+  const filters = {
+    q:           $('#f-q')?.value || undefined,
+    status_id:   $('#f-status')?.value || undefined,
+    source:      $('#f-source')?.value || undefined,
+    assigned_to: $('#f-assigned')?.value || undefined,
+    followup:    $('#f-followup')?.value || undefined,
+    qualified:   $('#f-qualified')?.value || undefined,
+    duplicate:   $('#f-duplicate')?.value || undefined,
+    page,
+    page_size:   pageSize
+  };
+  // Save user-visible filters only (not page/page_size — those are session state)
+  const savedFilters = Object.assign({}, filters);
+  delete savedFilters.page; delete savedFilters.page_size;
+  CRM.prefs.filters = savedFilters;
+  localStorage.setItem('crm_filters', JSON.stringify(savedFilters));
+
+  try {
+    const res = await api('api_leads_list', filters);
+    CRM.cache.lastLeads = res.leads;
+    CRM.cache.lastStatusCounts = res.status_count;
+    CRM.cache.lastTotal = res.total || (res.leads || []).length;
+    renderLeadsTable(res.leads);
+    renderStatusChips(res.status_count);
+    renderLeadsPagination({
+      total: res.total || res.leads.length,
+      page: res.page || 1,
+      pageSize: res.page_size || pageSize
+    });
+  } catch (e) {
+    $('#leads-table').innerHTML = `<tbody><tr><td colspan="99" class="error-box">${esc(e.message)}</td></tr></tbody>`;
+  }
+}
+
+/** Pagination footer with page-size selector + Prev/Next + page numbers. */
+function renderLeadsPagination({ total, page, pageSize }) {
+  let bar = $('#leads-pagination');
+  if (!bar) {
+    bar = h('div', { id: 'leads-pagination', class: 'pagination-bar' });
+    const tableWrap = $('#leads-table')?.closest('.table-wrap');
+    if (tableWrap && tableWrap.parentNode) {
+      tableWrap.parentNode.insertBefore(bar, tableWrap.nextSibling);
+    } else {
+      $('#view').appendChild(bar);
+    }
+  }
+  bar.innerHTML = '';
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(Math.max(1, page), pages);
+  const from = total === 0 ? 0 : (safePage - 1) * pageSize + 1;
+  const to = Math.min(safePage * pageSize, total);
+
+  // Page-size selector
+  const sizeSel = h('select', { id: 'page-size-sel', class: 'page-size-sel',
+    onchange: ev => {
+      localStorage.setItem('crm_page_size', String(Number(ev.target.value) || 25));
+      CRM._leadsPage = 1;
+      loadLeads({ page: 1 });
+    }
+  });
+  [10, 20, 25, 50, 100, 200, 500].forEach(n => {
+    sizeSel.appendChild(h('option', { value: n, selected: n === pageSize ? 'selected' : null }, `${n} per page`));
+  });
+  bar.appendChild(h('div', { class: 'pagination-left' }, sizeSel));
+
+  // Range info
+  bar.appendChild(h('div', { class: 'pagination-info muted' },
+    total === 0 ? 'No leads' : `${from}–${to} of ${total}`
+  ));
+
+  // Page navigation
+  const nav = h('div', { class: 'pagination-nav' });
+  const goto = (p) => { CRM._leadsPage = p; loadLeads({ page: p }); };
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage === 1 ? 'disabled' : null,
+    onclick: () => goto(1)
+  }, '« First'));
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage === 1 ? 'disabled' : null,
+    onclick: () => goto(safePage - 1)
+  }, '‹ Prev'));
+
+  // Numeric page buttons (windowed: show up to 5 around current)
+  const start = Math.max(1, safePage - 2);
+  const end = Math.min(pages, start + 4);
+  for (let p = start; p <= end; p++) {
+    nav.appendChild(h('button', {
+      class: 'btn sm' + (p === safePage ? ' primary' : ''),
+      onclick: () => goto(p)
+    }, String(p)));
+  }
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage >= pages ? 'disabled' : null,
+    onclick: () => goto(safePage + 1)
+  }, 'Next ›'));
+  nav.appendChild(h('button', {
+    class: 'btn sm', disabled: safePage >= pages ? 'disabled' : null,
+    onclick: () => goto(pages)
+  }, 'Last »'));
+  bar.appendChild(nav);
+}
+
+function renderStatusChips(statusCount) {
+  const el = $('#status-chips');
+  if (!el) return;
+  const { statuses } = CRM.cache;
+  el.innerHTML = '';
+  // Active status comes from the filter dropdown — chip for the matching
+  // status gets a highlighted "active" style so the user can see what's
+  // applied at a glance.
+  const activeStatusId = String($('#f-status')?.value || CRM.prefs.filters.status_id || '');
+  // "All" chip — clicking it clears the status filter
+  const allActive = !activeStatusId;
+  el.appendChild(h('span', {
+    class: 'status-chip clickable' + (allActive ? ' active' : ''),
+    onclick: () => applyStatusChipFilter('')
+  },
+    h('span', { class: 'chip-label' }, 'All'),
+    h('span', { class: 'chip-count' }, Object.values(statusCount || {}).reduce((a, b) => a + Number(b || 0), 0))
+  ));
+  statuses.forEach(s => {
+    const c = statusCount?.[String(s.id)] || statusCount?.[s.id] || 0;
+    const isActive = String(s.id) === activeStatusId;
+    el.appendChild(h('span', {
+      class: 'status-chip clickable' + (isActive ? ' active' : ''),
+      onclick: () => applyStatusChipFilter(s.id),
+      style: isActive ? { background: s.color, color: '#fff', borderColor: s.color } : null
+    },
+      h('span', { class: 'chip-dot', style: { background: s.color } }),
+      h('span', { class: 'chip-label' }, s.name),
+      h('span', { class: 'chip-count' }, c)
+    ));
+  });
+}
+
+/** Click handler used by both the chips and other parts of the UI. */
+function applyStatusChipFilter(statusId) {
+  const sel = document.getElementById('f-status');
+  if (sel) sel.value = String(statusId || '');
+  CRM.prefs.filters = Object.assign({}, CRM.prefs.filters, { status_id: statusId || '' });
+  try { localStorage.setItem('crm_filters', JSON.stringify(CRM.prefs.filters)); } catch (_) {}
+  CRM._leadsPage = 1;
+  loadLeads({ page: 1 });
+}
+
+function getActiveColumns() {
+  const saved = CRM.prefs.columns && CRM.prefs.columns.length ? CRM.prefs.columns : null;
+  return saved || LEAD_COLUMNS.filter(c => c.default).map(c => c.key);
+}
+
+function renderLeadsTable(rows) {
+  const tbl = $('#leads-table');
+  if (!tbl) return;
+  const { statuses, customFields } = CRM.cache;
+  const activeCols = getActiveColumns();
+  const extraCols = (customFields || []).filter(f => f.show_in_list);
+
+  const thead = h('thead', {},
+    h('tr', {},
+      h('th', { class: 'th-check' }, h('input', { type: 'checkbox', id: 'sel-all', onclick: ev => selectAll(ev.target.checked) })),
+      ...activeCols.map(key => h('th', {}, (LEAD_COLUMNS.find(c => c.key === key) || {}).label || key)),
+      ...extraCols.map(f => h('th', {}, f.label)),
+      h('th', {})
+    )
+  );
+  const tbody = h('tbody', {});
+  if (!rows.length) {
+    tbody.appendChild(h('tr', {}, h('td', { colspan: activeCols.length + extraCols.length + 2, class: 'empty' }, 'No leads match your filters.')));
+  } else {
+    rows.forEach(l => tbody.appendChild(h('tr', { class: l.is_duplicate ? 'row-duplicate' : '' },
+      h('td', { class: 'td-check' }, h('input', { type: 'checkbox', class: 'row-check', 'data-id': l.id, onclick: onRowCheck })),
+      ...activeCols.map(col => renderCell(col, l, statuses)),
+      ...extraCols.map(f => h('td', {}, (l.extra && l.extra[f.key]) || '')),
+      h('td', { class: 'td-actions' },
+        h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎')
+      )
+    )));
+  }
+  tbl.innerHTML = '';
+  tbl.append(thead, tbody);
+
+  $$('select[data-lead-status]', tbl).forEach(sel =>
+    sel.addEventListener('change', async () => {
+      try {
+        await api('api_leads_update', Number(sel.dataset.leadStatus), { status_id: Number(sel.value) });
+        toast('Status updated');
+        const opt = CRM.cache.statuses.find(s => Number(s.id) === Number(sel.value));
+        if (opt) sel.style.background = opt.color;
+        loadLeads();
+      } catch (e) { toast(e.message, 'err'); }
+    })
+  );
+
+  // Mobile card view
+  renderLeadsMobile(rows);
+}
+
+function renderLeadsMobile(rows) {
+  const m = $('#leads-mobile');
+  if (!m) return;
+  m.innerHTML = '';
+  if (!rows.length) {
+    m.appendChild(h('div', { class: 'empty' }, 'No leads match your filters.'));
+    return;
+  }
+  const { statuses } = CRM.cache;
+  rows.forEach(l => {
+    const digits = String(l.phone || '').replace(/\D/g, '');
+    const statusColor = l.status_color || '#6b7280';
+    const due = l.next_followup_at ? new Date(l.next_followup_at) : null;
+    const overdue = due && due < new Date();
+    const card = h('div', { class: 'lead-card' + (l.is_duplicate ? ' row-duplicate' : '') },
+      h('div', { class: 'lc-head' },
+        h('a', { href: '#', class: 'lc-name', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
+        h('span', { class: 'lc-status', style: { background: statusColor } }, l.status_name || '')
+      ),
+      h('div', { class: 'lc-meta' },
+        l.phone ? h('span', {}, '📞 ', l.phone) : null,
+        l.source ? h('span', {}, '• ', l.source) : null,
+        l.assigned_name ? h('span', {}, '👤 ', l.assigned_name) : null
+      ),
+      l.is_duplicate ? h('div', { class: 'dup-pill', onclick: () => openDuplicateHistory(l.id) }, '⚠ DUP — see past') : null,
+      due ? h('div', { class: 'lc-fu' + (overdue ? ' overdue' : '') }, '⏰ ' + fmtDate(l.next_followup_at, 'relative')) : null,
+      l.recent_remark ? h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.3rem' } }, '💬 ' + (l.recent_remark || '').slice(0, 80)) : null,
+      h('div', { class: 'lc-actions' },
+        digits ? h('button', { class: 'btn sm btn-call', onclick: () => callLead(l) }, '📞 Call') : null,
+        digits ? h('button', { class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(l) }, '🟢 WA') : null,
+        digits ? h('button', {
+          class: 'btn sm', onclick: () => openPersonalWaPicker(l)
+        }, '💬 My WA') : null,
+        digits ? h('button', { class: 'btn sm', onclick: () => sendCalendlyLink(l) }, '📅 Meet') : null,
+        h('button', { class: 'btn sm', onclick: () => openRemarkInline(l.id) }, '📝 Note'),
+        h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎ Edit')
+      )
+    );
+    m.appendChild(card);
+  });
+}
+
+/** Click-to-call.
+ *
+ *  RELIABLE FLOW: open the after-call modal IMMEDIATELY when the user taps,
+ *  before firing the tel: link. The modal sits in the background while the
+ *  user is on the call. When they hang up and return to the app, the modal
+ *  is right there waiting — no dependency on Android telling us "call ended".
+ *
+ *  Why we do it this way: Android 12+ deprecated PhoneStateListener,
+ *  READ_CALL_LOG / READ_PHONE_STATE are sensitive permissions, and OEM
+ *  battery managers (Xiaomi, OnePlus, Samsung, etc.) aggressively kill
+ *  background services. Trying to detect "call ended" reliably across all
+ *  phones is a maintenance nightmare. Opening the modal at dial-time works
+ *  on every phone, on every Android version, with zero permissions.
+ *
+ *  We still stash the call context to localStorage so _resumePendingCall
+ *  can re-open the modal if the WebView is killed mid-call. */
+function callLead(lead) {
+  const raw = String(lead.phone || '');
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return toast('No phone number', 'warn');
+  const startedAt = Date.now();
+  CRM.pendingCall = { lead, startedAt, dialedPhone: digits };
+
+  // Stash everything we need to reopen the modal even if the WebView dies.
+  try {
+    localStorage.setItem('crm_pending_call', JSON.stringify({
+      leadId: lead.id || null,
+      leadName: lead.name || '',
+      leadPhone: lead.phone || '',
+      startedAt,
+      dialedPhone: digits
+    }));
+  } catch (e) { console.warn(e); }
+
+  if (window.LeadCRMNative && typeof LeadCRMNative.registerOutgoingCall === 'function') {
+    try {
+      LeadCRMNative.registerOutgoingCall(
+        digits, lead.id ? String(lead.id) : '', startedAt
+      );
+    } catch (e) { console.warn('[leadcrm] registerOutgoingCall:', e); }
+  }
+
+  // Log a server-side call_events row so the recording sync gate has a
+  // reference point. Best-effort — doesn't block the dial.
+  try {
+    api('api_call_logEvent', {
+      phone: lead.phone || '',
+      direction: 'out',
+      event: 'dial_requested',
+      duration_s: 0
+    }).catch(() => {});
+  } catch (_) {}
+
+  // Fire the tel: link FIRST so the dialer opens immediately (any user
+  // gesture context is still active here)
+  const hasPlus = raw.trim().startsWith('+');
+  const telTarget = (hasPlus ? '+' : '') + digits;
+  const a = document.createElement('a');
+  a.href = 'tel:' + telTarget;
+  a.click();
+
+  // Then open the after-call modal. It sits in the background while the
+  // user is on the call. When they return to the app, it's already there.
+  // setTimeout 0 so this runs after the tel: navigation has been queued.
+  setTimeout(() => {
+    if (!document.querySelector('.after-call-modal')) {
+      openAfterCallModal(lead);
+    }
+  }, 0);
+}
+
+/**
+ * Called on every app launch + every visibility change. If we find a recent
+ * (within 10 minutes) pending call in localStorage that hasn't been resolved,
+ * open the modal + start the recording sync. This is the bulletproof path
+ * that works even when Android kills the WebView during the call.
+ */
+async function _resumePendingCall(reason) {
+  // Skip if a modal is already open (don't double-open)
+  if (document.querySelector('.after-call-modal')) return;
+
+  let raw;
+  try { raw = localStorage.getItem('crm_pending_call'); } catch (e) { return; }
+  if (!raw) return;
+  let data;
+  try { data = JSON.parse(raw); } catch (e) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+  if (!data || !data.startedAt) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+  const elapsed = Date.now() - data.startedAt;
+  // Skip immediate triggers (<2s = accidental tap)
+  if (elapsed < 2000) return;
+  // Skip stale entries (>10 min old = abandoned)
+  if (elapsed > 10 * 60 * 1000) {
+    localStorage.removeItem('crm_pending_call');
+    return;
+  }
+
+  console.log('[leadcrm] resuming pending call:', reason, 'elapsed=' + Math.round(elapsed/1000) + 's');
+
+  // Clear the stash so we don't re-trigger
+  localStorage.removeItem('crm_pending_call');
+  CRM.pendingCall = null;
+
+  // Get a full lead record (so the modal has status_id, etc.)
+  let lead = null;
+  if (data.leadId) {
+    try {
+      const r = await api('api_leads_get', data.leadId);
+      lead = (r && (r.lead || r));
+    } catch (e) {
+      lead = { id: data.leadId, name: data.leadName, phone: data.leadPhone };
+    }
+  } else if (data.leadName || data.leadPhone) {
+    lead = { name: data.leadName, phone: data.leadPhone };
+  }
+  if (!lead) return;
+
+  // Slight delay so the rest of the UI has settled
+  setTimeout(() => {
+    openAfterCallModalWithRecording(lead, {
+      lead,
+      startedAt: data.startedAt,
+      dialedPhone: data.dialedPhone || ''
+    });
+  }, 600);
+}
+
+// Fire after-call modal whenever the user returns to the app after tapping
+// Call. Three triggers cover every case — WebView still alive (in-memory
+// pendingCall) AND WebView killed and recreated (localStorage stash).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') _resumePendingCall('visibilitychange');
+});
+window.addEventListener('focus', () => _resumePendingCall('focus'));
+window.addEventListener('pageshow', () => _resumePendingCall('pageshow'));
+
+async function openAfterCallModal(lead) {
+  const { statuses } = CRM.cache;
+  const modal = h('div', { class: 'modal-backdrop after-call-modal' },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📞 Call ' + (lead.name || 'lead')),
+        h('button', { class: 'btn icon', onclick: () => modal.remove(), title: 'Close — you can re-open from the lead' }, '✕')
+      ),
+      h('p', { class: 'muted', style: { background: '#fef3c7', color: '#92400e', padding: '.6rem .8rem', borderRadius: '8px', borderLeft: '3px solid #f59e0b' } },
+        '☎️ Dialer is opening now. After your call, return here and fill in the status + remark below — this window will be waiting for you.'),
+      h('label', {}, 'Status'),
+      h('select', { id: 'ac-status' },
+        ...statuses.map(s => h('option', { value: s.id, selected: Number(s.id) === Number(lead.status_id) ? 'selected' : null }, s.name))
+      ),
+      h('label', {}, 'Remark — what was discussed, next step?'),
+      h('textarea', { id: 'ac-remark', rows: 4, placeholder: 'e.g. Customer needs more details on payment plan, sending brochure tomorrow' }),
+      h('label', {}, 'Next follow-up (optional)'),
+      h('input', { type: 'datetime-local', id: 'ac-followup' }),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Skip'),
+        h('button', { class: 'btn primary', onclick: async () => {
+          const statusId = Number($('#ac-status').value);
+          const remark = $('#ac-remark').value.trim();
+          const fu = $('#ac-followup').value;
+          const patch = {};
+          if (statusId && statusId !== Number(lead.status_id)) patch.status_id = statusId;
+          if (fu) patch.next_followup_at = localDtInputToIso(fu);
+          try {
+            if (Object.keys(patch).length) await api('api_leads_update', lead.id, patch);
+            if (remark) await api('api_leads_addRemark', lead.id, { remark });
+            toast('Updated');
+            modal.remove();
+            // Clear the pending-call stash so we don't re-open this modal
+            // on the next visibilitychange / nav.
+            try { localStorage.removeItem('crm_pending_call'); } catch (_) {}
+            CRM.pendingCall = null;
+            if (typeof loadLeads === 'function') loadLeads();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, '✓ Save update')
+      )
+    )
+  );
+  document.body.appendChild(modal);
+  // Don't auto-focus the textarea — opening the soft keyboard while the
+  // dialer is launching can fight for focus and look janky. User taps
+  // when they return.
+}
+
+function renderCell(col, l, statuses) {
+  switch (col) {
+    case 'name': {
+      return h('td', { class: 'cell-name' },
+        h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
+        l.is_duplicate ? h('span', { class: 'dup-pill', title: 'Duplicate — click to see past leads', onclick: ev => { ev.stopPropagation(); ev.preventDefault(); openDuplicateHistory(l.id); } }, 'DUP') : null
+      );
+    }
+    case 'phone': {
+      const digits = String(l.phone || '').replace(/\D/g, '');
+      return h('td', { class: 'cell-phone' },
+        l.phone || '',
+        digits ? h('button', { class: 'btn icon', title: 'Call from this device', onclick: ev => { ev.stopPropagation(); callLead(l); } }, '📞') : null,
+        // Push the call to YOUR phone — when you have the APK installed and
+        // logged in, FCM wakes the phone and opens its native dialer with
+        // the number pre-filled. Useful when you're on desktop CRM but want
+        // to actually dial from your handset (recordings + carrier minutes).
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send to my mobile phone — opens dialer there',
+          onclick: ev => { ev.stopPropagation(); callViaMobile(l); }
+        }, '📱') : null,
+        l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: ev => { ev.stopPropagation(); navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
+        // Green WhatsApp icon — opens the Initiate Chat modal which lets
+        // the user pick an approved template, fill variables, preview and
+        // send. Replaces the old wa.me deep link.
+        digits ? h('button', {
+          class: 'btn icon wa-cloud-btn', title: 'Send WhatsApp template (from business number via Cloud API)',
+          onclick: ev => { ev.stopPropagation(); openInitiateChatModal(l); }
+        }, '🟢') : null,
+        // Personal WhatsApp — opens a template picker. Picking a template
+        // launches WhatsApp with the message pre-filled (rep just hits
+        // Send). Truly silent sending isn't possible from a personal
+        // number — that's the 🟢 Cloud-API button's job.
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send WhatsApp from my number — pick a template',
+          onclick: ev => { ev.stopPropagation(); openPersonalWaPicker(l); }
+        }, '💬') : null,
+        // Calendly meeting link — opens WhatsApp with the rep's
+        // booking page pre-filled. Only shows if the rep has set
+        // a Calendly URL on their profile.
+        digits ? h('button', {
+          class: 'btn icon', title: 'Send Calendly meeting link via WhatsApp',
+          onclick: ev => { ev.stopPropagation(); sendCalendlyLink(l); }
+        }, '📅') : null
+      );
+    }
+    case 'email':    return h('td', {}, l.email || '');
+    case 'whatsapp': return h('td', {}, l.whatsapp || '');
+    case 'source':   return h('td', {}, l.source || '');
+    case 'product':  return h('td', {}, l.product_name || l.product || '');
+    case 'status': {
+      const sel = h('select', {
+        class: 'status-pill',
+        'data-lead-status': l.id,
+        style: { background: l.status_color || '#6b7280' },
+        onclick: ev => ev.stopPropagation()
+      });
+      statuses.forEach(s => sel.appendChild(h('option', {
+        value: s.id, selected: Number(s.id) === Number(l.status_id) ? 'selected' : null
+      }, s.name)));
+      return h('td', {}, sel);
+    }
+    case 'assigned': return h('td', {}, l.assigned_name || '—');
+    case 'tags': {
+      const tags = String(l.tags || '').split(',').map(s => s.trim()).filter(Boolean);
+      return h('td', {}, ...tags.map(t => h('span', { class: 'tag' }, t)));
+    }
+    case 'followup': {
+      const due = l.next_followup_at ? new Date(l.next_followup_at) : null;
+      const overdue = due && due < new Date();
+      return h('td', { class: overdue ? 'overdue' : '' }, due ? fmtDate(l.next_followup_at, 'relative') : '');
+    }
+    case 'last_change': return h('td', { class: 'muted' }, l.last_status_change_at ? fmtDate(l.last_status_change_at, 'relative') : '');
+    case 'remark': return h('td', { class: 'cell-remark' },
+      h('span', { class: 'remark-text', title: l.recent_remark || '' }, (l.recent_remark || '').slice(0, 60)),
+      h('button', { class: 'btn icon', title: 'Add remark', onclick: ev => { ev.stopPropagation(); openRemarkInline(l.id); } }, '💬+')
+    );
+    case 'city':    return h('td', {}, l.city || '');
+    case 'created': return h('td', { class: 'muted' }, fmtDate(l.created_at, 'short'));
+    default:        return h('td', {}, '');
+  }
+}
+
+/* --- selection & bulk --- */
+function onRowCheck() {
+  const n = $$('.row-check:checked').length;
+  const bar = $('#bulk-bar');
+  if (!bar) return;
+  bar.hidden = n === 0;
+  $('#bulk-count').textContent = `${n} selected`;
+}
+function selectAll(on) {
+  $$('.row-check').forEach(c => { c.checked = on; });
+  onRowCheck();
+}
+function clearSelection() {
+  const sa = $('#sel-all'); if (sa) sa.checked = false;
+  selectAll(false);
+}
+function selectedIds() {
+  return $$('.row-check:checked').map(c => Number(c.dataset.id));
+}
+
+async function bulkAssignPrompt() {
+  const ids = selectedIds(); if (!ids.length) return;
+  const users = CRM.cache.users || [];
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('h3', {}, `Assign ${ids.length} leads`),
+    h('label', {}, 'Pick user'),
+    h('select', { id: 'bulk-asgn' }, ...users.map(u => h('option', { value: u.id }, `${u.name} — ${u.role}`))),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        try { await api('api_leads_bulkUpdate', ids, { assigned_to: Number($('#bulk-asgn').value) }); toast('Assigned'); modal.remove(); clearSelection(); loadLeads(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Assign')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+async function bulkStatusPrompt() {
+  const ids = selectedIds(); if (!ids.length) return;
+  const statuses = CRM.cache.statuses;
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('h3', {}, `Change status of ${ids.length} leads`),
+    h('label', {}, 'New status'),
+    h('select', { id: 'bulk-st' }, ...statuses.map(s => h('option', { value: s.id }, s.name))),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        try { await api('api_leads_bulkUpdate', ids, { status_id: Number($('#bulk-st').value) }); toast('Updated'); modal.remove(); clearSelection(); loadLeads(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Update')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+/**
+ * Bulk WhatsApp send — fire an approved template to every selected lead.
+ *
+ * Reuses the existing campaign infra (api_wb_campaigns_create + send_now)
+ * so messages queue, retry on failure, log to whatsapp_messages, and show
+ * up in the per-lead chat thread automatically.
+ *
+ * Variables support per-lead merge tokens via @{name}, @{firstname},
+ * @{phone}, @{email}, @{source} — same renderer the rest of WhatsBot uses.
+ */
+async function bulkWhatsAppPrompt() {
+  const ids = selectedIds(); if (!ids.length) return;
+  const templates = await api('api_wb_templates_list').catch(() => []);
+  if (!templates.length) {
+    return toast('No approved WhatsApp templates yet — sync from Meta in WhatsBot tab', 'err');
+  }
+
+  const tplSel = h('select', { id: 'bw-tpl' },
+    ...templates.map(t => h('option', { value: t.name + '|' + (t.language || 'en_US') }, `${t.name} · ${t.language || 'en_US'}`))
+  );
+  const varsBox = h('div', { id: 'bw-vars', style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' } });
+  const previewBox = h('div', { class: 'muted', id: 'bw-preview',
+    style: { background: 'var(--bg-alt)', padding: '8px 10px', borderRadius: '6px', fontSize: '.82rem', whiteSpace: 'pre-wrap', marginTop: '8px', minHeight: '40px' } });
+
+  const renderVars = () => {
+    const sel = tplSel.value || '';
+    const [name, lang] = sel.split('|');
+    const tpl = templates.find(t => t.name === name && (t.language || 'en_US') === lang);
+    const bodyText = String(tpl?.body_text || '');
+    const params = (tpl?.body_params || tpl?.params || []);
+    const count = Array.isArray(params) ? params.length : (Number(tpl?.body_params_count) || (bodyText.match(/\{\{\d+\}\}/g) || []).length);
+    varsBox.innerHTML = '';
+    if (!count) {
+      varsBox.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem' } }, 'This template has no variables.'));
+    } else {
+      for (let i = 0; i < count; i++) {
+        const inp = h('input', { class: 'bw-var', placeholder: 'e.g. @{firstname} or "20%"', 'data-idx': String(i) });
+        const row = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+          h('span', { class: 'muted', style: { minWidth: '70px', fontSize: '.78rem' } }, '{{' + (i + 1) + '}}'),
+          inp,
+          h('button', { type: 'button', class: 'btn sm ghost', title: 'Insert lead first name', onclick: () => { inp.value = '@{firstname}'; updatePreview(); } }, '@name')
+        );
+        inp.addEventListener('input', updatePreview);
+        varsBox.appendChild(row);
+      }
+    }
+    updatePreview();
+  };
+
+  const updatePreview = () => {
+    const sel = tplSel.value || '';
+    const [name, lang] = sel.split('|');
+    const tpl = templates.find(t => t.name === name && (t.language || 'en_US') === lang);
+    let body = String(tpl?.body_text || '');
+    const inputs = Array.from(varsBox.querySelectorAll('.bw-var'));
+    inputs.forEach((inp, i) => {
+      const v = inp.value || ('{{' + (i + 1) + '}}');
+      body = body.replace(new RegExp('\\{\\{' + (i + 1) + '\\}\\}', 'g'), v);
+    });
+    previewBox.textContent = body || '(empty template)';
+  };
+
+  tplSel.addEventListener('change', renderVars);
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, `💬 Send WhatsApp to ${ids.length} lead${ids.length === 1 ? '' : 's'}`),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { marginTop: 0, fontSize: '.82rem' } },
+      'Pick an approved template and fill its variables. Use @{firstname}, @{name}, @{phone}, @{email}, @{source} for per-lead substitution. The send queues through the campaign worker — failures are retried automatically.'),
+    h('label', {}, 'Template'),
+    tplSel,
+    h('label', { style: { marginTop: '10px' } }, 'Variables'),
+    varsBox,
+    h('label', { style: { marginTop: '10px' } }, 'Preview (first lead)'),
+    previewBox,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const sel = tplSel.value || '';
+        const [name, lang] = sel.split('|');
+        const inputs = Array.from(varsBox.querySelectorAll('.bw-var'));
+        const variables = inputs.map(inp => ({ value: inp.value || '' }));
+        try {
+          const r = await api('api_wb_campaigns_create', {
+            name: 'Bulk send · ' + new Date().toLocaleString(),
+            template_name: name,
+            template_language: lang,
+            variables_json: JSON.stringify(variables),
+            filter: { lead_ids: ids },
+            send_now: 1
+          });
+          if (r && r.id) {
+            await api('api_wb_campaigns_send_now', r.id);
+          }
+          toast(`Queued WhatsApp send to ${ids.length} leads`);
+          modal.remove();
+          clearSelection();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, `Send to ${ids.length}`)
+    )
+  ));
+  document.body.appendChild(modal);
+  renderVars();
+}
+
+async function bulkAddTagPrompt() {
+  const ids = selectedIds(); if (!ids.length) return;
+  const tag = prompt('Tag to add to ' + ids.length + ' leads:');
+  if (!tag) return;
+  const leads = (CRM.cache.lastLeads || []).filter(l => ids.includes(Number(l.id)));
+  for (const l of leads) {
+    const existing = String(l.tags || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (!existing.includes(tag)) existing.push(tag);
+    try { await api('api_leads_update', l.id, { tags: existing.join(', ') }); } catch (_) {}
+  }
+  toast('Tag added'); clearSelection(); loadLeads();
+}
+async function bulkDelete() {
+  const ids = selectedIds(); if (!ids.length) return;
+  if (!await confirmDialog(`Delete ${ids.length} leads? This cannot be undone.`)) return;
+  try { await api('api_leads_bulkDelete', ids); toast('Deleted'); clearSelection(); loadLeads(); }
+  catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * Delete every lead currently flagged is_duplicate=1, server-side.
+ * Admin/manager only. Confirmation prompt with the count first.
+ */
+async function deleteAllDuplicates() {
+  // Surface the duplicates view first so the admin can see what's about
+  // to be removed, with the accurate total.
+  const sel = document.getElementById('f-duplicate');
+  if (sel) sel.value = 'only';
+  await loadLeads({ page: 1 });
+  const fullCount = Number(CRM.cache.lastTotal) || (CRM.cache.lastLeads || []).length;
+  if (!fullCount) {
+    toast('No duplicates found. ✨');
+    if (sel) sel.value = '';
+    await loadLeads({ page: 1 });
+    return;
+  }
+  const msg = `Delete ALL ${fullCount} duplicate lead${fullCount === 1 ? '' : 's'}?\n\n` +
+              `This will permanently remove them from the database. ` +
+              `Their remarks and follow-ups will also be deleted.\n\n` +
+              `This cannot be undone.`;
+  if (!await confirmDialog(msg)) return;
+  try {
+    const r = await api('api_leads_deleteAllDuplicates');
+    toast(`✅ Removed ${r.count} duplicate lead${r.count === 1 ? '' : 's'}`);
+    if (sel) sel.value = '';
+    await loadLeads({ page: 1 });
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* --- CSV export / upload --- */
+function exportCSV() {
+  const rows = CRM.cache.lastLeads || [];
+  if (!rows.length) return toast('No leads to export', 'warn');
+  const headers = ['id', 'name', 'phone', 'email', 'whatsapp', 'source', 'product_name', 'status_name', 'assigned_name', 'tags', 'city', 'next_followup_at', 'last_status_change_at', 'notes', 'created_at'];
+  const csv = [headers.join(',')].concat(rows.map(r => headers.map(k => {
+    const v = r[k] == null ? '' : String(r[k]).replace(/"/g, '""');
+    return /[",\n]/.test(v) ? `"${v}"` : v;
+  }).join(','))).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+function openBulkUpload() {
+  // Include admin too, since admin may want to assign to themselves
+  const users = (CRM.cache.users || []).filter(u => Number(u.is_active ?? 1) === 1);
+  const noUsers = users.length === 0;
+
+  let parsedRows = [];
+  let assignMode = 'csv';
+
+  // -------- Modal layout --------
+  const fileInput = h('input', {
+    type: 'file',
+    accept: '.csv,.xlsx,.xls,.xlsm,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    id: 'csv-file',
+    style: { width: '100%' }
+  });
+  const fileInfo = h('div', { class: 'muted', id: 'csv-file-info', style: { fontSize: '.85rem', marginTop: '.4rem' } }, 'No file selected. Accepts .csv, .xlsx and .xls.');
+  const filePreview = h('div', { class: 'csv-preview', id: 'csv-preview', hidden: true });
+
+  // Mode picker as 4 button cards — no radios, no labels, no flex weirdness.
+  const modeCard = (id, icon, title, desc) => h('button', {
+    type: 'button',
+    class: 'assign-mode-card',
+    'data-mode': id,
+    onclick: () => { assignMode = id; updateMode(); }
+  },
+    h('span', { class: 'amc-icon' }, icon),
+    h('span', { class: 'amc-content' },
+      h('span', { class: 'amc-title' }, title),
+      h('span', { class: 'amc-desc' }, desc)
+    )
+  );
+  const modePicker = h('div', { class: 'assign-mode-grid' },
+    modeCard('single',      '👤', 'One employee',         'Assign every lead to one person.'),
+    modeCard('round_robin', '🔁', 'Round-robin',           'Divide equally between selected employees.'),
+    modeCard('percent',     '📊', 'Percentage split',      'Custom share — e.g. 60% / 30% / 10%.'),
+    modeCard('csv',         '📄', 'Use CSV value',         'Per-row assigned_to or your assignment rules.')
+  );
+
+  // Mode-specific bodies
+  const singleSel = h('select', { id: 'assign-single-user', class: 'assign-single-input' },
+    h('option', { value: '' }, '— pick employee —'),
+    ...users.map(u => h('option', { value: u.id }, `${u.name} (${u.role})`))
+  );
+  const singleBody = h('div', { class: 'assign-mode-body', 'data-for': 'single', hidden: true, style: { display: 'none' } },
+    h('label', {}, 'Assign all leads to:'), singleSel
+  );
+
+  const rrChecks = users.map(u => h('label', { class: 'assign-rr-check' },
+    h('input', { type: 'checkbox', name: 'rr-user', value: u.id }),
+    h('span', {}, ` ${u.name}`),
+    h('span', { class: 'muted', style: { fontSize: '.78rem', marginLeft: '.35rem' } }, u.role)
+  ));
+  const rrBody = h('div', { class: 'assign-mode-body', 'data-for': 'round_robin', hidden: true, style: { display: 'none' } },
+    h('label', {}, 'Pick the employees to share these leads:'),
+    h('div', { class: 'assign-rr-grid' }, ...rrChecks),
+    h('div', { class: 'actions', style: { marginTop: '.5rem' } },
+      h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { rrChecks.forEach(c => c.querySelector('input').checked = true); previewAssignment(); } }, 'Select all'),
+      h('button', { class: 'btn sm ghost', type: 'button', onclick: () => { rrChecks.forEach(c => c.querySelector('input').checked = false); previewAssignment(); } }, 'Clear')
+    )
+  );
+  rrBody.querySelectorAll('input').forEach(i => i.addEventListener('change', previewAssignment));
+
+  const percentRows = users.map(u => h('div', { class: 'assign-pct-row' },
+    h('label', { class: 'assign-pct-name' }, u.name + ' '),
+    h('input', { type: 'number', min: 0, max: 100, step: 1, value: 0, 'data-uid': u.id, class: 'assign-pct-input', oninput: previewAssignment }),
+    h('span', { class: 'muted' }, '%')
+  ));
+  const pctTotalEl = h('div', { class: 'assign-pct-total muted', id: 'pct-total' }, 'Total: 0%');
+  const percentBody = h('div', { class: 'assign-mode-body', 'data-for': 'percent', hidden: true, style: { display: 'none' } },
+    h('label', {}, 'Assign by percentage (must add up to 100%):'),
+    h('div', { class: 'assign-pct-grid' }, ...percentRows),
+    pctTotalEl
+  );
+
+  const csvBody = h('div', { class: 'assign-mode-body', 'data-for': 'csv' },
+    h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Each row keeps its own ',
+      h('code', {}, 'assigned_to'),
+      ' value (or stays empty for your assignment rules / round-robin defaults to apply).'
+    )
+  );
+
+  const previewEl = h('div', { class: 'assign-preview' });
+  const importBtn = h('button', { class: 'btn primary', disabled: 'disabled', onclick: doImport }, 'Import');
+
+  function updateMode() {
+    [...modePicker.children].forEach(c => c.classList.toggle('active', c.dataset.mode === assignMode));
+    modePicker.querySelectorAll('input[type=radio]').forEach(r => r.checked = r.value === assignMode);
+    [singleBody, rrBody, percentBody, csvBody].forEach(b => {
+      const visible = b.dataset.for === assignMode;
+      b.hidden = !visible;
+      b.style.display = visible ? '' : 'none';
+    });
+    previewAssignment();
+  }
+  singleSel.addEventListener('change', previewAssignment);
+
+  function readPercentSplit() {
+    const split = {};
+    let total = 0;
+    percentRows.forEach(r => {
+      const inp = r.querySelector('input');
+      const v = Number(inp.value) || 0;
+      const uid = Number(inp.dataset.uid);
+      if (v > 0 && uid) { split[uid] = v; total += v; }
+    });
+    return { split, total };
+  }
+
+  function previewAssignment() {
+    previewEl.innerHTML = '';
+    if (!parsedRows.length) {
+      importBtn.disabled = 'disabled';
+      return;
+    }
+    const userById = Object.fromEntries(users.map(u => [Number(u.id), u]));
+    let plan = [];
+    let valid = false;
+
+    if (assignMode === 'csv') {
+      valid = true;
+      previewEl.appendChild(h('div', { class: 'muted' }, `${parsedRows.length} rows — assignment per row's CSV value or your rules.`));
+
+    } else if (assignMode === 'single') {
+      const uid = Number(singleSel.value);
+      if (!uid) {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Pick an employee to continue.'));
+      } else {
+        valid = true;
+        const u = userById[uid];
+        previewEl.appendChild(h('div', {}, `All ${parsedRows.length} leads → `, h('b', {}, u.name)));
+      }
+
+    } else if (assignMode === 'round_robin') {
+      const ids = [...rrBody.querySelectorAll('input[name=rr-user]:checked')].map(i => Number(i.value));
+      if (!ids.length) {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Pick at least one employee.'));
+      } else {
+        valid = true;
+        const counts = {};
+        for (let i = 0; i < parsedRows.length; i++) {
+          const uid = ids[i % ids.length];
+          counts[uid] = (counts[uid] || 0) + 1;
+        }
+        const lines = Object.entries(counts).map(([uid, n]) =>
+          h('div', {}, `${userById[Number(uid)]?.name || ('User ' + uid)}: `, h('b', {}, n + ' leads'))
+        );
+        previewEl.appendChild(h('div', { class: 'preview-grid' }, ...lines));
+      }
+
+    } else if (assignMode === 'percent') {
+      const { split, total } = readPercentSplit();
+      pctTotalEl.textContent = 'Total: ' + total + '%';
+      pctTotalEl.classList.toggle('warn', total !== 100);
+      pctTotalEl.classList.toggle('ok', total === 100);
+      if (total === 100) {
+        valid = true;
+        const lines = Object.entries(split).map(([uid, pct]) => {
+          const n = Math.round((pct / 100) * parsedRows.length);
+          return h('div', {}, `${userById[Number(uid)]?.name || ('User ' + uid)}: `, h('b', {}, `${n} leads (${pct}%)`));
+        });
+        previewEl.appendChild(h('div', { class: 'preview-grid' }, ...lines));
+      } else {
+        previewEl.appendChild(h('div', { class: 'muted warn' }, 'Percentages must add up to exactly 100%.'));
+      }
+    }
+    importBtn.disabled = (parsedRows.length && valid) ? null : 'disabled';
+  }
+
+  fileInput.addEventListener('change', async (e) => {
+    parsedRows = [];
+    filePreview.hidden = true;
+    filePreview.innerHTML = '';
+    const f = e.target.files[0];
+    if (!f) { fileInfo.textContent = 'No file selected.'; previewAssignment(); return; }
+    fileInfo.textContent = '⏳ Parsing ' + f.name + '…';
+    try {
+      parsedRows = await parseSpreadsheet(f);
+      const cols = parsedRows.length ? Object.keys(parsedRows[0]) : [];
+      const sample = parsedRows.slice(0, 3);
+      fileInfo.textContent = `✅ ${f.name} — ${parsedRows.length} rows · ${cols.length} columns`;
+
+      // -------- Sanity warnings --------
+      const warnings = [];
+      // 1. Phone fields that came in as scientific notation -> Excel data loss
+      const phoneFields = cols.filter(c => /^(phone|mobile|whatsapp|alt_phone|alternate)$/i.test(c));
+      let sciPhoneCount = 0;
+      const allPhonesSeen = [];
+      parsedRows.forEach(r => {
+        phoneFields.forEach(f => {
+          const v = String(r[f] || '');
+          allPhonesSeen.push(v);
+          // Detect a phone that ends with a long run of zeros (Excel signature
+          // of a sci-notation conversion that lost trailing digits)
+          if (/^\d{10,}0{4,}$/.test(v) || /[eE]/.test(v)) sciPhoneCount++;
+        });
+      });
+      if (sciPhoneCount > 0) {
+        warnings.push({
+          icon: '⚠️',
+          msg: `${sciPhoneCount} phone number${sciPhoneCount === 1 ? ' is' : 's are'} in scientific notation — Excel has truncated trailing digits and these numbers are now corrupted. To fix: open your spreadsheet, right-click the Phone column → Format cells → Text, re-enter the numbers, then re-export.`
+        });
+      }
+      // 2. Detect employee column under common alias names
+      const userCols = cols.filter(c => /^(user|owner|assignee|sales_rep|salesperson|agent|assigned_user|rep|assigned_to)$/i.test(c));
+      if (userCols.length) {
+        warnings.push({
+          icon: '👤',
+          msg: `Detected employee column "${userCols[0]}" — leads will be auto-mapped to employees by name/email match.`,
+          ok: true
+        });
+      }
+      // 3. Notice if 'tags' column has status-like values (Duplicate, Lost, etc)
+      if (cols.includes('tags')) {
+        const dupCount = parsedRows.filter(r => /\b(duplicate|dup)\b/i.test(String(r.tags || ''))).length;
+        if (dupCount > 0) {
+          warnings.push({
+            icon: 'ℹ️',
+            msg: `${dupCount} row${dupCount === 1 ? '' : 's'} tagged as "Duplicate" will be flagged is_duplicate=1 (visible under Leads → ⚠️ Duplicates only filter).`,
+            ok: true
+          });
+        }
+      }
+      if (warnings.length) {
+        const wrap = h('div', { class: 'csv-warn-list' }, ...warnings.map(w =>
+          h('div', { class: 'csv-warn ' + (w.ok ? 'ok' : 'warn') },
+            h('span', { class: 'csv-warn-ico' }, w.icon),
+            h('span', {}, w.msg)
+          )
+        ));
+        filePreview.appendChild(wrap);
+      }
+
+      if (sample.length) {
+        const tbl = h('table', { class: 'mini-table csv-preview-table' });
+        const thead = h('thead', {}, h('tr', {}, ...cols.map(c => h('th', {}, c))));
+        const tbody = h('tbody', {}, ...sample.map(r => h('tr', {}, ...cols.map(c => h('td', {}, String(r[c] || ''))))));
+        tbl.append(thead, tbody);
+        filePreview.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem', margin: '.5rem 0 .35rem' } }, 'Preview — first 3 rows:'));
+        filePreview.appendChild(tbl);
+        filePreview.hidden = false;
+      }
+      previewAssignment();
+    } catch (err) {
+      fileInfo.textContent = '⚠️ Could not parse file: ' + err.message;
+    }
+  });
+
+  async function doImport() {
+    if (!parsedRows.length) return toast('Choose a file first', 'warn');
+    let assign;
+    if (assignMode === 'csv') {
+      assign = { mode: 'csv' };
+    } else if (assignMode === 'single') {
+      const uid = Number(singleSel.value);
+      if (!uid) return toast('Pick an employee', 'warn');
+      assign = { mode: 'single', user_id: uid };
+    } else if (assignMode === 'round_robin') {
+      const ids = [...rrBody.querySelectorAll('input[name=rr-user]:checked')].map(i => Number(i.value));
+      if (!ids.length) return toast('Pick at least one employee', 'warn');
+      assign = { mode: 'round_robin', user_ids: ids };
+    } else if (assignMode === 'percent') {
+      const { split, total } = readPercentSplit();
+      if (total !== 100) return toast('Percentages must sum to 100%', 'warn');
+      assign = { mode: 'percent', split };
+    }
+    importBtn.disabled = 'disabled';
+    importBtn.textContent = 'Importing…';
+    try {
+      const r = await api('api_leads_bulkCreate', parsedRows, assign);
+      const lines = [`✅ Imported ${r.created} of ${parsedRows.length}`];
+      if (r.duplicate) lines.push(`${r.duplicate} duplicates`);
+      if (r.skipped) lines.push(`${r.skipped} skipped`);
+      toast(lines.join(' · '));
+      modal.remove();
+      loadLeads();
+    } catch (e) {
+      toast(e.message, 'err');
+      importBtn.disabled = null;
+      importBtn.textContent = 'Import';
+    }
+  }
+
+  const modal = h('div', { class: 'modal-backdrop' },
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' }, h('h3', {}, '⬆️ Bulk upload leads'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+      h('p', { class: 'muted' }, 'Step 1: pick a CSV or Excel (.xlsx) file. Columns: name, phone, email, whatsapp, source, product, status, notes, city, tags, next_followup_at, assigned_to, plus any custom field keys. The status and product columns accept names — unknown values are auto-created.'),
+      h('p', { class: 'muted', style: { fontSize: '.82rem' } },
+        h('b', {}, 'Tip: '), 'You can pre-assign leads to specific employees by adding an ',
+        h('code', {}, 'assigned_to'),
+        ' column with the rep\'s email or full name. Or use Step 2 below to assign in bulk.'
+      ),
+      fileInput,
+      fileInfo,
+      filePreview,
+      h('p', { style: { marginTop: '1rem' } }, h('a', { href: '/api/sample.csv', download: '' }, '⬇️ Download sample CSV')),
+      h('h4', { style: { marginTop: '1.5rem' } }, 'Step 2: how should these leads be assigned?'),
+      modePicker,
+      singleBody, rrBody, percentBody, csvBody,
+      h('div', { class: 'assign-preview-wrap' },
+        h('h5', { style: { margin: '1rem 0 .5rem' } }, 'Preview'),
+        previewEl
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+        importBtn
+      )
+    )
+  );
+  document.body.appendChild(modal);
+  updateMode();
+}
+/* ---------------- Spreadsheet parsing (CSV + XLSX) ---------------- */
+
+/** Lazy-load SheetJS only when the user actually opens an Excel file. */
+let _xlsxLib = null;
+async function ensureXLSX() {
+  if (window.XLSX) return window.XLSX;
+  if (_xlsxLib) return _xlsxLib;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  _xlsxLib = window.XLSX;
+  return _xlsxLib;
+}
+
+/** Normalize a column header into a snake_case key (lowercase, spaces+dashes → _). */
+function normalizeKey(k) {
+  return String(k || '').replace(/^﻿/, '').trim().toLowerCase().replace(/[\s\-]+/g, '_');
+}
+
+/**
+ * Clean up a single cell value:
+ *  - convert numbers to strings (Excel returns numbers for digit cells)
+ *  - strip leading apostrophe (Excel uses ' to force text)
+ *  - strip BOM, trim whitespace
+ *  - convert scientific-notation phone numbers back to plain digits
+ *  - lowercase + trim emails
+ */
+function cleanCell(key, val) {
+  if (val == null) return '';
+  if (val instanceof Date && !isNaN(val)) return val.toISOString();
+  if (typeof val === 'number') val = String(val);
+  let s = String(val).replace(/^﻿/, '').trim();
+  s = s.replace(/^'/, '');
+  // Scientific notation? Reconstruct (e.g. "9.876543E+9" → "9876543000")
+  if (/^\d+(\.\d+)?[eE][+-]?\d+$/.test(s)) {
+    const n = Number(s);
+    if (!isNaN(n) && isFinite(n)) s = String(n.toFixed(0));
+  }
+  if (key === 'email') s = s.toLowerCase();
+  return s;
+}
+
+/**
+ * Parse a CSV or XLSX file → array of normalized row objects.
+ * Handles BOM, multi-line cells, Excel quirks, scientific-notation phones.
+ */
+async function parseSpreadsheet(file) {
+  const name = (file.name || '').toLowerCase();
+  // ---- XLSX / XLS path ----
+  if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.xlsm')) {
+    const XLSX = await ensureXLSX();
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true, raw: false });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { defval: '', raw: false, blankrows: false });
+    return rows.map(r => {
+      const out = {};
+      for (const [k, v] of Object.entries(r)) {
+        const key = normalizeKey(k);
+        out[key] = cleanCell(key, v);
+      }
+      return out;
+    }).filter(r => Object.values(r).some(v => v !== ''));
+  }
+  // ---- CSV path ----
+  let text = await file.text();
+  text = text.replace(/^﻿/, ''); // strip UTF-8 BOM (Excel always adds one)
+  const rows = parseCSVText(text);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map(normalizeKey);
+  return rows.slice(1).map(line => {
+    if (line.every(c => c === '' || c == null)) return null;
+    const o = {};
+    headers.forEach((h, i) => { o[h] = cleanCell(h, line[i]); });
+    return o;
+  }).filter(Boolean);
+}
+
+/**
+ * Full CSV parser — handles quoted multi-line fields, escaped quotes,
+ * CRLF or LF line endings. Returns an array of arrays.
+ */
+function parseCSVText(text) {
+  const out = [];
+  let row = []; let cur = ''; let inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cur += c;
+    } else {
+      if (c === '"') inQ = true;
+      else if (c === ',') { row.push(cur); cur = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i + 1] === '\n') i++; // swallow LF after CR
+        row.push(cur); cur = '';
+        out.push(row); row = [];
+      } else cur += c;
+    }
+  }
+  if (cur !== '' || row.length) { row.push(cur); out.push(row); }
+  return out.filter(r => r.length > 1 || (r[0] && r[0].trim()));
+}
+
+// Backwards-compat shim — older code calls parseCSV(text) on already-loaded text
+function parseCSV(text) {
+  const stripped = String(text || '').replace(/^﻿/, '');
+  const rows = parseCSVText(stripped);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map(normalizeKey);
+  return rows.slice(1).map(line => {
+    if (line.every(c => c === '' || c == null)) return null;
+    const o = {};
+    headers.forEach((h, i) => { o[h] = cleanCell(h, line[i]); });
+    return o;
+  }).filter(Boolean);
+}
+
+/* --- Column chooser --- */
+function openColumnChooser() {
+  const active = new Set(getActiveColumns());
+  const modal = h('div', { class: 'modal-backdrop' },
+    h('div', { class: 'modal' },
+      h('div', { class: 'modal-head' }, h('h3', {}, 'Columns'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+      h('p', { class: 'muted' }, 'Pick which columns to show. Saved as your default view.'),
+      h('div', { class: 'col-picker' },
+        ...LEAD_COLUMNS.map(c => h('label', { class: 'col-opt' },
+          h('input', { type: 'checkbox', value: c.key, checked: active.has(c.key) ? 'checked' : null }),
+          h('span', {}, c.label)
+        ))
+      ),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+        h('button', { class: 'btn primary', onclick: () => {
+          const keys = $$('.col-picker input:checked', modal).map(i => i.value);
+          CRM.prefs.columns = keys;
+          localStorage.setItem('crm_cols', JSON.stringify(keys));
+          modal.remove();
+          loadLeads();
+        } }, 'Save default view')
+      )
+    )
+  );
+  document.body.appendChild(modal);
+}
+
+/* --- Lead modal --- */
+async function openLeadModal(id) {
+  const { statuses, sources, products, users, customFields } = CRM.cache;
+  // Lazy-load the admin-managed tag library; cached for the session.
+  if (!CRM.cache.tagLibrary) {
+    try { CRM.cache.tagLibrary = await api('api_tags_list'); } catch (_) { CRM.cache.tagLibrary = []; }
+  }
+  const tagLibrary = CRM.cache.tagLibrary || [];
+  const isAdmin = CRM.user.role === 'admin';
+  let lead = { name: '', phone: '', email: '', whatsapp: '', source: '', status_id: statuses[0]?.id, assigned_to: CRM.user.id, notes: '', tags: '', next_followup_at: '', qualified: 0 };
+  let remarks = [];
+  if (id) {
+    const r = await api('api_leads_get', id);
+    lead = Object.assign(lead, r.lead || r);
+    remarks = r.remarks || [];
+  }
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  modal.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, id ? 'Edit Lead' : 'New Lead'),
+    lead.is_duplicate ? h('span', { class: 'dup-pill', onclick: () => openDuplicateHistory(id) }, 'DUPLICATE of #' + (lead.duplicate_of || '?')) : null,
+    Number(lead.qualified) === 1 ? h('span', { class: 'qual-pill ok' }, '✓ Qualified') : null,
+    h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+  ));
+
+  // Quick actions row — front-and-centre Call / personal WA / Cloud-API
+  // template / Calendly buttons so reps don't have to hunt for them in
+  // the leads table. Only shows on existing leads with a phone number.
+  if (id && lead.phone) {
+    const _digits = String(lead.phone || '').replace(/\D/g, '');
+    const _intl = _digits.length === 10 && /^[6-9]/.test(_digits) ? '91' + _digits : _digits;
+    body.appendChild(h('div', { class: 'card', style: { padding: '.6rem .8rem', margin: '0 0 .75rem', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center' } },
+      h('span', { class: 'muted', style: { fontSize: '.78rem', marginRight: '.25rem' } }, 'Quick actions:'),
+      _digits ? h('button', { type: 'button', class: 'btn sm btn-call', onclick: () => callLead(lead) }, '📞 Call') : null,
+      _digits ? h('button', {
+        type: 'button', class: 'btn sm',
+        onclick: () => openPersonalWaPicker(lead),
+        title: 'Pick a template — opens WhatsApp from MY number with text pre-filled'
+      }, '💬 My WhatsApp') : null,
+      _digits ? h('button', { type: 'button', class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(lead) }, '🟢 WA Template') : null,
+      _digits ? h('button', { type: 'button', class: 'btn sm', onclick: () => sendCalendlyLink(lead) }, '📅 Send Calendly') : null,
+      lead.email ? h('a', { class: 'btn sm', href: 'mailto:' + lead.email }, '✉ Email') : null
+    ));
+  }
+
+  const form = h('form', { id: 'lead-form', class: 'form-grid' });
+  form.append(
+    field('name', 'Name *', lead.name, { required: true }),
+    field('phone', 'Phone *', lead.phone, { required: true }),
+    field('whatsapp', 'WhatsApp', lead.whatsapp || lead.phone),
+    field('email', 'Email', lead.email, { type: 'email' }),
+    selectField('source', 'Source', lead.source, sources.map(s => s.name)),
+    selectField('product_id', 'Product', lead.product_id, [{ value: '', label: '—' }, ...products.map(p => ({ value: p.id, label: p.name }))]),
+    selectField('status_id', 'Status', lead.status_id, statuses.map(s => ({ value: s.id, label: s.name })), { id: 'lead-status' }),
+    selectField('assigned_to', 'Assigned To', lead.assigned_to, users.map(u => ({ value: u.id, label: u.name }))),
+    tagsInput(lead.tags, tagLibrary, isAdmin),
+    field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local', id: 'lead-fu' }),
+    field('city', 'City', lead.city),
+    qualifiedToggle(lead),
+    // Inventory matching inputs — used by api_inventory_match. Reps fill
+    // these on the lead form so the "Matching inventory" panel below can
+    // suggest items the prospect's actually likely to buy.
+    field('budget_max', 'Budget (max ₹)', lead.budget_max, { type: 'number', min: 0, step: 1 }),
+    field('requirement_type', 'Requirement type (e.g. 2BHK, Plot, Premium plan)', lead.requirement_type),
+    field('requirement_notes', 'Requirement notes', lead.requirement_notes, { type: 'textarea', full: true }),
+    field('notes', 'Notes', lead.notes, { type: 'textarea', full: true })
+  );
+
+  // Hide any custom field that collides with a hardcoded built-in field key —
+  // otherwise the user sees Budget / Requirement type / Requirement notes
+  // twice (once as the inventory-matching inputs above, once as the custom
+  // field they originally created in Admin). The hardcoded version wins
+  // because it's what api_inventory_match reads from.
+  const RESERVED_FIELD_KEYS = new Set([
+    'budget_max', 'requirement_type', 'requirement_notes',
+    'name', 'phone', 'email', 'city', 'notes', 'tags',
+    'status_id', 'assigned_to', 'next_followup_at', 'qualified',
+    'source_id', 'product_id'
+  ]);
+  (customFields || []).forEach(cf => {
+    if (RESERVED_FIELD_KEYS.has(String(cf.key || '').toLowerCase())) return;
+    const extra = lead.extra || {};
+    form.appendChild(customFieldInput(cf, extra[cf.key]));
+  });
+
+  body.appendChild(form);
+
+  // Customer / campaign-supplied fields are read-only for non-admins on
+  // existing leads. Reps can update status/notes/follow-up/etc. but cannot
+  // overwrite what the customer typed in the form, the source, the GCLID,
+  // or the UTMs. Admin can still change these for legitimate corrections.
+  if (id && !isAdmin) {
+    const LOCKED = ['name', 'phone', 'whatsapp', 'email', 'source'];
+    LOCKED.forEach(name => {
+      const el = form.querySelector(`[name="${name}"]`);
+      if (!el) return;
+      el.readOnly = true;
+      el.disabled = (el.tagName === 'SELECT'); // <select> needs disabled, not readonly
+      el.title = 'Locked — set by the campaign / customer. Only admin can edit.';
+      el.classList.add('lead-locked');
+      // Append a lock badge to the field's label so users see immediately
+      // why they can't type.
+      const label = el.closest('.f-row')?.querySelector('label')
+                 || el.parentElement?.querySelector('label');
+      if (label && !label.querySelector('.locked-badge')) {
+        const badge = h('span', { class: 'locked-badge', title: 'Set by campaign — only admin can edit' }, ' 🔒');
+        label.appendChild(badge);
+      }
+    });
+  }
+
+  if (id) body.appendChild(projectStageBlock(id, lead));
+  if (id) body.appendChild(matchingInventoryBlock(id));
+  if (id) body.appendChild(actionTimelineBlock(id));
+  if (id) body.appendChild(remarksBlock(remarks, id));
+  if (id) body.appendChild(recordingsBlock(id));
+  // Action row — Cancel / Save / [Duplicate & reassign for managers+]
+  const actionsRow = h('div', { class: 'actions' });
+  actionsRow.appendChild(h('button', { type: 'button', class: 'btn', onclick: () => modal.remove() }, 'Cancel'));
+  if (id && ['admin', 'manager', 'team_leader'].includes(CRM.user.role)) {
+    actionsRow.appendChild(h('button', { type: 'button', class: 'btn', onclick: () => openDuplicateAndReassignModal(id, lead, () => { modal.remove(); loadLeads && loadLeads(); }) }, '📋 Duplicate & reassign'));
+  }
+  actionsRow.appendChild(h('button', { type: 'submit', form: 'lead-form', class: 'btn primary' }, id ? 'Save changes' : 'Create lead'));
+  body.appendChild(actionsRow);
+  document.body.appendChild(modal);
+
+  // Status → Follow-up enforcement: when the user picks a status whose
+  // name is "Follow Up", they MUST also pick a date+time. The submit
+  // handler validates this and blocks save with a clear message.
+  function selectedStatusName() {
+    const sel = form.querySelector('[name="status_id"]');
+    if (!sel) return '';
+    const opt = sel.options[sel.selectedIndex];
+    return (opt ? opt.textContent : '').trim().toLowerCase();
+  }
+
+  // When the rep flips status to a "dead-end" one (Not Pick, Not Interested,
+  // Junk, Does Not Exist, Broker) we strip the HTML5 `required` attribute
+  // from custom fields so they can save the lead without filling capital
+  // range / risk tolerance / etc. JS validation below honours the same rule.
+  function syncRequiredFromStatus() {
+    const skip = _statusSkipsRequired(selectedStatusName());
+    form.querySelectorAll('[data-cf-required="1"]').forEach(el => {
+      if (skip) el.removeAttribute('required');
+      else      el.setAttribute('required', '');
+    });
+  }
+  const _statusSel = form.querySelector('[name="status_id"]');
+  if (_statusSel) _statusSel.addEventListener('change', syncRequiredFromStatus);
+  syncRequiredFromStatus();
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+
+    // Status = "Follow Up" requires next_followup_at — both date AND time.
+    const statusName = selectedStatusName();
+    const fuVal = form.querySelector('[name="next_followup_at"]')?.value || '';
+    if (/follow\s*up/i.test(statusName) && !fuVal) {
+      toast('Status "Follow Up" requires a next follow-up date and time', 'err');
+      form.querySelector('[name="next_followup_at"]')?.focus();
+      return;
+    }
+
+    // Required custom fields — enforce here in addition to HTML5 `required`.
+    // Admin is exempt: they often need to update a lead in flight (e.g.
+    // change status, add a note) without re-typing every required field
+    // that the rep should have filled. Other roles still get the validation.
+    // Also exempt: when the chosen status marks the lead as a dead-end
+    // (Not Pick, Not Interested, Junk, Does Not Exist, Broker) — pointless
+    // to demand custom-field detail for leads that aren't progressing.
+    const _skipRequired = _statusSkipsRequired(statusName);
+    if (CRM.user.role !== 'admin' && !_skipRequired) {
+      for (const cf of (customFields || [])) {
+        if (!cf.is_required) continue;
+        const key = 'cf_' + cf.key;
+        let val;
+        if (cf.field_type === 'multiselect') val = (new FormData(form)).getAll(key).join(',');
+        else val = form.querySelector(`[name="${key}"]`)?.value || '';
+        if (!String(val).trim()) {
+          toast(`"${cf.label}" is required`, 'err');
+          const el = form.querySelector(`[name="${key}"]`);
+          if (el && el.focus) el.focus();
+          return;
+        }
+      }
+    }
+
+    const fd = new FormData(form);
+    const extra = {};
+    (customFields || []).forEach(cf => {
+      const key = 'cf_' + cf.key;
+      if (cf.field_type === 'multiselect') extra[cf.key] = fd.getAll(key).join(',');
+      else extra[cf.key] = fd.get(key) || '';
+    });
+    // Tags: if non-admin, the tags field is a multi-select — collect with getAll.
+    const tagsValue = isAdmin
+      ? (fd.get('tags') || '')
+      : fd.getAll('tags[]').join(',');
+    const payload = {
+      name: fd.get('name'), phone: fd.get('phone'), email: fd.get('email'),
+      whatsapp: fd.get('whatsapp'), source: fd.get('source'),
+      product_id: Number(fd.get('product_id')) || null,
+      status_id: Number(fd.get('status_id')) || null,
+      assigned_to: Number(fd.get('assigned_to')) || null,
+      tags: tagsValue,
+      next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
+      city: fd.get('city'), notes: fd.get('notes'),
+      qualified: form.querySelector('[name="qualified"]')?.checked ? 1 : 0,
+      // Inventory matching inputs
+      budget_max:        Number(fd.get('budget_max')) || null,
+      requirement_type:  fd.get('requirement_type') || '',
+      requirement_notes: fd.get('requirement_notes') || '',
+      extra
+    };
+    try {
+      if (id) await api('api_leads_update', id, payload);
+      else    await api('api_leads_create', payload);
+      toast(id ? 'Saved' : 'Created');
+      modal.remove();
+      loadLeads();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+}
+
+/**
+ * Build the Tags form row.
+ * - Admin → freeform comma-separated input AND can add new tags from this UI
+ *   (still suggested values dropdown via datalist).
+ * - Non-admin → multi-select of existing tags only. Cannot type new ones.
+ */
+function tagsInput(currentTags, tagLibrary, isAdmin) {
+  const current = String(currentTags || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (isAdmin) {
+    // Free-form input plus a datalist of known tags for autocomplete.
+    const dlId = 'tag-suggest-' + Math.random().toString(36).slice(2, 8);
+    const inp = h('input', { name: 'tags', value: current.join(', '), list: dlId, placeholder: 'comma separated' });
+    const dl  = h('datalist', { id: dlId }, ...tagLibrary.map(t => h('option', { value: t.name })));
+    return h('div', { class: 'f-row' }, h('label', {}, 'Tags'), h('div', {}, inp, dl,
+      h('div', { class: 'muted', style: { fontSize: '.75rem', marginTop: '.25rem' } },
+        'Manage the master tag list under Admin → Tags.'))
+    );
+  }
+  // Non-admin: multi-select. Cannot type new tags.
+  if (tagLibrary.length === 0) {
+    return h('div', { class: 'f-row' }, h('label', {}, 'Tags'),
+      h('div', { class: 'muted' }, 'No tags available. Ask an admin to add them under Admin → Tags.'));
+  }
+  const grid = h('div', { class: 'cf-multi-grid' },
+    ...tagLibrary.map(t => h('label', {},
+      h('input', { type: 'checkbox', name: 'tags[]', value: t.name, checked: current.includes(t.name) ? 'checked' : null }),
+      ' ', h('span', { class: 'tag', style: { background: t.color, color: '#fff' } }, t.name)
+    ))
+  );
+  return h('div', { class: 'f-row full' }, h('label', {}, 'Tags'), grid);
+}
+
+function qualifiedToggle(lead) {
+  const wrap = h('div', { class: 'f-row' },
+    h('label', {}, 'Qualified lead?'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'qualified', checked: Number(lead.qualified) === 1 ? 'checked' : null }),
+      h('span', {}, ' Mark as qualified (passes minimum criteria, separate from status)')
+    )
+  );
+  return wrap;
+}
+
+/**
+ * Pop up a small modal with a user picker and a confirm button. On confirm,
+ * call api_leads_duplicateAndReassign. Used from the lead modal.
+ */
+/**
+ * "Next Follow Up" modal — replaces the old "Mark done" button.
+ *
+ * Forces the user to commit to a NEXT step instead of just dismissing the
+ * reminder. They pick a new date+time and write a quick remark; we then:
+ *  1. Insert a remark on the lead (so it's visible in history)
+ *  2. Update the lead's next_followup_at (which auto-syncs the followup row)
+ *  3. Close this modal & refresh
+ *
+ * If the user enters a remark but leaves date blank, we treat it as a Done +
+ * remark (close current followup, no next one).
+ */
+function openNextFollowupModal(row, onSuccess) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  // Default next due = tomorrow at 10am local
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  tomorrow.setHours(10, 0, 0, 0);
+  const defaultDt = isoToLocalDtInput(tomorrow.toISOString());
+
+  // Status picker — lets the rep change the lead's status while resolving the
+  // follow-up. For "dead-end" statuses (Not Picked, Not Interested, Junk,
+  // Does Not Exist, Broker) we drop the next-follow-up requirement because
+  // the lead isn't progressing, so a fresh follow-up date is pointless.
+  const statuses = (CRM.cache.statuses || []);
+  const statusSel = h('select', { class: 'status-picker' },
+    h('option', { value: '' }, '— Keep current status —'),
+    ...statuses.map(s => h('option', { value: s.id }, s.name))
+  );
+
+  const dtInput  = h('input', { type: 'datetime-local', value: defaultDt });
+  const dtLabel  = h('label', {}, 'Next follow-up date & time *');
+  const dtHint   = h('p', { class: 'muted', style: { fontSize: '.78rem', margin: '.25rem 0 0' } },
+    'When should you contact this lead next?');
+
+  const remarkInput = h('textarea', { rows: 3, placeholder: 'What happened on this call / contact attempt?' });
+
+  // Toggle the required indicator + hint based on the selected status.
+  function syncFollowupRequired() {
+    const opt = statusSel.options[statusSel.selectedIndex];
+    const name = (opt ? opt.textContent : '').trim();
+    const skip = _statusSkipsRequired(name);
+    dtLabel.textContent = skip ? 'Next follow-up date & time (optional)' : 'Next follow-up date & time *';
+    dtHint.textContent  = skip
+      ? 'Optional — this status closes the lead, no further follow-up needed.'
+      : 'When should you contact this lead next?';
+  }
+  statusSel.addEventListener('change', syncFollowupRequired);
+  syncFollowupRequired();
+
+  m.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '⏰ Next follow-up'),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { marginTop: 0 } },
+      `For lead: ${row.lead_name || '—'}${row.lead_phone ? ' · ' + row.lead_phone : ''}`),
+    h('div', { class: 'f-row full' }, h('label', {}, 'Update status'), statusSel),
+    h('div', { class: 'f-row full' }, h('label', {}, 'Remark *'), remarkInput),
+    h('div', { class: 'f-row full' }, dtLabel, dtInput, dtHint),
+    h('div', { class: 'actions', style: { marginTop: '1rem' } },
+      h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const remark = String(remarkInput.value || '').trim();
+        if (!remark) { toast('Remark is required', 'err'); remarkInput.focus(); return; }
+
+        const newStatusId = statusSel.value ? Number(statusSel.value) : null;
+        const newStatusOpt = newStatusId ? statusSel.options[statusSel.selectedIndex] : null;
+        const newStatusName = newStatusOpt ? newStatusOpt.textContent.trim() : '';
+        const skipFollowup = newStatusName ? _statusSkipsRequired(newStatusName) : false;
+        const nextIso = localDtInputToIso(dtInput.value);
+
+        // Validate: for non-dead-end statuses, require a next-follow-up date.
+        // Dead-end statuses (Not Picked, Not Interested, Junk, Does Not Exist,
+        // Broker) skip this gate so the rep can close the lead in one click.
+        if (!skipFollowup && !nextIso) {
+          toast('Pick a next follow-up date & time, or set a closing status (Junk / Not Interested / etc.)', 'err');
+          dtInput.focus();
+          return;
+        }
+
+        try {
+          // 1. Update the lead's status if a new one was picked
+          if (newStatusId) {
+            try {
+              await api('api_leads_update', row.lead_id, { status_id: newStatusId });
+            } catch (e) {
+              toast('Status update failed: ' + e.message, 'err');
+              return;
+            }
+          }
+          // 2. Add the remark and (optionally) set the next followup
+          await api('api_leads_addRemark', row.lead_id, {
+            remark,
+            next_followup_at: nextIso || null
+          });
+          // 3. Close the current open followup so it leaves Overdue / Due today
+          if (row.id) {
+            try { await api('api_followup_done', row.id); } catch (_) {}
+          }
+          toast(skipFollowup
+            ? 'Lead updated · status closed'
+            : (nextIso ? 'Saved & next follow-up scheduled' : 'Saved'));
+          m.remove();
+          if (typeof onSuccess === 'function') onSuccess();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(m);
+}
+
+function openDuplicateAndReassignModal(leadId, lead, onSuccess) {
+  const { users } = CRM.cache;
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const sel = h('select', {},
+    h('option', { value: '' }, '— pick a sales user —'),
+    ...users.filter(u => Number(u.id) !== Number(lead.assigned_to)).map(u =>
+      h('option', { value: u.id }, `${u.name} (${u.role})`))
+  );
+  m.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '📋 Duplicate & reassign'),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    ),
+    h('p', { class: 'muted' },
+      `A copy of "${lead.name || ('Lead #' + leadId)}" will be created with status "New" and assigned to the user you pick. The original lead stays as-is.`),
+    h('label', {}, 'New assignee'),
+    sel,
+    h('div', { class: 'actions', style: { marginTop: '1rem' } },
+      h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const newId = sel.value;
+        if (!newId) { toast('Pick a user first', 'err'); return; }
+        try {
+          const r = await api('api_leads_duplicateAndReassign', leadId, Number(newId));
+          toast('Duplicated as lead #' + r.id, 'ok');
+          m.remove();
+          if (typeof onSuccess === 'function') onSuccess();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Duplicate & reassign')
+    )
+  ));
+  document.body.appendChild(m);
+}
+
+function field(name, label, value, opts = {}) {
+  const tag = opts.type === 'textarea' ? 'textarea' : 'input';
+  const attrs = Object.assign({ name, value: value ?? '' },
+    opts.type && opts.type !== 'textarea' ? { type: opts.type } : {},
+    opts.required ? { required: true } : {},
+    opts.id ? { id: opts.id } : {});
+  const el = h(tag, attrs);
+  if (opts.type === 'textarea') el.textContent = value ?? '';
+  return h('div', { class: opts.full ? 'f-row full' : 'f-row' }, h('label', {}, label), el);
+}
+function selectField(name, label, value, options, opts = {}) {
+  const selAttrs = { name };
+  if (opts.id) selAttrs.id = opts.id;
+  const sel = h('select', selAttrs,
+    ...options.map(o => {
+      const v = typeof o === 'object' ? o.value : o;
+      const t = typeof o === 'object' ? o.label : o;
+      return h('option', { value: v, selected: String(value) === String(v) ? 'selected' : null }, t);
+    })
+  );
+  return h('div', { class: opts.full ? 'f-row full' : 'f-row' }, h('label', {}, label), sel);
+}
+function selectOpts(id, items, value) {
+  return h('select', { id },
+    ...items.map(i => h('option', { value: i.id, selected: String(value) === String(i.id) ? 'selected' : null }, i.name))
+  );
+}
+function parseFieldOptions(raw) {
+  // Lenient parser: accept pipe-, comma-, or newline-separated lists.
+  // Backwards compatible with existing pipe-separated data.
+  return String(raw || '').split(/[|,\n]/).map(s => s.trim()).filter(Boolean);
+}
+// Statuses that mark a lead as "dead-end" and DON'T need the rep to fill
+// the full mandatory custom-field set (no point asking for capital range,
+// risk tolerance, etc. when the lead never picked up or said no).
+// Matched case-insensitively against status name.
+const SKIP_REQUIRED_STATUSES = [
+  'not pick', 'not picked', 'not picking',
+  'not interested',
+  'junk', 'spam',
+  'does not exist', 'doesnt exist', "doesn't exist", 'invalid',
+  'broker'
+];
+function _statusSkipsRequired(statusName) {
+  const n = String(statusName || '').toLowerCase().trim();
+  return SKIP_REQUIRED_STATUSES.some(s => n.includes(s));
+}
+
+function customFieldInput(cf, val) {
+  const name = 'cf_' + cf.key;
+  const opts = parseFieldOptions(cf.options);
+  // Required attribute on the underlying input — backed up by JS validation
+  // in the lead-modal submit handler so multi-select / checkbox cases also
+  // work. Admins are exempt from required-field enforcement (they often
+  // need to update status / notes without re-typing every required field
+  // the rep should have filled). Skip the HTML5 `required` attribute for
+  // admins so the browser-level "Please select an item in the list"
+  // popup doesn't fire either.
+  // Required fields are also tagged with data-cf-required="1" so the lead
+  // form can dynamically toggle the `required` attribute when the user
+  // picks a "dead-end" status (Not Pick / Not Interested / Junk / etc.).
+  const reqAttr = (cf.is_required && CRM.user?.role !== 'admin') ? { required: true } : {};
+  if (cf.is_required && CRM.user?.role !== 'admin') reqAttr['data-cf-required'] = '1';
+  let input;
+  if (cf.field_type === 'textarea') input = h('textarea', Object.assign({ name }, reqAttr), val || '');
+  else if (cf.field_type === 'select') input = h('select', Object.assign({ name }, reqAttr),
+    h('option', { value: '' }, '—'),
+    ...opts.map(o => h('option', { value: o, selected: val === o ? 'selected' : null }, o)));
+  else if (cf.field_type === 'multiselect') {
+    // Render as a checkbox grid instead of a native <select multiple>.
+    // Native multi-select requires Ctrl/Cmd+click and is unusable on touch.
+    // FormData.getAll('cf_<key>') still returns the same array of checked values,
+    // so the existing save logic at line ~1549 works unchanged.
+    const selectedSet = new Set(String(val || '').split(',').map(s => s.trim()).filter(Boolean));
+    if (opts.length === 0) {
+      input = h('div', { class: 'cf-opts-help' },
+        '⚠️ No options defined yet — add some in Admin → Custom fields.');
+    } else {
+      input = h('div', { class: 'cf-multi-grid' },
+        ...opts.map(o => h('label', {},
+          h('input', { type: 'checkbox', name, value: o, checked: selectedSet.has(o) ? 'checked' : null }),
+          ' ', o
+        ))
+      );
+    }
+  }
+  else if (cf.field_type === 'checkbox') input = h('input', { type: 'checkbox', name, checked: val ? 'checked' : null, value: '1' });
+  else input = h('input', Object.assign({ name, value: val || '', type: cf.field_type === 'number' ? 'number' : cf.field_type === 'date' ? 'date' : 'text' }, reqAttr));
+  // Long-form fields span both columns in the grid for breathing room.
+  const rowClass = (cf.field_type === 'multiselect' || cf.field_type === 'textarea') ? 'f-row full' : 'f-row';
+  return h('div', { class: rowClass }, h('label', {}, cf.label + (cf.is_required ? ' *' : '')), input);
+}
+
+/**
+ * Action timeline block — fetches lead_actions for this lead and shows
+ * a vertical timeline: Created → 1st action → 2nd action → … with the
+ * minutes elapsed since lead-create next to each step.
+ *
+ * Always renders a placeholder while loading; on failure, hides itself
+ * silently so the modal remains usable on older deploys.
+ */
+/**
+ * Post-sale project stage tracker block. Shown on every lead detail —
+ * if no stages defined yet, shows a hint pointing admin to Settings.
+ * If stages exist and the lead has no current stage, shows a "Start
+ * delivery tracker" button that sets the first stage. If the lead is
+ * mid-flow, shows a horizontal progress strip with the current step
+ * highlighted, and an "Advance to next" button.
+ */
+function projectStageBlock(leadId, lead) {
+  const wrap = h('div', { class: 'card', style: { marginTop: '1rem', padding: '1rem' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0, flex: 1 } }, '🚚 Post-sale delivery'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Stage tracker for what happens after the sale')
+    ),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  (async () => {
+    try {
+      const stages = await api('api_projectStages_list');
+      const body = wrap.lastChild;
+      if (!stages.length) {
+        body.replaceWith(h('p', { class: 'muted', style: { margin: 0 } },
+          'No stages defined yet. Admin can set them up under Settings → 🚚 Project stages.'));
+        return;
+      }
+      const currentId = Number(lead.project_stage_id) || 0;
+      const idx = stages.findIndex(s => Number(s.id) === currentId);
+      const isLast = idx === stages.length - 1;
+      // Progress strip
+      const strip = h('div', {
+        style: { display: 'flex', flexWrap: 'wrap', gap: '.35rem', marginBottom: '.75rem' }
+      });
+      stages.forEach((s, i) => {
+        const isPast = idx > i;
+        const isCurrent = idx === i;
+        strip.appendChild(h('span', {
+          style: {
+            padding: '.3rem .6rem', borderRadius: '999px', fontSize: '.75rem', fontWeight: 600,
+            background: isCurrent ? '#3b82f6' : (isPast ? '#10b981' : '#e5e7eb'),
+            color: isCurrent || isPast ? '#fff' : '#6b7280'
+          },
+          title: s.description || ''
+        }, (isPast ? '✓ ' : (isCurrent ? '▶ ' : '')) + s.name));
+      });
+      const advanceBtn = (idx < stages.length - 1) ? h('button', {
+        class: 'btn primary', onclick: async () => {
+          const notes = prompt('Optional notes for this transition (e.g. cheque #, doc reference):', '') || '';
+          try {
+            const r = await api('api_projectStages_advanceLead', leadId, notes);
+            toast('Advanced to: ' + r.stage_name);
+            // Re-render the modal so the new stage shows. Easiest path: close and reopen.
+            const modal = document.querySelector('.modal-backdrop');
+            if (modal) modal.remove();
+            openLeadModal(leadId);
+          } catch (e) { toast(e.message, 'err'); }
+        }
+      }, idx < 0 ? '▶ Start delivery tracker' : '➡ Advance to next stage') : null;
+      const setBtn = h('button', {
+        class: 'btn', onclick: () => {
+          const choices = stages.map(s => '#' + s.sort_order + ' — ' + s.name).join('\n');
+          const ans = prompt('Jump to stage by typing its number (#):\n\n' + choices, '');
+          if (!ans) return;
+          const num = Number(ans.replace(/[^\d]/g, ''));
+          const target = stages.find(s => Number(s.sort_order) === num);
+          if (!target) return toast('Unknown stage number', 'err');
+          const notes = prompt('Optional notes:', '') || '';
+          api('api_projectStages_setForLead', leadId, target.id, notes)
+            .then(r => {
+              toast('Set to: ' + r.stage_name);
+              const modal = document.querySelector('.modal-backdrop');
+              if (modal) modal.remove();
+              openLeadModal(leadId);
+            })
+            .catch(e => toast(e.message, 'err'));
+        }
+      }, '↪ Jump to specific stage');
+      const summary = h('div', { class: 'muted', style: { fontSize: '.85rem', marginBottom: '.6rem' } },
+        idx < 0 ? 'Tracker not started yet — click below to enter the first stage.'
+        : isLast ? '✅ On the final stage (' + stages[idx].name + ').'
+        : '▶ Currently at: ' + stages[idx].name +
+          (lead.project_stage_started_at ? ' · since ' + fmtDate(lead.project_stage_started_at, 'relative') : '')
+      );
+      const actionsRow = h('div', { class: 'actions', style: { gap: '.5rem' } });
+      if (advanceBtn) actionsRow.appendChild(advanceBtn);
+      actionsRow.appendChild(setBtn);
+      const newBody = h('div', {}, strip, summary, actionsRow);
+      body.replaceWith(newBody);
+    } catch (e) {
+      wrap.lastChild.replaceWith(h('div', { class: 'error-box' }, e.message));
+    }
+  })();
+  return wrap;
+}
+
+/**
+ * Inventory matches block — fetches api_inventory_match(leadId) and renders
+ * up to 8 ranked suggestions inline on the lead detail. Each card shows
+ * the item, price, type and a "Recommend" button that adds a remark
+ * "📦 Recommended <name>" so the team sees what was suggested.
+ *
+ * The match algorithm filters by status=available, lead.budget_max
+ * (with 10% headroom) and lead.requirement_type. Blank inputs = no
+ * filter on that axis.
+ */
+function matchingInventoryBlock(leadId) {
+  const wrap = h('div', { class: 'card', style: { marginTop: '1rem', padding: '1rem' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0, flex: 1 } }, '📦 Matching inventory'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Auto-suggested based on budget + requirement type')
+    ),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  (async () => {
+    try {
+      const matches = await api('api_inventory_match', leadId);
+      const body = wrap.lastChild;
+      if (!matches.length) {
+        body.replaceWith(h('p', { class: 'muted', style: { margin: 0 } },
+          'No matching inventory yet. Add items under 📦 Inventory or set a budget / requirement type on this lead.'));
+        return;
+      }
+      const grid = h('div', { class: 'cards', style: { gap: '.5rem', marginTop: '.25rem' } });
+      matches.forEach(m => {
+        grid.appendChild(h('div', {
+          class: 'card', style: { padding: '.75rem', border: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: '.35rem' }
+        },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', justifyContent: 'space-between' } },
+            h('strong', {}, m.name),
+            h('span', { class: 'tag', style: { background: '#dcfce7', color: '#166534' } }, '★ ' + m.score)
+          ),
+          h('div', { style: { fontSize: '.95rem' } }, '₹ ' + Number(m.price).toLocaleString('en-IN')),
+          m.item_type ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '📁 ' + m.item_type) : null,
+          m.location ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '📍 ' + m.location) : null,
+          h('button', { class: 'btn sm primary', onclick: async () => {
+            try {
+              await api('api_leads_addRemark', leadId, {
+                remark: '📦 Recommended ' + m.name +
+                        ' · ₹' + Number(m.price).toLocaleString('en-IN') +
+                        (m.item_type ? ' · ' + m.item_type : '') +
+                        (m.location ? ' · ' + m.location : '')
+              });
+              toast('Recommendation logged on lead');
+            } catch (e) { toast(e.message, 'err'); }
+          } }, '+ Recommend')
+        ));
+      });
+      body.replaceWith(grid);
+    } catch (e) {
+      wrap.lastChild.replaceWith(h('div', { class: 'error-box' }, e.message));
+    }
+  })();
+  return wrap;
+}
+
+function actionTimelineBlock(leadId) {
+  const wrap = h('div', { class: 'timeline-block' },
+    h('div', { class: 'timeline-head' },
+      h('h4', {}, '📋 Activity timeline'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'Every action on this lead — newest first')
+    ),
+    h('div', { class: 'muted' }, 'Loading…')
+  );
+  api('api_lead_actions', leadId).then(rows => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div', { class: 'timeline-head' },
+      h('h4', {}, '📋 Activity timeline'),
+      h('span', { class: 'muted', style: { fontSize: '.78rem' } }, (rows?.length || 0) + ' events · newest first')
+    ));
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('p', { class: 'muted' }, 'No activity logged yet for this lead.'));
+      return;
+    }
+    const created = rows[0]?.created_at;
+    const fmtAge = (when) => {
+      if (!created || !when) return '';
+      const diffMs = new Date(when).getTime() - new Date(created).getTime();
+      if (diffMs < 60_000) return Math.round(diffMs / 1000) + ' sec';
+      if (diffMs < 3_600_000) return Math.round(diffMs / 60_000) + ' min';
+      if (diffMs < 86_400_000) return (diffMs / 3_600_000).toFixed(1) + ' hr';
+      return (diffMs / 86_400_000).toFixed(1) + ' days';
+    };
+    // Visual config per action type — icon + label + chip color so the
+    // timeline reads at a glance.
+    const cfg = {
+      created:        { icon: '🎯', label: 'Lead received',        color: '#3b82f6' },
+      status_change:  { icon: '🔄', label: 'Status changed',       color: '#8b5cf6' },
+      remark:         { icon: '💬', label: 'Remark added',         color: '#06b6d4' },
+      note_updated:   { icon: '📝', label: 'Notes updated',        color: '#06b6d4' },
+      tags_updated:   { icon: '🏷️', label: 'Tags updated',         color: '#06b6d4' },
+      followup_set:   { icon: '⏰', label: 'Follow-up scheduled',  color: '#f59e0b' },
+      assigned:       { icon: '👤', label: 'Reassigned',           color: '#64748b' },
+      call:           { icon: '📞', label: 'Call',                 color: '#ec4899' },
+      whatsapp_out:   { icon: '📤', label: 'WhatsApp sent',        color: '#25d366' },
+      whatsapp_in:    { icon: '📥', label: 'WhatsApp received',    color: '#10b981' },
+      qualified:      { icon: '⭐', label: 'Marked qualified',     color: '#10b981' },
+      unqualified:    { icon: '✕',  label: 'Unmarked qualified',   color: '#ef4444' },
+      duplicated:     { icon: '📋', label: 'Duplicated',           color: '#64748b' },
+      email_out:      { icon: '📧', label: 'Email sent',           color: '#3b82f6' }
+    };
+
+    // Render in REVERSE chronological order (newest first) — easier to skim
+    // when checking "what was the last thing that happened?"
+    const sorted = [...rows].reverse();
+    const ul = h('ul', { class: 'timeline timeline-rich' });
+    sorted.forEach(r => {
+      const c = cfg[r.action_type] || { icon: '•', label: r.action_type, color: '#94a3b8' };
+      const m = r.meta || {};
+      // Compose a sub-line based on action type
+      let sub = null;
+      if (r.action_type === 'status_change') {
+        sub = m.to_status_id || m.from_status_id ? ('Status #' + (m.from_status_id || '?') + ' → #' + (m.to_status_id || '?')) : null;
+      } else if (r.action_type === 'remark') {
+        sub = m.remark || null;
+      } else if (r.action_type === 'followup_set') {
+        sub = m.due_at ? ('Due ' + fmtDate(m.due_at)) : null;
+      } else if (r.action_type === 'assigned') {
+        sub = (m.from && m.to) ? ('User #' + m.from + ' → #' + m.to) : null;
+      } else if (r.action_type === 'whatsapp_out') {
+        sub = (m.template ? '[Template: ' + m.template + '] ' : '') + (m.preview || '');
+        if (m.error) sub += ' ⚠ ' + m.error;
+      } else if (r.action_type === 'whatsapp_in') {
+        sub = m.preview || ('[' + (m.type || 'message') + ']');
+      } else if (r.action_type === 'note_updated') {
+        sub = m.preview || null;
+      } else if (r.action_type === 'tags_updated') {
+        sub = m.tags || null;
+      }
+      ul.appendChild(h('li', {},
+        h('span', { class: 'tl-dot tl-dot-rich', style: { background: c.color } }, c.icon),
+        h('div', { class: 'tl-body' },
+          h('div', { class: 'tl-title' },
+            h('b', {}, c.label),
+            r.user_name ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' by ' + r.user_name) : null
+          ),
+          sub ? h('div', { class: 'tl-sub muted', style: { fontSize: '.85rem', marginTop: '.15rem' } }, String(sub).slice(0, 240) + (String(sub).length > 240 ? '…' : '')) : null,
+          h('div', { class: 'tl-meta muted' },
+            fmtDate(r.created_at, 'relative'),
+            r.action_type !== 'created' ? ' · +' + fmtAge(r.created_at) + ' since received' : ''
+          )
+        )
+      ));
+    });
+    wrap.appendChild(ul);
+  }).catch(() => { wrap.style.display = 'none'; });
+  return wrap;
+}
+
+function recordingsBlock(leadId) {
+  const wrap = h('div', { class: 'recordings-block' }, h('h4', {}, '📼 Call recordings'));
+  const list = h('ul', { class: 'rec-list' }, h('li', { class: 'muted' }, 'Loading…'));
+  wrap.appendChild(list);
+  api('api_leads_recordings', leadId).then(rows => {
+    list.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      list.appendChild(h('li', { class: 'muted' }, 'No recordings yet.'));
+      return;
+    }
+    rows.forEach(r => list.appendChild(renderRecordingItem(r)));
+  }).catch(e => {
+    list.innerHTML = '';
+    list.appendChild(h('li', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function renderRecordingItem(r) {
+  const dur = Number(r.duration_s) || 0;
+  const mm = Math.floor(dur / 60), ss = (dur % 60).toString().padStart(2, '0');
+  const dirIcon = r.direction === 'in' ? '📲' : r.direction === 'missed' ? '⚠️' : '📞';
+  const audio = h('audio', {
+    controls: true,
+    preload: 'none',
+    src: '/api/recordings/' + r.id + '/audio?token=' + encodeURIComponent(CRM.token || '')
+  });
+  const aiBlock = h('div', { class: 'rec-ai-block' });
+  // Lazy-load the AI summary on first paint. Polls every 10s while pending.
+  loadRecordingAI(r.id, aiBlock);
+  return h('li', { class: 'rec-item' },
+    h('div', { class: 'rec-meta' },
+      h('span', { class: 'rec-dir' }, dirIcon),
+      h('b', {}, r.lead_name || r.phone || '—'),
+      h('span', { class: 'muted' }, ' · ' + fmtDate(r.created_at, 'relative') + ' · ' + mm + ':' + ss)
+    ),
+    audio,
+    aiBlock
+  );
+}
+
+/**
+ * Fetch the AI summary for a recording and render it. If still pending,
+ * poll every 10s. Renders summary + action items + sentiment chip +
+ * "Apply suggested status" + "Schedule follow-up" buttons.
+ */
+/**
+ * Build a 5-star rating widget. Filled to currentRating, hover changes
+ * preview. Click to set. Shows AI-suggested rating as a faint hint star.
+ */
+function ratingStars(recId, currentRating, aiRating, onChange) {
+  const wrap = h('div', { class: 'rating-stars' });
+  const stars = [];
+  for (let i = 1; i <= 5; i++) {
+    const s = h('span', { class: 'rating-star', 'data-val': i, role: 'button', tabindex: 0,
+      title: 'Rate ' + i + (i === 1 ? ' star' : ' stars') }, '★');
+    s.onclick = async () => {
+      try {
+        await api('api_recording_rate', recId, i, '');
+        currentRating = i;
+        paint();
+        if (typeof onChange === 'function') onChange(i);
+        toast('Rated ' + i + '/5');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    s.onmouseenter = () => paintHover(i);
+    s.onmouseleave = () => paint();
+    stars.push(s);
+    wrap.appendChild(s);
+  }
+  function paint() {
+    stars.forEach((s, idx) => {
+      const v = idx + 1;
+      s.classList.toggle('filled', currentRating != null && v <= currentRating);
+      s.classList.toggle('ai-hint', currentRating == null && aiRating != null && v <= aiRating);
+    });
+  }
+  function paintHover(n) {
+    stars.forEach((s, idx) => s.classList.toggle('filled', idx < n));
+  }
+  paint();
+  if (currentRating != null) {
+    const clear = h('button', { class: 'btn xs ghost rating-clear', title: 'Clear rating', onclick: async () => {
+      try {
+        await api('api_recording_rate', recId, null, '');
+        currentRating = null;
+        paint();
+        toast('Rating cleared');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '✕');
+    wrap.appendChild(clear);
+  }
+  if (aiRating != null) {
+    const aiHint = h('span', { class: 'rating-ai-hint', title: 'AI suggested rating' },
+      currentRating == null ? '🤖 ' + aiRating + '/5' : ''
+    );
+    if (currentRating == null) wrap.appendChild(aiHint);
+  }
+  return wrap;
+}
+
+async function loadRecordingAI(recId, container, retries) {
+  retries = retries || 0;
+  try {
+    const r = await api('api_recording_aiSummary', recId);
+    if (!r || r.status === 'pending') {
+      if (retries === 0) {
+        container.innerHTML = '';
+        container.appendChild(h('div', { class: 'rating-row' },
+          h('span', { class: 'rating-label' }, 'Rate this call:'),
+          ratingStars(recId, null, null)
+        ));
+        const pending = h('div', { class: 'ai-pending' }, '🤖 AI is analysing this call…');
+        container.appendChild(pending);
+      }
+      if (retries < 18) {
+        setTimeout(() => loadRecordingAI(recId, container, retries + 1), 10000);
+      } else {
+        container.innerHTML = '';
+        container.appendChild(h('div', { class: 'rating-row' },
+          h('span', { class: 'rating-label' }, 'Rate this call:'),
+          ratingStars(recId, null, null)
+        ));
+        container.appendChild(h('div', { class: 'ai-pending muted' }, '⏳ Still processing — refresh in a minute'));
+      }
+      return;
+    }
+    if (r.status === 'failed') {
+      container.innerHTML = '';
+      // Manual rating still works even when AI failed
+      container.appendChild(h('div', { class: 'rating-row' },
+        h('span', { class: 'rating-label' }, 'Rate this call:'),
+        ratingStars(recId, r.rating, r.ai_suggested_rating)
+      ));
+      const isDisabled = /disabled by admin/i.test(r.error || '');
+      if (!isDisabled) {
+        container.appendChild(h('div', { class: 'ai-error' },
+          '⚠️ AI summary failed: ' + (r.error || 'unknown') + ' ',
+          h('button', { class: 'btn xs', onclick: () => window.retryAi(recId, null) }, 'Retry')
+        ));
+      }
+      return;
+    }
+    // r.status === 'done'
+    const sentColor = { positive: '#10b981', neutral: '#64748b', negative: '#ef4444' }[r.sentiment] || '#64748b';
+    const sentLabel = { positive: '😊 Positive', neutral: '😐 Neutral', negative: '😟 Negative' }[r.sentiment] || r.sentiment || '—';
+    container.innerHTML = '';
+    // Manual call rating row — always shown, regardless of AI status
+    container.appendChild(h('div', { class: 'rating-row' },
+      h('span', { class: 'rating-label' }, 'Rate this call:'),
+      ratingStars(recId, r.rating, r.ai_suggested_rating)
+    ));
+    container.appendChild(h('div', { class: 'ai-summary-card' },
+      h('div', { class: 'ai-header' },
+        h('span', { class: 'ai-badge' }, '🤖 AI Summary'),
+        h('span', { class: 'ai-sentiment', style: 'color:' + sentColor }, sentLabel),
+        h('button', { class: 'btn xs ghost', title: 'Re-analyse this call', onclick: () => {
+          api('api_recording_aiReprocess', recId).then(() => loadRecordingAI(recId, container, 0));
+        } }, '↻')
+      ),
+      h('div', { class: 'ai-summary-text' }, r.summary || '—'),
+      r.key_insight ? h('div', { class: 'ai-insight' }, '💡 ' + r.key_insight) : null,
+      r.action_items && r.action_items.length > 0
+        ? h('div', { class: 'ai-actions' },
+            h('div', { class: 'ai-actions-title' }, '✓ Action items'),
+            ...r.action_items.map(a => h('div', { class: 'ai-action-item' }, '• ' + a))
+          )
+        : null,
+      (r.suggested_status_id || r.next_followup_days != null)
+        ? h('div', { class: 'ai-apply-row' },
+            h('button', { class: 'btn sm primary', onclick: async () => {
+              try {
+                await api('api_recording_applySuggestion', recId, { applyStatus: true, applyFollowup: true });
+                toast('✓ Status updated + follow-up scheduled');
+                if (typeof loadLeads === 'function') loadLeads();
+              } catch (e) { toast(e.message, 'err'); }
+            } }, '✓ Apply suggestion'),
+            r.next_followup_days != null
+              ? h('span', { class: 'muted' }, '· schedule callback in ' + r.next_followup_days + ' day(s)')
+              : null
+          )
+        : null,
+      h('details', { class: 'ai-transcript' },
+        h('summary', {}, '📝 Transcript'),
+        h('pre', {}, r.transcript || 'No transcript')
+      )
+    ));
+  } catch (e) {
+    container.innerHTML = '<div class="ai-error muted">AI summary unavailable: ' + esc(e.message) + '</div>';
+  }
+}
+
+window.retryAi = function(id, btn) {
+  if (btn) btn.disabled = true;
+  api('api_recording_aiReprocess', id).then(() => {
+    const block = btn && btn.closest('.rec-ai-block');
+    if (block) loadRecordingAI(id, block, 0);
+  }).catch(e => toast(e.message, 'err'));
+};
+
+function remarksBlock(rs, leadId) {
+  const list = h('ul', { class: 'remarks-list' });
+  (rs || []).forEach(r => list.appendChild(h('li', {},
+    h('b', {}, r.user_name || '—'), ' · ', fmtDate(r.created_at, 'relative'),
+    h('br'), r.remark || ''
+  )));
+  const textarea = h('textarea', { placeholder: 'Add a remark…', rows: 2 });
+  const btn = h('button', { type: 'button', class: 'btn sm', onclick: async () => {
+    if (!textarea.value.trim()) return;
+    try {
+      await api('api_leads_addRemark', leadId, { remark: textarea.value });
+      const r = await api('api_leads_get', leadId);
+      list.innerHTML = '';
+      (r.remarks || []).forEach(x => list.appendChild(h('li', {},
+        h('b', {}, x.user_name || '—'), ' · ', fmtDate(x.created_at, 'relative'), h('br'), x.remark || ''
+      )));
+      textarea.value = '';
+      toast('Remark added');
+    } catch (e) { toast(e.message, 'err'); }
+  } }, 'Add remark');
+  return h('div', { class: 'remarks-block' },
+    h('h4', {}, 'Remarks'), list, textarea, btn
+  );
+}
+
+async function openRemarkInline(leadId) {
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('h3', {}, 'Add remark'),
+    h('textarea', { id: 'inline-rmk', rows: 3, placeholder: 'Write remark…' }),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const text = $('#inline-rmk').value.trim();
+        if (!text) return;
+        try { await api('api_leads_addRemark', leadId, { remark: text }); toast('Added'); modal.remove(); loadLeads(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
+  setTimeout(() => $('#inline-rmk').focus(), 50);
+}
+
+async function openDuplicateHistory(leadId) {
+  try {
+    const history = await api('api_leads_duplicateHistory', leadId);
+    const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } },
+      h('div', { class: 'modal modal-lg' },
+        h('div', { class: 'modal-head' }, h('h3', {}, 'Duplicate history'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
+        (!history || history.length === 0)
+          ? h('p', { class: 'muted' }, 'No matching past leads found.')
+          : h('div', {},
+              ...history.map(l => h('div', { class: 'dup-item' },
+                h('div', {}, h('b', {}, l.name || '—'), ' · ', l.phone || l.email || '', ' · ', fmtDate(l.created_at, 'relative')),
+                h('div', { class: 'muted' }, 'Status: ' + (l.status_name || '—') + ' · Assigned: ' + (l.assigned_name || '—')),
+                ...(l.remarks || []).map(r => h('div', { class: 'dup-remark' }, '💬 ', r.remark, ' — ', fmtDate(r.created_at, 'short')))
+              ))
+            )
+      )
+    );
+    document.body.appendChild(modal);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/* ---------------- Dialer (TeleCRM-style) ---------------- */
+let _dialerState = null;
+
+VIEWS.dialer = async (view) => {
+  // Tab state: 'pad' (dialpad) | 'history' (call log) | 'recordings' (audio list)
+  _dialerState = { tab: 'pad', digits: '', view };
+
+  view.innerHTML = '';
+
+  // Always-visible banner when running on the APK and no folder is connected
+  // yet. Impossible to miss, taps directly into the picker. Hidden as soon
+  // as the user picks a folder (next render won't include it).
+  const isApkRuntime = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
+  let connectedFolder = '';
+  try { connectedFolder = isApkRuntime ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  if (isApkRuntime && !connectedFolder) {
+    view.appendChild(h('div', {
+      style: { background: '#fef3c7', color: '#92400e', borderLeft: '4px solid #f59e0b', padding: '.7rem 1rem', borderRadius: '8px', marginBottom: '.75rem', cursor: 'pointer' },
+      onclick: () => setupRecordingFolder()
+    },
+      h('b', {}, '📁 Connect call recordings folder '),
+      h('span', { class: 'muted' }, '— tap here to pick the folder where your phone saves call recordings. Without this, calls won\'t auto-attach to leads.')
+    ));
+  }
+
+  const tabs = h('div', { class: 'dialer-tabs' },
+    tabBtn('pad', '📟 Dialpad'),
+    tabBtn('history', '🕒 History'),
+    tabBtn('recordings', '📼 Recordings'),
+    tabBtn('settings', '⚙️')
+  );
+  const body = h('div', { class: 'dialer-body' });
+  view.appendChild(h('div', { class: 'dialer-shell' }, tabs, body));
+
+  function tabBtn(id, label) {
+    return h('button', {
+      class: 'dialer-tab' + (_dialerState.tab === id ? ' active' : ''),
+      onclick: () => { _dialerState.tab = id; renderDialerTab(); }
+    }, label);
+  }
+
+  function renderDialerTab() {
+    [...tabs.children].forEach((c, i) => {
+      const ids = ['pad', 'history', 'recordings', 'settings'];
+      c.classList.toggle('active', _dialerState.tab === ids[i]);
+    });
+    body.innerHTML = '';
+    if (_dialerState.tab === 'pad') body.appendChild(renderDialpad());
+    else if (_dialerState.tab === 'history') body.appendChild(renderHistory());
+    else if (_dialerState.tab === 'recordings') body.appendChild(renderRecordingsList());
+    else body.appendChild(renderDialerSettings());
+  }
+
+  renderDialerTab();
+
+  // Dialer-tab nudge: if the user lands on the Dialer page and still hasn't
+  // picked a folder (e.g. they dismissed the boot-time onboarding modal),
+  // open the picker once per session. The boot onboarding (firstRunRecordingPrompt)
+  // is the primary path; this is a backup so users who hit Dialer before
+  // dismissing/seeing onboarding still get prompted.
+  if (window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function') {
+    try {
+      const fld = LeadCRMNative.getRecordingFolder();
+      if (!fld
+          && !sessionStorage.getItem('rec_setup_dismissed')
+          && localStorage.getItem('rec_onboarding_seen_v2') !== '1') {
+        setTimeout(() => {
+          if (location.hash === '#/dialer') setupRecordingFolder();
+          sessionStorage.setItem('rec_setup_dismissed', '1');
+        }, 800);
+      }
+    } catch (_) {}
+  }
+};
+
+function renderDialerSettings() {
+  const wrap = h('div', { class: 'dialer-settings' });
+  const isApp = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
+  let folder = '';
+  try { folder = isApp ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  const lastSync = Number(localStorage.getItem('rec_last_sync') || 0);
+
+  if (!isApp) {
+    wrap.appendChild(h('div', { class: 'settings-card' },
+      h('h4', {}, '📱 Open in the Android app'),
+      h('p', { class: 'muted' }, 'Recording sync only works inside the LeadCRM Android app — install it from the Install page.')
+    ));
+    return wrap;
+  }
+
+  // Folder card
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, '📁 Call recordings folder'),
+    folder
+      ? h('div', {},
+          h('div', { class: 'rec-folder-current' }, h('code', {}, folder)),
+          h('div', { class: 'muted' }, 'The app reads new files from this folder, parses the phone number, and uploads each recording to the matching lead.'),
+          h('div', { class: 'actions' },
+            h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
+            h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
+            h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
+            h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
+          ),
+          h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.78rem' } },
+            h('span', { id: 'sync-progress', style: { fontWeight: 600 } }, ''),
+            ' · Last synced: ', lastSync ? fmtDate(new Date(lastSync).toISOString(), 'relative') : 'never'
+          )
+        )
+      : h('div', {},
+          h('p', { class: 'muted' }, 'No folder connected yet. Pick the folder where your phone saves call recordings.'),
+          h('button', { class: 'btn primary', onclick: () => setupRecordingFolder() }, '📁 Pick recordings folder')
+        )
+  ));
+
+  // Filter card
+  const includeUnmatched = localStorage.getItem('rec_include_unmatched') === '1';
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, '🎯 Sync filter'),
+    h('p', { class: 'muted' },
+      'By default the app only uploads recordings whose phone number matches a lead in your CRM. ' +
+      'Personal calls (family, courier, OTP) are skipped.'),
+    h('label', { class: 'toggle-row' },
+      h('input', {
+        type: 'checkbox',
+        checked: includeUnmatched ? 'checked' : null,
+        onchange: ev => {
+          localStorage.setItem('rec_include_unmatched', ev.target.checked ? '1' : '0');
+          toast(ev.target.checked ? 'Will upload all recordings' : 'Lead-only filter active');
+        }
+      }),
+      h('span', {}, 'Include unmatched recordings (upload everything)')
+    )
+  ));
+
+  // Help card
+  wrap.appendChild(h('div', { class: 'settings-card' },
+    h('h4', {}, 'ℹ️ How it works'),
+    h('ol', { class: 'how-it-works' },
+      h('li', {}, 'Enable call recording in your phone\'s dialer (Settings → Phone → Call recording).'),
+      h('li', {}, 'Make a call. The phone saves an audio file (e.g. ', h('code', {}, '+91XXXX_2024-04-25.m4a'), ') to its recordings folder.'),
+      h('li', {}, 'Open this app and tap ', h('b', {}, 'Sync now'), '. The CRM finds each new file, reads the phone number from the filename, looks up the matching lead, and uploads the recording.'),
+      h('li', {}, 'Listen to recordings inside any lead\'s detail page or under ', h('b', {}, 'Recordings'), '.')
+    ),
+    h('p', { class: 'muted' }, 'Note: the CRM does not record calls itself — that complies with Indian and EU regulations. You (or your phone\'s built-in recorder) control recording.')
+  ));
+
+  return wrap;
+}
+
+function renderDialpad() {
+  const wrap = h('div', { class: 'dialpad-wrap' });
+
+  // Number display + lead-match dropdown
+  const display = h('input', {
+    type: 'tel',
+    class: 'dialpad-display',
+    placeholder: 'Enter number or name…',
+    value: _dialerState.digits,
+    oninput: ev => { _dialerState.digits = ev.target.value; debouncedRenderMatches(); }
+  });
+  const matches = h('div', { class: 'dialpad-matches' });
+
+  // Debounce so we don't re-filter the lead list on every keystroke
+  let _matchTimer = null;
+  function debouncedRenderMatches() {
+    if (_matchTimer) clearTimeout(_matchTimer);
+    _matchTimer = setTimeout(renderMatches, 80);
+  }
+
+  function renderMatches() {
+    matches.innerHTML = '';
+    const q = _dialerState.digits.trim();
+    if (!q) return;
+    const isDigits = /^[\d+\-\s]+$/.test(q);
+    const ql = q.toLowerCase();
+    const found = (CRM.cache.lastLeads || []).filter(l => {
+      if (isDigits) {
+        const d = String(l.phone || '').replace(/\D/g, '');
+        return d.includes(q.replace(/\D/g, ''));
+      }
+      return String(l.name || '').toLowerCase().includes(ql);
+    }).slice(0, 6);
+    found.forEach(l => matches.appendChild(h('button', {
+      class: 'dialpad-match',
+      onclick: () => {
+        display.value = l.phone || '';
+        _dialerState.digits = l.phone || '';
+        callLead(l);
+      }
+    },
+      h('div', {}, h('b', {}, l.name || '—')),
+      h('div', { class: 'muted' }, l.phone || '')
+    )));
+    // If no match and digits look like a phone, offer "Save & Call"
+    if (found.length === 0 && isDigits && q.replace(/\D/g, '').length >= 6) {
+      matches.appendChild(h('button', {
+        class: 'dialpad-match new',
+        onclick: () => {
+          openLeadModal();
+          setTimeout(() => {
+            const f = $('#lead-form');
+            if (f && f.phone) f.phone.value = q;
+          }, 150);
+        }
+      }, '+ Save "' + q + '" as new lead'));
+    }
+  }
+
+  // Dialpad keys
+  const keys = [
+    ['1', ''], ['2', 'ABC'], ['3', 'DEF'],
+    ['4', 'GHI'], ['5', 'JKL'], ['6', 'MNO'],
+    ['7', 'PQRS'], ['8', 'TUV'], ['9', 'WXYZ'],
+    ['*', ''], ['0', '+'], ['#', '']
+  ];
+  const grid = h('div', { class: 'dialpad-grid' },
+    ...keys.map(([d, sub]) => h('button', {
+      class: 'dialpad-key',
+      onclick: () => {
+        // Long-press on 0 = "+"
+        if (d === '0' && _dialerLongPress0) {
+          _dialerState.digits += '+';
+        } else {
+          _dialerState.digits += d;
+        }
+        display.value = _dialerState.digits;
+        debouncedRenderMatches();
+      },
+      onmousedown: () => { if (d === '0') _dialerLongPress0Timer = setTimeout(() => { _dialerLongPress0 = true; }, 600); },
+      onmouseup: () => { clearTimeout(_dialerLongPress0Timer); setTimeout(() => { _dialerLongPress0 = false; }, 50); },
+      ontouchstart: () => { if (d === '0') _dialerLongPress0Timer = setTimeout(() => { _dialerLongPress0 = true; }, 600); },
+      ontouchend: () => { clearTimeout(_dialerLongPress0Timer); setTimeout(() => { _dialerLongPress0 = false; }, 50); }
+    },
+      h('span', { class: 'dialpad-d' }, d),
+      sub ? h('span', { class: 'dialpad-sub' }, sub) : null
+    ))
+  );
+
+  const callBtn = h('button', {
+    class: 'dialpad-call',
+    onclick: () => {
+      const raw = _dialerState.digits.trim();
+      if (!raw) return toast('Type a number first', 'warn');
+      const digits = raw.replace(/\D/g, '');
+      // Look up matching lead
+      const lead = (CRM.cache.lastLeads || []).find(l =>
+        digits && String(l.phone || '').replace(/\D/g, '').endsWith(digits.slice(-10))
+      ) || { id: null, name: '', phone: raw };
+      callLead(lead);
+    }
+  }, '📞');
+
+  const back = h('button', {
+    class: 'dialpad-back',
+    onclick: () => {
+      _dialerState.digits = _dialerState.digits.slice(0, -1);
+      display.value = _dialerState.digits;
+    }
+  }, '⌫');
+
+  wrap.appendChild(display);
+  wrap.appendChild(matches);
+  wrap.appendChild(grid);
+  wrap.appendChild(h('div', { class: 'dialpad-actions' }, back, callBtn));
+  return wrap;
+}
+let _dialerLongPress0 = false;
+let _dialerLongPress0Timer = null;
+
+function renderHistory() {
+  const wrap = h('div', { class: 'dialer-history' }, h('div', { class: 'muted' }, 'Loading call history…'));
+  api('api_call_history', 100).then(rows => {
+    wrap.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'No calls yet.'));
+      return;
+    }
+    rows.forEach(r => wrap.appendChild(renderHistoryItem(r)));
+  }).catch(e => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function renderHistoryItem(r) {
+  const dur = Number(r.duration_s || r.rec_duration) || 0;
+  const mm = Math.floor(dur / 60), ss = (dur % 60).toString().padStart(2, '0');
+  const dirIcon = r.direction === 'in' ? '📲' :
+                  r.event === 'recording_saved' ? '📼' :
+                  r.event === 'call_ended' ? '✅' :
+                  r.event === 'incoming_ringing' ? '📲' : '📞';
+  const item = h('div', { class: 'hist-item' },
+    h('div', { class: 'hist-row' },
+      h('span', { class: 'hist-icon' }, dirIcon),
+      h('div', { class: 'hist-meta' },
+        h('div', {}, h('b', {}, r.lead_name || r.phone || 'Unknown')),
+        h('div', { class: 'muted' }, (r.lead_name ? r.phone + ' · ' : '') + fmtDate(r.created_at, 'relative') + (dur ? ' · ' + mm + ':' + ss : ''))
+      ),
+      r.phone ? h('button', {
+        class: 'btn icon hist-redial',
+        onclick: () => {
+          const lead = (CRM.cache.lastLeads || []).find(l =>
+            String(l.phone || '').replace(/\D/g, '').endsWith(String(r.phone).replace(/\D/g, '').slice(-10))
+          ) || { name: r.lead_name || '', phone: r.phone };
+          callLead(lead);
+        }
+      }, '📞') : null,
+      r.lead_id ? h('button', {
+        class: 'btn icon',
+        title: 'Open lead',
+        onclick: () => openLeadModal(r.lead_id)
+      }, '📂') : null
+    )
+  );
+  // Inline audio player if there's a recording attached
+  if (r.recording_id || r.rec_id) {
+    const recId = r.recording_id || r.rec_id;
+    item.appendChild(h('audio', {
+      controls: true, preload: 'none',
+      class: 'hist-audio',
+      src: '/api/recordings/' + recId + '/audio?token=' + encodeURIComponent(CRM.token || '')
+    }));
+  }
+  return item;
+}
+
+function renderRecordingsList() {
+  const wrap = h('div', { class: 'dialer-history' }, h('div', { class: 'muted' }, 'Loading recordings…'));
+  api('api_my_recordings', 200).then(rows => {
+    wrap.innerHTML = '';
+    if (!rows || rows.length === 0) {
+      wrap.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'No recordings yet.'));
+      return;
+    }
+    rows.forEach(r => wrap.appendChild(renderRecordingItem(r)));
+  }).catch(e => {
+    wrap.innerHTML = '';
+    wrap.appendChild(h('div', { class: 'muted' }, 'Could not load: ' + e.message));
+  });
+  return wrap;
+}
+
+function refreshDialerHistory() {
+  if (!_dialerState || !_dialerState.view) return;
+  if (location.hash !== '#/dialer') return;
+  // NEVER re-render the whole dialer — that nukes the dialpad input focus
+  // and the digits the user is typing. Only refresh the History/Recordings
+  // tabs (those don't have user inputs).
+  if (_dialerState.tab === 'history') {
+    const body = _dialerState.view.querySelector('.dialer-body');
+    if (body && typeof renderHistory === 'function') {
+      body.innerHTML = '';
+      body.appendChild(renderHistory());
+    }
+  } else if (_dialerState.tab === 'recordings') {
+    const body = _dialerState.view.querySelector('.dialer-body');
+    if (body && typeof renderRecordingsList === 'function') {
+      body.innerHTML = '';
+      body.appendChild(renderRecordingsList());
+    }
+  }
+  // Dialpad / Settings tabs intentionally NOT auto-refreshed.
+}
+
+/* ---------------- Pipeline ---------------- */
+VIEWS.pipeline = async (view) => {
+  const [funnel, summary, pipeline] = await Promise.all([
+    api('api_reports_funnel', {}),
+    api('api_reports_summary', {}),
+    api('api_leads_pipeline')
+  ]);
+  const total = summary.totals.total || 1;
+  view.innerHTML = '';
+
+  // Funnel summary card — waterfall view: biggest stage on top,
+  // narrower as we go down. Hides empty stages so the visual stays clean.
+  // Sort by count DESC and use the top stage as the conversion baseline.
+  const funnelSorted = [...funnel]
+    .map(s => ({ ...s, _c: Number(s.count) || 0 }))
+    .filter(s => s._c > 0)
+    .sort((a, b) => b._c - a._c);
+  const topCount = funnelSorted[0]?._c || total;
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, 'Sales funnel'),
+    h('div', { class: 'funnel' },
+      ...funnelSorted.map((s, i) => {
+        const pct = Math.round((s._c / total) * 100);
+        const width = topCount > 0 ? Math.max(20, Math.round((s._c / topCount) * 100)) : 20;
+        const prev = i > 0 ? funnelSorted[i - 1]._c : topCount;
+        const conv = prev > 0 ? Math.round((s._c / prev) * 100) : 0;
+        return h('div', { class: 'funnel-row' },
+          h('div', { class: 'funnel-label' }, s.name),
+          h('div', { class: 'funnel-bar-wrap' },
+            h('div', { class: 'funnel-bar', style: { width: width + '%', background: s.color } },
+              h('span', { class: 'funnel-count' }, s._c),
+              h('span', { class: 'funnel-pct' }, pct + '%')
+            )
+          ),
+          h('div', { class: 'funnel-conv' }, i === 0 ? '—' : conv + '% vs prev')
+        );
+      })
+    )
+  ));
+
+  // Leads per stage (expandable sections) — also rendered in waterfall
+  // order so the biggest bucket is at the top, matching the funnel above.
+  // Includes empty stages too so the user can still see them and add
+  // leads if needed.
+  view.appendChild(h('h3', { style: { marginTop: '1.25rem' } }, 'Leads by stage'));
+  const wrap = h('div', { class: 'pipeline-stages' });
+  view.appendChild(wrap);
+
+  const funnelByCount = [...funnel]
+    .map(s => ({ ...s, _c: Number(s.count) || 0 }))
+    .sort((a, b) => b._c - a._c);
+  funnelByCount.forEach(s => {
+    const entry = pipeline.find(p => Number(p.id) === Number(s.id));
+    const leads = entry?.leads || [];
+    const details = h('details', { class: 'pipeline-stage-card', style: { borderTopColor: s.color } },
+      h('summary', {},
+        h('span', { class: 'ps-dot', style: { background: s.color } }),
+        h('span', { class: 'ps-name' }, s.name),
+        h('span', { class: 'ps-count' }, leads.length),
+        h('span', { class: 'ps-hint muted' }, leads.length > 0 ? 'click to expand' : 'no leads')
+      ),
+      leads.length > 0
+        ? h('div', { class: 'ps-body' },
+            h('table', { class: 'mini-table' },
+              h('thead', {}, h('tr', {},
+                h('th', {}, 'Name'), h('th', {}, 'Phone'),
+                h('th', {}, 'Source'), h('th', {}, 'Assignee'),
+                h('th', {}, 'Follow-up'), h('th', {})
+              )),
+              h('tbody', {}, ...leads.map(l => h('tr', {},
+                h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—')),
+                h('td', {},
+                  l.phone || '',
+                  l.phone ? h('button', { class: 'btn icon', title: 'Copy', onclick: () => { navigator.clipboard.writeText(l.phone); toast('Copied'); } }, '📋') : null,
+                  l.phone ? h('a', { class: 'btn icon', href: `https://wa.me/${String(l.phone).replace(/\D/g,'')}`, target: '_blank', title: 'WhatsApp' }, '💬') : null
+                ),
+                h('td', {}, l.source || ''),
+                h('td', {}, l.assigned_name || '—'),
+                h('td', { class: l.next_followup_at && new Date(l.next_followup_at) < new Date() ? 'overdue' : '' },
+                  l.next_followup_at ? fmtDate(l.next_followup_at, 'relative') : '—'),
+                h('td', {}, h('button', { class: 'btn sm', onclick: () => openLeadModal(l.id) }, '✎'))
+              )))
+            )
+          )
+        : null
+    );
+    // Auto-expand first non-empty stage
+    if (leads.length > 0 && !wrap.querySelector('details[open]')) details.open = true;
+    wrap.appendChild(details);
+  });
+};
+
+/* ---------------- Kanban (drag & drop, stable handlers) ----------------
+ * Design notes:
+ *  - Cards mirror the leads-list row content (name, phone, value, tags,
+ *    qualified ★, assignee, FU chip) so reps don't lose info when they
+ *    flip from list to board.
+ *  - Same filter set as the leads list (search, assignee, source,
+ *    qualified). Persisted to localStorage as `crm_kanban_filters` so
+ *    the rep's morning view stays put.
+ *  - Click a column header to collapse it to a thin strip — useful for
+ *    Lost / Junk which don't need to occupy 250px of board real estate.
+ *    Collapsed columns persist via `crm_kanban_collapsed`.
+ */
+
+function _kbFollowupChip(iso) {
+  if (!iso) return null;
+  const due = new Date(iso).getTime();
+  if (isNaN(due)) return null;
+  const now = Date.now();
+  const today = new Date(); today.setHours(23, 59, 59, 999);
+  const isOverdue = due < now;
+  const isToday   = !isOverdue && due <= today.getTime();
+  const cls = isOverdue ? 'kc-fu overdue' : isToday ? 'kc-fu today' : 'kc-fu future';
+  return h('span', { class: cls }, '⏰ ' + fmtDate(iso, 'relative'));
+}
+
+function _kbInr(value) {
+  const n = Number(value);
+  if (!isFinite(n) || n <= 0) return '';
+  if (n >= 10000000) return '₹' + (n / 10000000).toFixed(n % 10000000 === 0 ? 0 : 2) + ' Cr';
+  if (n >= 100000)   return '₹' + (n / 100000).toFixed(n % 100000 === 0 ? 0 : 2) + ' L';
+  if (n >= 1000)     return '₹' + (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'k';
+  return '₹' + n.toFixed(0);
+}
+
+function _kbInitials(name) {
+  return String(name || '?').split(/\s+/).map(s => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
+}
+
+function _kbMatchesFilters(l, f) {
+  if (f.q) {
+    const q = String(f.q).toLowerCase();
+    const hit =
+      String(l.name || '').toLowerCase().includes(q) ||
+      String(l.phone || '').toLowerCase().includes(q) ||
+      String(l.email || '').toLowerCase().includes(q) ||
+      String(l.whatsapp || '').toLowerCase().includes(q);
+    if (!hit) return false;
+  }
+  if (f.assigned_to && Number(l.assigned_to) !== Number(f.assigned_to)) return false;
+  if (f.source && l.source !== f.source) return false;
+  if (f.qualified === '1' && Number(l.qualified) !== 1) return false;
+  if (f.qualified === '0' && Number(l.qualified) === 1) return false;
+  return true;
+}
+
+VIEWS.kanban = async (view) => {
+  if (!CRM.cache.statuses) await warmCache();
+  const statuses = CRM.cache.statuses;
+  const sources  = CRM.cache.sources  || [];
+  const users    = CRM.cache.users    || [];
+  const kanban   = await api('api_leads_pipeline');
+  const filters  = JSON.parse(localStorage.getItem('crm_kanban_filters') || '{}');
+  const collapsed = JSON.parse(localStorage.getItem('crm_kanban_collapsed') || '[]');
+  view.innerHTML = '';
+
+  const persistFilters = () => localStorage.setItem('crm_kanban_filters', JSON.stringify(filters));
+  const persistCollapsed = () => localStorage.setItem('crm_kanban_collapsed', JSON.stringify(collapsed));
+
+  // ---- Toolbar (mirrors the leads-list filter set) ---------------------
+  const search = h('input', {
+    id: 'kb-q', class: 'flex',
+    placeholder: 'Search name / phone / email…',
+    value: filters.q || ''
+  });
+  let searchTimer;
+  search.addEventListener('input', () => {
+    filters.q = search.value;
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { persistFilters(); render(); }, 200);
+  });
+
+  const assigneeSel = selectOpts('kb-assigned',
+    [{ id: '', name: 'Any assignee' }, ...users],
+    filters.assigned_to);
+  assigneeSel.addEventListener('change', () => { filters.assigned_to = assigneeSel.value || ''; persistFilters(); render(); });
+
+  const sourceSel = selectOpts('kb-source',
+    [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))],
+    filters.source);
+  sourceSel.addEventListener('change', () => { filters.source = sourceSel.value || ''; persistFilters(); render(); });
+
+  const qualifiedSel = selectOpts('kb-qualified',
+    [{ id: '', name: 'Any qualified' }, { id: '1', name: '⭐ Qualified only' }, { id: '0', name: 'Not qualified' }],
+    filters.qualified);
+  qualifiedSel.addEventListener('change', () => { filters.qualified = qualifiedSel.value || ''; persistFilters(); render(); });
+
+  const clearBtn = h('button', {
+    class: 'btn ghost', title: 'Reset filters',
+    onclick: () => {
+      ['q', 'assigned_to', 'source', 'qualified'].forEach(k => delete filters[k]);
+      persistFilters();
+      navigateTo('kanban');
+    }
+  }, '✕');
+
+  view.appendChild(h('div', { class: 'toolbar' },
+    search, assigneeSel, sourceSel, qualifiedSel, clearBtn,
+    h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
+  ));
+
+  const wrap = h('div', { class: 'kanban' });
+  view.appendChild(wrap);
+
+  function render() {
+    wrap.innerHTML = '';
+    statuses.forEach(s => {
+      const col = h('div', { class: 'kanban-col' });
+      col.dataset.statusId = s.id;
+      const isCollapsed = collapsed.includes(Number(s.id));
+      if (isCollapsed) col.classList.add('kanban-col-collapsed');
+
+      // ---- Drag-and-drop handlers (drop changes status) -----------------
+      col.addEventListener('dragover', ev => {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        col.classList.add('drop-hover');
+      });
+      col.addEventListener('dragleave', () => col.classList.remove('drop-hover'));
+      col.addEventListener('drop', async ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        col.classList.remove('drop-hover');
+        const leadId = Number(ev.dataTransfer.getData('text/plain') || ev.dataTransfer.getData('application/lead-id'));
+        if (!leadId) return;
+        const newStatusId = Number(col.dataset.statusId);
+        try {
+          await api('api_leads_update', leadId, { status_id: newStatusId });
+          toast('Status updated');
+          render();
+        } catch (e) { toast(e.message, 'err'); }
+      });
+
+      // Filter the leads for this column.
+      const allLeads = kanban.find(k => Number(k.id) === Number(s.id))?.leads || [];
+      const visible  = allLeads.filter(l => _kbMatchesFilters(l, filters));
+      const valueSum = visible.reduce((sum, l) => sum + (Number(l.value) || 0), 0);
+
+      // ---- Column header — click to collapse/expand --------------------
+      const head = h('h4', {
+        class: 'kanban-head',
+        style: { borderTopColor: s.color },
+        onclick: () => {
+          const idx = collapsed.indexOf(Number(s.id));
+          if (idx >= 0) collapsed.splice(idx, 1); else collapsed.push(Number(s.id));
+          persistCollapsed();
+          render();
+        }
+      },
+        h('span', { class: 'kanban-name' }, s.name),
+        h('span', { class: 'kanban-meta' },
+          visible.length + (valueSum > 0 ? ' · ' + _kbInr(valueSum) : '')
+        )
+      );
+      col.appendChild(head);
+
+      if (!isCollapsed) {
+        visible.forEach(l => {
+          const card = h('div', { class: 'kanban-card', draggable: 'true' });
+          card.dataset.leadId = l.id;
+          card.addEventListener('dragstart', ev => {
+            ev.dataTransfer.setData('text/plain', String(l.id));
+            ev.dataTransfer.setData('application/lead-id', String(l.id));
+            ev.dataTransfer.effectAllowed = 'move';
+            card.classList.add('dragging');
+          });
+          card.addEventListener('dragend', () => card.classList.remove('dragging'));
+          card.addEventListener('click', () => {
+            if (!card.classList.contains('was-dragged')) openLeadModal(l.id);
+          });
+
+          // Top row: name + qualified ★
+          const topRow = h('div', { class: 'kc-top' },
+            h('div', { class: 'kc-name' }, l.name || '—'),
+            Number(l.qualified) === 1 ? h('span', { class: 'kc-star', title: 'Qualified' }, '★') : null
+          );
+          card.appendChild(topRow);
+
+          // Phone + source
+          const meta = (l.phone || '') + (l.source ? ' · ' + l.source : '');
+          if (meta) card.appendChild(h('div', { class: 'kc-meta' }, meta));
+
+          // Value (large, prominent)
+          const valStr = _kbInr(l.value);
+          if (valStr) card.appendChild(h('div', { class: 'kc-value' }, valStr));
+
+          // Tags (chips, max 3 visible)
+          const tags = String(l.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+          if (tags.length) {
+            const tagWrap = h('div', { class: 'kc-tags' });
+            tags.slice(0, 3).forEach(t => tagWrap.appendChild(h('span', { class: 'kc-tag' }, t)));
+            if (tags.length > 3) tagWrap.appendChild(h('span', { class: 'kc-tag muted' }, '+' + (tags.length - 3)));
+            card.appendChild(tagWrap);
+          }
+
+          // Footer: assignee | follow-up chip
+          const repName = l.assigned_name || '—';
+          const initials = _kbInitials(repName);
+          card.appendChild(h('div', { class: 'kc-foot' },
+            h('span', { class: 'kc-rep', title: repName },
+              h('span', { class: 'kc-avatar' }, initials),
+              h('span', { class: 'kc-rep-name' }, repName)
+            ),
+            _kbFollowupChip(l.next_followup_at)
+          ));
+
+          col.appendChild(card);
+        });
+
+        if (allLeads.length > visible.length) {
+          col.appendChild(h('div', { class: 'kanban-filtered-note' },
+            (allLeads.length - visible.length) + ' filtered out'));
+        }
+      }
+
+      wrap.appendChild(col);
+    });
+  }
+
+  render();
+};
+
+/* ---------------- Follow-ups ---------------- */
+// Sidebar shortcut views — each one is a single-section variant of
+// the Followups view, so users with overdue/due-today work can land
+// directly on the right list from the sidebar.
+VIEWS.overdue  = async (view) => renderFollowupSection(view, 'overdue');
+VIEWS.duetoday = async (view) => renderFollowupSection(view, 'due_today');
+VIEWS.upcoming = async (view) => renderFollowupSection(view, 'upcoming');
+VIEWS.newleads = async (view) => renderNewTodayLeads(view);
+
+async function renderFollowupSection(view, key) {
+  const data = await api('api_notifications_mine');
+  view.innerHTML = '';
+  const titleMap = { overdue: '⚠️ Overdue follow-ups', due_today: '📅 Due today', upcoming: '⏰ Upcoming' };
+  const klassMap = { overdue: 'err', due_today: 'warn', upcoming: '' };
+  const rows = data[key] || [];
+  const wrap = h('div', { class: 'card' },
+    h('h3', {}, titleMap[key], ' ', h('span', { class: 'chip-count ' + klassMap[key] }, rows.length))
+  );
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'Nothing here. 🎉'));
+    view.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Lead'), h('th', {}, 'Phone'),
+      h('th', {}, 'Assigned to'),
+      h('th', {}, 'Due'),
+      h('th', {}, 'Latest remark'), h('th', { style: { textAlign: 'right' } }, 'Actions')
+    )),
+    h('tbody', {}, ...rows.map(r => {
+      const phone = String(r.lead_phone || '').trim();
+      const telHref = phone ? 'tel:' + phone.replace(/[^\d+]/g, '') : null;
+      const waHref  = phone ? 'https://wa.me/' + phone.replace(/[^\d]/g, '') : null;
+      return h('tr', {},
+        h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')),
+        h('td', {}, phone || ''),
+        h('td', { class: r.assigned_name ? '' : 'muted' }, r.assigned_name || 'Unassigned'),
+        h('td', { class: key === 'overdue' ? 'overdue' : '' }, fmtDate(r.due_at, 'relative')),
+        h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
+          r.latest_remark ? String(r.latest_remark).slice(0, 80) + (String(r.latest_remark).length > 80 ? '…' : '') : h('span', { class: 'muted' }, '—')),
+        h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+          telHref ? h('a', { class: 'btn sm primary', href: telHref }, '📞') : null,
+          waHref  ? h('a', { class: 'btn sm ghost', href: waHref, target: '_blank', rel: 'noopener', style: { marginLeft: '.25rem' } }, '💬') : null,
+          r.id ? h('button', { class: 'btn sm primary', style: { marginLeft: '.25rem' },
+            onclick: () => openNextFollowupModal(r, () => navigateTo(key === 'overdue' ? 'overdue' : key === 'due_today' ? 'duetoday' : 'upcoming'))
+          }, '⏰ Next') : null
+        )
+      );
+    }))
+  )));
+  view.appendChild(wrap);
+}
+
+/**
+ * "New today" sidebar shortcut — shows leads created today (in IST), reusing
+ * the leads list with a server-applied date filter so it always matches the
+ * dashboard "NEW TODAY" tile count.
+ */
+async function renderNewTodayLeads(view) {
+  view.innerHTML = '';
+  // IST today, formatted YYYY-MM-DD
+  const tzFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const today = tzFmt.format(new Date());
+  // Fetch leads filtered by created_at = today on the server.
+  let rows = [];
+  try {
+    const r = await api('api_leads_list', { from: today, to: today, page_size: 500 });
+    // api_leads_list returns { leads: [...], total, status_count, page, page_size }
+    rows = (r && r.leads) || (r && r.rows) || [];
+  } catch (e) { /* fall through */ }
+  const wrap = h('div', { class: 'card' },
+    h('h3', {}, '✨ New leads today ', h('span', { class: 'chip-count accent' }, rows.length))
+  );
+  if (!rows.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No new leads yet today.'));
+    view.appendChild(wrap);
+    return;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Phone'), h('th', {}, 'Source'),
+      h('th', {}, 'Status'), h('th', {}, 'Assigned to'), h('th', {}, 'Created')
+    )),
+    h('tbody', {}, ...rows.map(l => h('tr', {},
+      h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—')),
+      h('td', {}, l.phone || ''),
+      h('td', {}, l.source || ''),
+      h('td', {}, l.status_name || ''),
+      h('td', {}, l.assigned_name || ''),
+      h('td', { class: 'muted' }, fmtDate(l.created_at, 'relative'))
+    )))
+  )));
+  view.appendChild(wrap);
+}
+
+VIEWS.followups = async (view) => {
+  const data = await api('api_notifications_mine');
+  view.innerHTML = '';
+  const section = (title, rows, klass) => {
+    const wrap = h('div', { class: 'card' },
+      h('h3', {}, title, ' ', h('span', { class: 'chip-count ' + (klass || '') }, rows.length))
+    );
+    if (!rows.length) { wrap.appendChild(h('p', { class: 'muted' }, 'Nothing here.')); view.appendChild(wrap); return; }
+    const tbl = h('div', { class: 'table-wrap' }, h('table', {},
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Lead'),
+        h('th', {}, 'Phone'),
+        h('th', {}, 'Assigned to'),
+        h('th', {}, 'Due'),
+        h('th', {}, 'Latest remark'),
+        h('th', {}, 'Note'),
+        h('th', { style: { textAlign: 'right' } }, 'Actions')
+      )),
+      h('tbody', {}, ...rows.map(r => {
+        const phone = String(r.lead_phone || '').trim();
+        const telHref = phone ? 'tel:' + phone.replace(/[^\d+]/g, '') : null;
+        const waHref  = phone ? 'https://wa.me/' + phone.replace(/[^\d]/g, '') : null;
+        return h('tr', {},
+          h('td', {},
+            h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(r.lead_id); } }, r.lead_name || '—')
+          ),
+          h('td', {}, phone || ''),
+          h('td', { class: r.assigned_name ? '' : 'muted' }, r.assigned_name || 'Unassigned'),
+          h('td', { class: klass === 'err' ? 'overdue' : '' }, fmtDate(r.due_at)),
+          h('td', { class: 'fu-latest-remark', title: r.latest_remark || '' },
+            r.latest_remark
+              ? h('span', {}, String(r.latest_remark).slice(0, 120) + (String(r.latest_remark).length > 120 ? '…' : ''))
+              : h('span', { class: 'muted' }, '—')
+          ),
+          h('td', { class: 'muted' }, r.note || ''),
+          h('td', { style: { textAlign: 'right', whiteSpace: 'nowrap' } },
+            telHref ? h('a', { class: 'btn sm primary', href: telHref, title: 'Call ' + phone }, '📞 Call') : null,
+            waHref  ? h('a', { class: 'btn sm ghost', href: waHref, target: '_blank', rel: 'noopener',
+              style: { marginLeft: '.3rem' }, title: 'WhatsApp' }, '💬') : null,
+            h('button', { class: 'btn sm', style: { marginLeft: '.3rem' },
+              onclick: () => openLeadModal(r.lead_id), title: 'Open lead' }, '✎'),
+            // "Next Follow Up" replaces the old "Done" button — opens a small
+            // modal where the user picks a new date+time and writes a remark,
+            // which closes the current follow-up AND creates the next one.
+            // Forces the user to commit to a next action instead of just
+            // dismissing the reminder.
+            r.id ? h('button', { class: 'btn sm primary', style: { marginLeft: '.3rem' },
+              onclick: () => openNextFollowupModal(r, () => navigateTo('followups'))
+            }, '⏰ Next follow-up') : null
+          )
+        );
+      }))
+    ));
+    wrap.appendChild(tbl);
+    view.appendChild(wrap);
+  };
+  section('⚠️ Overdue', data.overdue, 'err');
+  section('📅 Due today', data.due_today, 'warn');
+  section('⏰ Upcoming', data.upcoming);
+};
+
+/* ---------------- Calendar ----------------------------------------
+ * Full-month / week / day calendar showing every follow-up due date as
+ * an event. Powered by FullCalendar (CDN-loaded on first visit so the
+ * library only downloads when needed).
+ *
+ * Click an event → opens the lead modal so the rep can act immediately.
+ * Admin/manager get a "Filter by user" dropdown so they can isolate
+ * one rep's day.
+ * ------------------------------------------------------------------ */
+
+let _fcLib = null;
+async function ensureFullCalendar() {
+  if (window.FullCalendar) return window.FullCalendar;
+  if (_fcLib) return _fcLib;
+  await new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js';
+    s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  _fcLib = window.FullCalendar;
+  return _fcLib;
+}
+
+VIEWS.calendar = async (view) => {
+  view.innerHTML = '';
+  const FC = await ensureFullCalendar();
+  const { users = [] } = CRM.cache;
+  const isManager = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+
+  // Toolbar with user filter (admin/manager only) + a small legend
+  const userSelect = h('select', { id: 'cal-user' },
+    h('option', { value: '' }, 'All callers'),
+    ...users.filter(u => Number(u.is_active) === 1).map(u => h('option', { value: u.id }, u.name))
+  );
+  const legend = h('div', { class: 'cal-legend muted' },
+    h('span', { class: 'cal-dot', style: { background: '#ef4444' } }), ' Overdue ',
+    h('span', { class: 'cal-dot', style: { background: '#f59e0b' } }), ' Due today ',
+    h('span', { class: 'cal-dot', style: { background: '#3b82f6' } }), ' Upcoming ',
+    h('span', { class: 'cal-dot', style: { background: '#10b981' } }), ' Done '
+  );
+
+  const toolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem', alignItems: 'center' } },
+    isManager ? h('span', { class: 'muted' }, 'Show:') : null,
+    isManager ? userSelect : null,
+    legend
+  );
+  const calRoot = h('div', { id: 'cal-root', style: { background: '#fff', borderRadius: '12px', padding: '1rem', boxShadow: '0 1px 3px rgba(0,0,0,.05)' } });
+  view.append(toolbar, calRoot);
+
+  let calendar;
+  function buildCalendar() {
+    if (calendar) calendar.destroy();
+    calendar = new FC.Calendar(calRoot, {
+      initialView: 'timeGridWeek',
+      // Match the screenshot's controls: prev/next/today + month/week/day
+      headerToolbar: {
+        left:   'prev,next today',
+        center: 'title',
+        right:  'dayGridMonth,timeGridWeek,timeGridDay'
+      },
+      // Remember the last-chosen view across visits
+      initialDate: new Date(),
+      height: 'auto',
+      slotMinTime: '07:00:00',
+      slotMaxTime: '22:00:00',
+      nowIndicator: true,
+      navLinks: true,           // click a date in month view → jumps to day
+      dayMaxEvents: true,       // collapse overflow as "+ more"
+      // Pull events on demand whenever the visible range changes
+      events: async (info, success, fail) => {
+        try {
+          const filterUser = $('#cal-user')?.value || undefined;
+          const evs = await api('api_calendar_events', {
+            from: info.startStr,
+            to: info.endStr,
+            assigned_to: filterUser || undefined
+          });
+          success(evs || []);
+        } catch (e) {
+          toast('Calendar load failed: ' + e.message, 'err');
+          fail(e);
+        }
+      },
+      // Click → open the lead modal so the rep can act
+      eventClick: (info) => {
+        const leadId = info.event.extendedProps.lead_id;
+        if (leadId) openLeadModal(leadId);
+        info.jsEvent?.preventDefault();
+      },
+      // Hover tooltip with phone + owner — useful in dense day views
+      eventDidMount: (info) => {
+        const p = info.event.extendedProps || {};
+        const tip = [
+          info.event.title,
+          p.lead_phone ? '📞 ' + p.lead_phone : null,
+          p.owner_name ? '👤 ' + p.owner_name : null,
+          p.note ? '📝 ' + p.note : null,
+          p.status ? '· ' + p.status : null
+        ].filter(Boolean).join('\n');
+        info.el.title = tip;
+      }
+    });
+    calendar.render();
+  }
+
+  buildCalendar();
+  if (userSelect) userSelect.onchange = () => calendar.refetchEvents();
+};
+
+/* ---------------- Knowledge Base -----------------------------------
+ * Admin-curated reference content for the team — scripts, FAQs, offers,
+ * brochures, pricing sheets, video links. Everyone can read; only admin
+ * can create / edit / delete.
+ *
+ * Layout: category sidebar on the left, search box + entry list on the
+ * right. Click an entry to open it in a modal with the full body, the
+ * external URL (if any), tags, and copy-to-clipboard actions.
+ * ------------------------------------------------------------------ */
+
+const KB_CATEGORIES = [
+  { id: 'all',      label: 'All',        icon: '📚' },
+  { id: 'pinned',   label: 'Pinned',     icon: '📌' },
+  { id: 'script',   label: 'Scripts',    icon: '🎯' },
+  { id: 'faq',      label: 'FAQs',       icon: '❓' },
+  { id: 'offer',    label: 'Offers',     icon: '🎁' },
+  { id: 'brochure', label: 'Brochures',  icon: '📄' },
+  { id: 'pricing',  label: 'Pricing',    icon: '💰' },
+  { id: 'video',    label: 'Videos',     icon: '🎥' },
+  { id: 'link',     label: 'Links',      icon: '🔗' },
+  { id: 'other',    label: 'Other',      icon: '📌' }
+];
+
+VIEWS.knowledge = async (view) => {
+  view.innerHTML = '';
+  const isAdmin = CRM.user.role === 'admin';
+  let activeCat = 'all';
+  let query = '';
+
+  // Sidebar — category list (acts as a filter)
+  const sidebar = h('div', { class: 'kb-sidebar' });
+  function renderSidebar() {
+    sidebar.innerHTML = '';
+    sidebar.appendChild(h('h4', { style: { margin: '0 0 .5rem' } }, '📚 Knowledge'));
+    KB_CATEGORIES.forEach(c => {
+      sidebar.appendChild(h('button', {
+        class: 'kb-cat' + (c.id === activeCat ? ' active' : ''),
+        onclick: () => { activeCat = c.id; renderSidebar(); refresh(); }
+      }, c.icon + ' ' + c.label));
+    });
+  }
+  renderSidebar();
+
+  // Right pane — search box + add-button + entry list
+  const right = h('div', { class: 'kb-main' });
+  const searchInput = h('input', {
+    type: 'search', placeholder: '🔍 Search title, body, tags or URL…',
+    style: { flex: 1 }
+  });
+  let _searchTimer;
+  searchInput.oninput = () => {
+    clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(() => { query = searchInput.value || ''; refresh(); }, 250);
+  };
+
+  const toolbar = h('div', { class: 'toolbar', style: { marginBottom: '.75rem' } },
+    searchInput,
+    isAdmin ? h('button', { class: 'btn primary', onclick: () => openKbEditModal(null, refresh) }, '+ Add entry') : null
+  );
+  right.appendChild(toolbar);
+
+  const listEl = h('div', { id: 'kb-list' });
+  right.appendChild(listEl);
+
+  view.appendChild(h('div', { class: 'kb-wrap' }, sidebar, right));
+
+  async function refresh() {
+    listEl.innerHTML = '<div class="loading">Loading…</div>';
+    let rows;
+    try {
+      const filters = { q: query };
+      if (activeCat !== 'all' && activeCat !== 'pinned') filters.category = activeCat;
+      rows = await api('api_kb_list', filters);
+    } catch (e) {
+      listEl.innerHTML = '';
+      listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+      return;
+    }
+    if (activeCat === 'pinned') rows = rows.filter(r => r.is_pinned);
+    listEl.innerHTML = '';
+    if (!rows.length) {
+      listEl.appendChild(h('p', { class: 'muted' }, query
+        ? 'No entries matching "' + esc(query) + '"'
+        : (isAdmin ? 'No entries yet — click "+ Add entry" to create the first one.' : 'No entries in this category yet.')));
+      return;
+    }
+    rows.forEach(r => listEl.appendChild(kbCard(r, refresh, isAdmin)));
+  }
+
+  await refresh();
+};
+
+function kbCard(r, refresh, isAdmin) {
+  const cat = KB_CATEGORIES.find(c => c.id === r.category) || KB_CATEGORIES.find(c => c.id === 'other');
+  const card = h('div', { class: 'kb-card' + (r.is_pinned ? ' pinned' : '') },
+    h('div', { class: 'kb-card-head' },
+      h('div', {},
+        r.is_pinned ? h('span', { class: 'kb-pin' }, '📌 ') : null,
+        h('span', { class: 'kb-cat-tag' }, cat.icon + ' ' + cat.label),
+        r.product_name ? h('span', { class: 'kb-cat-tag', style: { background: '#ddd6fe', color: '#5b21b6' } }, '📦 ' + r.product_name) : null
+      ),
+      h('div', { class: 'muted', style: { fontSize: '.75rem' } }, fmtDate(r.updated_at, 'relative'))
+    ),
+    h('h4', { class: 'kb-title', onclick: () => openKbViewModal(r.id) }, r.title),
+    r.body ? h('p', { class: 'kb-body-preview' },
+      String(r.body).slice(0, 220) + (String(r.body).length > 220 ? '…' : '')
+    ) : null,
+    r.tags ? h('div', { class: 'kb-tags' },
+      ...String(r.tags).split(',').map(t => t.trim()).filter(Boolean)
+        .map(t => h('span', { class: 'kb-tag' }, '#' + t))
+    ) : null,
+    h('div', { class: 'kb-actions' },
+      h('button', { class: 'btn sm', onclick: () => openKbViewModal(r.id) }, '👁 Open'),
+      r.url ? h('a', { class: 'btn sm ghost', href: r.url, target: '_blank', rel: 'noopener' }, '🔗 Link') : null,
+      r.body ? h('button', { class: 'btn sm ghost', onclick: () => {
+        navigator.clipboard?.writeText(r.body).then(() => toast('Copied'));
+      }, title: 'Copy body to clipboard' }, '📋 Copy') : null,
+      isAdmin ? h('button', { class: 'btn sm ghost', onclick: () => openKbEditModal(r.id, refresh) }, '✎') : null,
+      isAdmin ? h('button', { class: 'btn sm ghost', onclick: async () => {
+        if (!confirm('Hide this entry from the team? (Soft-delete; admin can restore later.)')) return;
+        try { await api('api_kb_delete', r.id); toast('Hidden'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      }, title: 'Hide / soft-delete' }, '🗑') : null
+    )
+  );
+  return card;
+}
+
+async function openKbViewModal(id) {
+  let entry;
+  try { entry = await api('api_kb_get', id); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const cat = KB_CATEGORIES.find(c => c.id === entry.category) || { icon: '📌', label: entry.category };
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } },
+    h('div', { class: 'modal modal-lg' },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, entry.is_pinned ? '📌 ' : '', entry.title),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('div', { class: 'kb-meta-row' },
+          h('span', { class: 'kb-cat-tag' }, cat.icon + ' ' + cat.label),
+          entry.product_name ? h('span', { class: 'kb-cat-tag', style: { background: '#ddd6fe', color: '#5b21b6' } }, '📦 ' + entry.product_name) : null,
+          entry.created_by_name ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'by ' + entry.created_by_name) : null,
+          h('span', { class: 'muted', style: { fontSize: '.78rem' } }, fmtDate(entry.updated_at))
+        ),
+        entry.url ? h('p', {}, h('a', { class: 'btn primary', href: entry.url, target: '_blank', rel: 'noopener' }, '🔗 Open external link')) : null,
+        entry.body ? h('div', { class: 'kb-body-full' }, entry.body) : h('p', { class: 'muted' }, '(No body content — use the link above.)'),
+        entry.tags ? h('div', { class: 'kb-tags' },
+          ...String(entry.tags).split(',').map(t => t.trim()).filter(Boolean)
+            .map(t => h('span', { class: 'kb-tag' }, '#' + t))
+        ) : null,
+        entry.body ? h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => {
+            navigator.clipboard?.writeText(entry.body).then(() => toast('Copied to clipboard'));
+          } }, '📋 Copy body')
+        ) : null
+      )
+    )
+  );
+  document.body.appendChild(m);
+}
+
+async function openKbEditModal(id, onSave) {
+  const { products = [] } = CRM.cache;
+  let entry = { title: '', category: 'script', body: '', url: '', tags: '', product_id: '', is_pinned: 0 };
+  if (id) {
+    try { entry = await api('api_kb_get', id); }
+    catch (e) { toast(e.message, 'err'); return; }
+  }
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, id ? 'Edit knowledge entry' : 'New knowledge entry'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+
+  const form = h('form', { id: 'kb-form', class: 'form-grid' });
+  const catOptions = KB_CATEGORIES
+    .filter(c => c.id !== 'all' && c.id !== 'pinned')
+    .map(c => ({ value: c.id, label: c.icon + ' ' + c.label }));
+  const productOptions = [{ value: '', label: '— None —' }, ...products.map(p => ({ value: p.id, label: p.name }))];
+  form.append(
+    field('title', 'Title *', entry.title, { required: true, full: true }),
+    selectField('category', 'Category *', entry.category, catOptions),
+    selectField('product_id', 'Related product (optional)', entry.product_id || '', productOptions),
+    field('url', 'External URL (Drive / Box / YouTube — optional)', entry.url, { full: true }),
+    field('tags', 'Tags (comma-separated)', entry.tags, { full: true }),
+    field('body', 'Body / Content', entry.body, { type: 'textarea', full: true }),
+    h('div', { class: 'f-row' },
+      h('label', {}, 'Pin to top'),
+      h('label', { class: 'qual-toggle' },
+        h('input', { type: 'checkbox', name: 'is_pinned', checked: entry.is_pinned ? 'checked' : null }),
+        ' Show this entry at the top of every category'
+      )
+    )
+  );
+  body.appendChild(form);
+
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'kb-form', class: 'btn primary' }, id ? 'Save changes' : 'Create entry')
+  ));
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = form;
+    const fd = new FormData(f);
+    const payload = {
+      id: id || undefined,
+      title: f.title.value.trim(),
+      category: f.category.value,
+      body: f.body.value,
+      url: f.url.value.trim(),
+      tags: f.tags.value.trim(),
+      product_id: f.product_id.value || null,
+      is_pinned: fd.get('is_pinned') ? 1 : 0
+    };
+    if (!payload.title) { toast('Title is required', 'err'); return; }
+    try {
+      await api('api_kb_save', payload);
+      toast(id ? 'Saved' : 'Created');
+      m.remove();
+      if (typeof onSave === 'function') onSave();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+
+  document.body.appendChild(m);
+}
+
+/* ---------------- Team Chat (internal) -----------------------------
+ * Single team channel + 1-on-1 DMs to any user. Polling-based: thread
+ * list refreshes every 10s, active conversation every 4s while open.
+ * Reuses the WhatsBot chat polling pattern so the network footprint is
+ * predictable. Stops polling when the user navigates to a different tab.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Pull a query-string-style param out of the location hash.
+ * `#/teamchat?room=42&foo=bar` → parseHashParams().room === '42'
+ */
+function parseHashParams() {
+  const hash = String(location.hash || '');
+  const i = hash.indexOf('?');
+  if (i < 0) return {};
+  return Object.fromEntries(new URLSearchParams(hash.slice(i + 1)));
+}
+
+VIEWS.teamchat = async (view) => {
+  // Kill any previous timers if the tab is reopened
+  if (window._tcTimers) {
+    clearInterval(window._tcTimers.list);
+    clearInterval(window._tcTimers.thread);
+  }
+  window._tcTimers = { list: null, thread: null };
+
+  // Top-level guard — surface any unexpected failure as a readable card
+  // instead of a raw stack trace. Common cause: the boot didn't finish
+  // resolving CRM.user / CRM.access before a deep-link tried to open chat.
+  if (!CRM.user || !CRM.user.id) {
+    view.innerHTML = '<div class="error-box">Session not ready — please refresh and try again.</div>';
+    return;
+  }
+
+  view.innerHTML = '';
+  const wrap = h('div', { class: 'wb-chat' });
+  const left = h('div', { class: 'wb-chat-list' });
+  const right = h('div', { class: 'wb-chat-thread' },
+    h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a channel or DM'));
+  wrap.appendChild(left); wrap.appendChild(right);
+  view.appendChild(wrap);
+
+  // Pre-load every user the caller is allowed to chat with — this is
+  // independent of CRM.cache.users (which is filtered by lead-management
+  // hierarchy and would hide the rest of the team from a sales rep).
+  let chatUsers = [];
+  try { chatUsers = await api('api_chat_visibleUsers'); }
+  catch (e) {
+    if (String(e.message || '').includes('not enabled')) {
+      view.innerHTML = `<div class="card" style="padding: 2rem; text-align: center;">
+        <h3>💬 Team chat</h3>
+        <p class="muted">Team chat isn't enabled for your role. Ask your admin to enable it in Settings → Chat permissions.</p>
+      </div>`;
+      return;
+    }
+    chatUsers = [];
+  }
+
+  let openRoomId = null;
+  let openMsgFingerprint = '';
+  let lastListFingerprint = '';
+
+  function listFp(rooms) {
+    return rooms.map(r => `${r.id}|${r.last_at}|${r.unread}`).join(';');
+  }
+  function msgFp(msgs) {
+    return msgs.map(m => m.id).join(';');
+  }
+
+  async function renderThreadList() {
+    let rooms;
+    try { rooms = await api('api_chat_rooms_list'); }
+    catch (_) { rooms = []; }
+
+    // Also include every other active user as a potential DM target —
+    // even if no DM thread exists yet — so the user can start one.
+    // Uses the pre-loaded chatUsers (from api_chat_visibleUsers) which is
+    // NOT filtered by lead-management hierarchy. CRM.cache.users would
+    // hide the rest of the team from sales/employee role.
+    const usersInList = new Set(rooms.filter(r => r.type === 'dm').map(r => r.counterpart_id));
+    const otherUsers = chatUsers
+      .filter(u => Number(u.id) !== Number(CRM.user.id))
+      .filter(u => !usersInList.has(Number(u.id)));
+
+    const fp = listFp(rooms) + '|users:' + otherUsers.length;
+    if (fp === lastListFingerprint) return;
+    lastListFingerprint = fp;
+
+    left.innerHTML = '';
+    const isAdmin = CRM.user.role === 'admin';
+    left.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '👥 Team chat'),
+      h('div', {},
+        isAdmin ? h('button', { class: 'btn sm ghost', title: 'Create a new group',
+          onclick: () => openCreateGroupModal(chatUsers, () => { lastListFingerprint = ''; renderThreadList(); })
+        }, '+ Group') : null,
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' }, title: 'Refresh now',
+          onclick: () => { lastListFingerprint = ''; renderThreadList(); if (openRoomId) renderActiveThread(true); }
+        }, '↻')
+      )
+    ));
+
+    // Org-wide team channel first
+    rooms.filter(r => r.type === 'channel' && r.label === 'team').forEach(r => left.appendChild(renderRoomRow(r)));
+    // Custom groups next, with their own section header
+    const groupRooms = rooms.filter(r => r.type === 'channel' && r.label !== 'team');
+    if (groupRooms.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Groups'));
+      groupRooms.forEach(r => left.appendChild(renderRoomRow(r)));
+    }
+    // DM rooms with existing messages
+    const dmRooms = rooms.filter(r => r.type === 'dm');
+    if (dmRooms.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Direct messages'));
+      dmRooms.forEach(r => left.appendChild(renderRoomRow(r)));
+    }
+    // Users who don't yet have a DM thread — so you can start one
+    if (otherUsers.length) {
+      left.appendChild(h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', margin: '.75rem 0 .25rem .25rem' } }, 'Start a DM'));
+      otherUsers.forEach(u => {
+        left.appendChild(h('div', { class: 'wb-chat-row', onclick: () => startDmWith(u.id) },
+          h('div', {}, h('b', {}, u.name)),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' } }, u.role || '')
+        ));
+      });
+    }
+  }
+
+  function renderRoomRow(r) {
+    return h('div', { class: 'wb-chat-row' + (r.id === openRoomId ? ' active' : ''),
+      onclick: () => openRoom(r.id, r.label, r.type)
+    },
+      h('div', {},
+        r.type === 'channel' ? h('span', {}, '# ') : null,
+        h('b', {}, r.label || ('Room #' + r.id)),
+        r.unread ? h('span', { class: 'wb-unread' }, r.unread) : null
+      ),
+      h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+        r.last_message_user ? r.last_message_user + ': ' : '',
+        r.last_message || ''),
+      h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(r.last_at, 'relative'))
+    );
+  }
+
+  async function startDmWith(userId) {
+    // Resolve the target user from the chat-visibleUsers list (NOT
+    // CRM.cache.users which is hierarchy-filtered).
+    const u = chatUsers.find(x => Number(x.id) === Number(userId));
+    openRoomId = 'pending:' + userId;
+    wrap.classList.add('thread-open');
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center' } },
+      h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+      h('b', {}, u?.name || 'New DM')));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.appendChild(h('p', { class: 'muted', style: { padding: '1.5rem', textAlign: 'center' } },
+      'Type a message to start a DM with ' + (u?.name || 'this user')));
+    right.appendChild(log);
+    const input = makeChatInput(async (text) => {
+      try {
+        const r = await api('api_chat_send', { user_id: userId, body: text });
+        openRoomId = r.room_id;
+        lastListFingerprint = ''; await renderThreadList();
+        // Switch to the now-real room
+        await openRoom(r.room_id, u?.name || 'DM', 'dm');
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    right.appendChild(input);
+  }
+
+  async function renderActiveThread(force) {
+    if (!openRoomId || String(openRoomId).startsWith('pending:')) return;
+    let msgs;
+    try { msgs = await api('api_chat_messages_list', openRoomId); }
+    catch (_) { msgs = []; }
+    const fp = msgFp(msgs);
+    if (!force && fp === openMsgFingerprint) return;
+    openMsgFingerprint = fp;
+    const log = right.querySelector('.wb-chat-log');
+    if (!log) return;
+    const wasNearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 80;
+    log.innerHTML = '';
+    msgs.forEach(m => {
+      log.appendChild(h('div', { class: 'wb-msg ' + (m.is_mine ? 'out' : 'in') },
+        h('div', { class: 'wb-msg-meta muted' }, m.user_name + ' · ' + fmtDate(m.created_at, 'relative')),
+        h('div', { class: 'wb-msg-body' }, m.body || '')
+      ));
+    });
+    if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+  }
+
+  function makeChatInput(onSend) {
+    const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
+    input.addEventListener('keydown', async ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        const text = input.value.trim(); if (!text) return;
+        input.disabled = true;
+        try { await onSend(text); input.value = ''; }
+        finally { input.disabled = false; input.focus(); }
+      }
+    });
+    return h('div', { class: 'wb-chat-compose' }, input);
+  }
+
+  function backToList() {
+    openRoomId = null;
+    window._tcOpenRoomId = null;
+    openMsgFingerprint = '';
+    wrap.classList.remove('thread-open');
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a channel or DM').outerHTML;
+  }
+
+  async function openRoom(roomId, label, type) {
+    openRoomId = roomId;
+    window._tcOpenRoomId = roomId;       // exposed so the in-app chat toast
+                                          // can suppress popups for the room
+                                          // the user is actively reading
+    openMsgFingerprint = '';
+    wrap.classList.add('thread-open');  // mobile: hide list, show thread
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+
+    const isAdmin = CRM.user.role === 'admin';
+    // Manage button only for admin AND only on custom groups (not the
+    // org-wide 'team' channel and not DMs).
+    const canManage = isAdmin && type === 'channel' && label !== 'team';
+
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+      h('div', { style: { display: 'flex', alignItems: 'center' } },
+        h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+        h('b', {}, type === 'channel' ? '# ' + label : label)
+      ),
+      h('div', {},
+        canManage ? h('button', { class: 'btn sm ghost', title: 'Manage members / rename / delete',
+          onclick: () => openManageGroupModal(roomId, label, chatUsers, () => { lastListFingerprint = ''; renderThreadList(); })
+        }, '⚙') : null,
+        h('button', { class: 'btn sm ghost', style: { marginLeft: '.25rem' }, title: 'Refresh',
+          onclick: () => renderActiveThread(true) }, '↻')
+      )
+    ));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.innerHTML = '<div class="loading">Loading…</div>';
+    right.appendChild(log);
+
+    const input = makeChatInput(async (text) => {
+      try {
+        await api('api_chat_send', { room_id: roomId, body: text });
+        renderActiveThread(true);
+        lastListFingerprint = ''; renderThreadList();
+      } catch (e) { toast(e.message, 'err'); }
+    });
+    right.appendChild(input);
+
+    await renderActiveThread(true);
+    lastListFingerprint = ''; await renderThreadList();
+    // Reading a room marks it read server-side — refresh the sidebar
+    // badge immediately so the count drops without waiting 10s.
+    if (typeof _updateChatBadge === 'function') _updateChatBadge();
+  }
+
+  await renderThreadList();
+
+  // Deep-link from a notification — if the URL hash includes ?room=N,
+  // auto-open that conversation so the user lands inside the DM with one
+  // tap, not on the room list.
+  try {
+    const params = parseHashParams();
+    if (params.room) {
+      const targetId = Number(params.room);
+      // Look up label + type from the rooms list we just rendered
+      const allRooms = await api('api_chat_rooms_list').catch(() => []);
+      const room = allRooms.find(r => Number(r.id) === targetId);
+      if (room) {
+        await openRoom(room.id, room.label, room.type);
+      } else {
+        // Room exists but not in our list (e.g. brand-new DM the server
+        // hasn't surfaced yet) — fetch messages directly to bootstrap it
+        await openRoom(targetId, 'Conversation', 'dm');
+      }
+    }
+  } catch (e) {
+    console.warn('[teamchat] deep-link failed:', e.message);
+  }
+
+  window._tcTimers.list = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    renderThreadList().catch(() => {});
+  }, 10_000);
+  window._tcTimers.thread = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    if (openRoomId && !String(openRoomId).startsWith('pending:')) {
+      renderActiveThread(false).catch(() => {});
+    }
+  }, 4_000);
+};
+
+/**
+ * Modal: admin creates a new chat group with a name + member checkboxes.
+ * The creator is auto-included server-side.
+ */
+function openCreateGroupModal(allUsers, onSaved) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '➕ New chat group'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { id: 'gc-form' });
+  form.appendChild(h('p', { class: 'muted', style: { marginTop: 0 } },
+    'Pick a name and the members. Only the people you tick can see the group and post in it.'));
+  form.appendChild(h('input', { name: 'name', placeholder: 'Group name (e.g. Sales — North zone)',
+    style: { width: '100%', padding: '.6rem .75rem', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '.75rem' },
+    required: true, maxlength: 80
+  }));
+  const memberBox = h('div', { class: 'card', style: { padding: '.75rem', maxHeight: '320px', overflowY: 'auto' } });
+  (allUsers || []).filter(u => Number(u.id) !== Number(CRM.user.id)).forEach(u => {
+    memberBox.appendChild(h('label', {
+      style: { display: 'flex', alignItems: 'center', padding: '.3rem 0', cursor: 'pointer' }
+    },
+      h('input', { type: 'checkbox', name: 'mem_' + u.id, style: { marginRight: '.5rem' } }),
+      h('span', { style: { fontWeight: 500 } }, u.name),
+      h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' · ' + (u.role || ''))
+    ));
+  });
+  form.appendChild(memberBox);
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'gc-form', class: 'btn primary' }, 'Create group')
+  ));
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const name = form.name.value.trim();
+    if (!name) { toast('Group name required', 'err'); return; }
+    const memberIds = [...form.querySelectorAll('input[type="checkbox"]:checked')]
+      .map(c => Number(c.name.replace(/^mem_/, '')));
+    try {
+      await api('api_chat_groups_create', { name, member_ids: memberIds });
+      toast('Group created');
+      m.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.body.appendChild(m);
+}
+
+/**
+ * Modal: admin renames / re-sets members / deletes an existing group.
+ * Pre-fills with current members.
+ */
+async function openManageGroupModal(roomId, currentName, allUsers, onSaved) {
+  let currentMembers = [];
+  try { currentMembers = await api('api_chat_groups_members', roomId); }
+  catch (e) { toast(e.message, 'err'); return; }
+  const memberIds = new Set(currentMembers.map(m => Number(m.user_id)));
+
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  m.appendChild(body);
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '⚙ Manage group'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+
+  const form = h('form', { id: 'gm-form' });
+  form.appendChild(h('label', { class: 'muted', style: { fontSize: '.8rem' } }, 'Group name'));
+  form.appendChild(h('input', { name: 'name', value: currentName,
+    style: { width: '100%', padding: '.6rem .75rem', borderRadius: '8px', border: '1px solid #cbd5e1', marginBottom: '.75rem' },
+    required: true, maxlength: 80
+  }));
+  form.appendChild(h('label', { class: 'muted', style: { fontSize: '.8rem' } },
+    'Members — tick to include. Removing yourself is blocked (server force-includes admin).'));
+  const memberBox = h('div', { class: 'card', style: { padding: '.75rem', maxHeight: '320px', overflowY: 'auto' } });
+  (allUsers || []).forEach(u => {
+    memberBox.appendChild(h('label', {
+      style: { display: 'flex', alignItems: 'center', padding: '.3rem 0', cursor: 'pointer' }
+    },
+      h('input', {
+        type: 'checkbox', name: 'mem_' + u.id,
+        checked: memberIds.has(Number(u.id)) ? 'checked' : null,
+        style: { marginRight: '.5rem' }
+      }),
+      h('span', { style: { fontWeight: 500 } }, u.name),
+      h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, ' · ' + (u.role || ''))
+    ));
+  });
+  form.appendChild(memberBox);
+  body.appendChild(form);
+
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { type: 'button', class: 'btn', style: { background: '#ef4444', color: '#fff' },
+      onclick: async () => {
+        if (!confirm('Permanently delete this group and all its messages?')) return;
+        try {
+          await api('api_chat_groups_delete', roomId);
+          toast('Deleted');
+          m.remove();
+          if (typeof onSaved === 'function') onSaved();
+        } catch (e) { toast(e.message, 'err'); }
+      }
+    }, '🗑 Delete'),
+    h('button', { type: 'button', class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { type: 'submit', form: 'gm-form', class: 'btn primary' }, 'Save changes')
+  ));
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const newName = form.name.value.trim();
+    if (!newName) { toast('Group name required', 'err'); return; }
+    const newIds = [...form.querySelectorAll('input[type="checkbox"]:checked')]
+      .map(c => Number(c.name.replace(/^mem_/, '')));
+    try {
+      await api('api_chat_groups_update', {
+        id: roomId, name: newName, member_ids: newIds
+      });
+      toast('Saved');
+      m.remove();
+      if (typeof onSaved === 'function') onSaved();
+    } catch (e) { toast(e.message, 'err'); }
+  });
+  document.body.appendChild(m);
+}
+
+/* ---------------- Reports with charts ---------------- */
+async function ensureChartJs() {
+  if (!window.Chart) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js';
+      s.onload = resolve; s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  // Also load chartjs-plugin-datalabels so we can render the actual numeric
+  // value on top of every bar / segment (the user wants numbers visible, not
+  // just bars). Register globally so every chart picks it up.
+  if (window.Chart && !window.ChartDataLabels) {
+    try {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+      if (window.ChartDataLabels && Chart && Chart.register) Chart.register(window.ChartDataLabels);
+    } catch (_) { /* non-fatal: charts still render, just without labels */ }
+  }
+}
+/* ============================================================
+   WhatsBot module — Connect / Templates / Bots / Campaigns / Chat / Logs
+   ============================================================ */
+/**
+ * Dial route — opened on the user's phone when they tap a "Call from mobile"
+ * push. Hash query params: ?phone=+91...&lead=N
+ *
+ * Auto-fires tel: which the OS dialer opens. Shows a fallback button in
+ * case auto-launch is suppressed (some browsers block `tel:` redirects from
+ * non-user-initiated navigation).
+ */
+VIEWS.dial = async (view) => {
+  view.innerHTML = '';
+  const hash = location.hash || '';
+  const queryStr = hash.split('?')[1] || '';
+  const params = new URLSearchParams(queryStr);
+  const phone = (params.get('phone') || '').trim();
+  if (!phone) {
+    view.appendChild(h('div', { class: 'error-box' }, 'No phone number in the URL.'));
+    return;
+  }
+  const tel = 'tel:' + phone.replace(/\s+/g, '');
+  const status = h('div', { class: 'muted', style: { fontSize: '.8rem', marginTop: '.5rem' } });
+
+  async function autoDial() {
+    const cap = window.Capacitor;
+    const tries = [];
+    // Strategy 1 — Capacitor App.openUrl (Android: launches ACTION_DIAL)
+    try {
+      if (cap && cap.Plugins && cap.Plugins.App && typeof cap.Plugins.App.openUrl === 'function') {
+        const r = await cap.Plugins.App.openUrl({ url: tel });
+        tries.push('App.openUrl→' + JSON.stringify(r));
+        if (r && r.completed !== false) { status.textContent = '✓ Launched via App.openUrl'; return 'capacitor'; }
+      } else { tries.push('no App.openUrl'); }
+    } catch (e) { tries.push('App.openUrl threw: ' + e.message); }
+    // Strategy 2 — window.open with _system
+    try {
+      const w = window.open(tel, '_system');
+      tries.push('window.open(_system)→' + (w ? 'win' : 'null'));
+      if (w) { status.textContent = '✓ Launched via window.open'; return 'window'; }
+    } catch (e) { tries.push('window.open threw: ' + e.message); }
+    // Strategy 3 — invisible iframe (works in some WebViews where href doesn't)
+    try {
+      const f = document.createElement('iframe');
+      f.style.display = 'none';
+      f.src = tel;
+      document.body.appendChild(f);
+      tries.push('iframe→appended');
+      setTimeout(() => f.remove(), 1000);
+      status.textContent = '✓ Launched via iframe';
+      return 'iframe';
+    } catch (e) { tries.push('iframe threw: ' + e.message); }
+    // Strategy 4 — programmatic anchor click (very reliable in WebViews)
+    try {
+      const a = document.createElement('a');
+      a.href = tel; a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      tries.push('anchor.click()→fired');
+      setTimeout(() => a.remove(), 100);
+      status.textContent = '✓ Launched via anchor.click()';
+      return 'anchor';
+    } catch (e) { tries.push('anchor.click threw: ' + e.message); }
+    // Strategy 5 — plain href
+    try { location.href = tel; tries.push('location.href set'); status.textContent = '✓ Launched via location.href'; return 'href'; } catch (e) { tries.push('location.href threw: ' + e.message); }
+    status.innerHTML = '<span style="color:#ef4444">All strategies failed: ' + tries.join(' · ') + '</span>';
+    return 'failed';
+  }
+
+  setTimeout(() => { autoDial().catch(() => {}); }, 150);
+
+  view.appendChild(h('div', { style: { maxWidth: '420px', margin: '1rem auto', textAlign: 'center', padding: '1rem' } },
+    h('div', { style: { fontSize: '4rem', marginTop: '1rem' } }, '📞'),
+    h('h1', { style: { margin: '.5rem 0', fontSize: '1.5rem' } }, 'Calling…'),
+    h('p', { style: { fontSize: '1.4rem', fontWeight: '700', fontFamily: 'monospace', margin: '.5rem 0 1.5rem' } }, phone),
+    // Hard anchor tap — most reliable path inside Capacitor WebView. Tapping
+    // an <a href="tel:..."> is treated as a real Intent launch by Android.
+    h('a', { class: 'btn primary', style: { display: 'block', fontSize: '1.4rem', padding: '1.25rem', background: '#10b981', color: '#fff', border: 'none', borderRadius: '12px', textDecoration: 'none', fontWeight: '600' }, href: tel },
+      '📞 CALL NOW'
+    ),
+    status,
+    h('a', { class: 'btn ghost', style: { marginTop: '1.25rem', display: 'inline-block' }, href: '#/leads' }, '← Back to leads')
+  ));
+};
+
+VIEWS.whatsbot = async (view) => {
+  view.innerHTML = '';
+  const tabs = [
+    { id: 'connect',   label: '🔗 Connect Account' },
+    { id: 'templates', label: '📋 Templates' },
+    { id: 'msgbots',   label: '💬 Message Bot' },
+    { id: 'tplbots',   label: '🤖 Template Bot' },
+    { id: 'campaigns', label: '📣 Campaigns' },
+    { id: 'chat',      label: '💭 Chat' },
+    { id: 'activity',  label: '📑 Activity Log' }
+  ];
+  const nav = h('div', { class: 'subtabs' },
+    ...tabs.map(t => h('button', { class: 'subtab', 'data-wbtab': t.id, onclick: () => showWbTab(t.id) }, t.label))
+  );
+  view.appendChild(nav);
+  view.appendChild(h('div', { id: 'wb-body' }));
+  const startTab = (location.hash.match(/whatsbot\/([a-z]+)/i) || [])[1] || 'connect';
+  showWbTab(startTab);
+};
+
+async function showWbTab(id) {
+  // Stop any running chat-polling timers if we're navigating away from chat.
+  // Otherwise they'd keep firing every 4-8s in the background even after the
+  // user has switched to e.g. Templates or Activity.
+  if (id !== 'chat' && window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+    window._wbChatTimers = null;
+  }
+  $$('.subtab').forEach(b => b.classList.toggle('active', b.dataset.wbtab === id));
+  const body = $('#wb-body');
+  body.innerHTML = '<div class="loading">Loading…</div>';
+  try {
+    if (id === 'connect')   body.replaceChildren(await wbConnect());
+    if (id === 'templates') body.replaceChildren(await wbTemplates());
+    if (id === 'msgbots')   body.replaceChildren(await wbMessageBots());
+    if (id === 'tplbots')   body.replaceChildren(await wbTemplateBots());
+    if (id === 'campaigns') body.replaceChildren(await wbCampaigns());
+    if (id === 'chat')      body.replaceChildren(await wbChat());
+    if (id === 'activity')  body.replaceChildren(await wbActivity());
+    location.hash = '#/whatsbot/' + id;
+  } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+// ---------- Connect Account ----------
+async function wbConnect() {
+  const s = await api('api_wb_settings_get');
+  const wrap = h('div', { class: 'wb-connect' });
+  const isConnected = !!(s.access_token_present && s.waba_id && s.phone_number_id);
+  const fbReady = !!(s.fb_app_id && s.fb_app_secret_set && s.fb_config_id);
+  // Preload the FB SDK now so that when the user clicks "Connect with
+  // Facebook" later, FB.login runs SYNCHRONOUSLY inside the click handler.
+  // Without this, Chrome (and most browsers) block the popup because the
+  // user-gesture has already expired by the time the async SDK fetch returns.
+  if (s.fb_app_id) {
+    ensureFbSdkLoaded(s.fb_app_id).catch(e => console.warn('[wb] FB SDK preload failed:', e.message));
+  }
+
+  // Embedded vs Manual mode toggle — matches the screenshot's layout.
+  // Default ON unless the admin has explicitly stored a manual-only setup.
+  const embKey = 'wb_emb_signin_on';
+  let embOn = localStorage.getItem(embKey);
+  embOn = embOn === null ? true : embOn === '1';
+
+  // ---- Header: title + "Enable embedded SignIn" toggle on the right ----
+  const header = h('div', { class: 'wb-conn-head' },
+    h('h2', {}, 'WhatsApp business account'),
+    h('label', { class: 'wb-emb-toggle' },
+      h('span', {}, 'Enable embedded SignIn'),
+      (() => {
+        const sw = h('span', { class: 'switch' + (embOn ? ' on' : '') });
+        const inp = h('input', { type: 'checkbox', checked: embOn ? 'checked' : null });
+        inp.onchange = () => {
+          embOn = inp.checked;
+          localStorage.setItem(embKey, embOn ? '1' : '0');
+          sw.classList.toggle('on', embOn);
+          showWbTab('connect'); // re-render
+        };
+        sw.appendChild(inp);
+        sw.appendChild(h('span', { class: 'slider' }));
+        return sw;
+      })()
+    )
+  );
+  wrap.appendChild(header);
+
+  // ---- Connected status banner (always show if connected) ----
+  if (isConnected) {
+    wrap.appendChild(h('div', { class: 'card wb-conn-status' },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' } },
+        h('div', { style: { fontSize: '1.5rem' } }, '✅'),
+        h('div', { style: { flex: 1, minWidth: '200px' } },
+          h('b', {}, 'WhatsApp connected'),
+          h('div', { class: 'muted', style: { fontSize: '.85rem' } },
+            'WABA: ', h('code', {}, s.waba_id), ' · Phone ID: ', h('code', {}, s.phone_number_id))
+        ),
+        h('button', { class: 'btn sm', onclick: async () => {
+          try {
+            const r = await api('api_wb_connect_verify');
+            if (r.ok) toast(`${r.display_phone_number} · Quality ${r.quality_rating || '—'} · ${r.status || ''}`);
+            else toast(r.error || 'Verify failed', 'err');
+          } catch (e) { toast(e.message, 'err'); }
+        } }, 'Verify'),
+        // Register the phone number with Cloud API — required once before
+        // any send works. Without this, Meta returns 'account not registered'.
+        h('button', { class: 'btn sm', title: 'Required once after connecting — registers the phone with WhatsApp Cloud API.',
+          onclick: () => openRegisterPhoneModal()
+        }, '🔐 Register phone'),
+        h('button', { class: 'btn sm ghost danger', onclick: async () => {
+          if (!await confirmDialog('Disconnect WhatsApp? Stored tokens will be cleared.')) return;
+          try { await api('api_wb_disconnect'); toast('Disconnected'); showWbTab('connect'); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, 'Disconnect')
+      ),
+      h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.5rem', marginBottom: 0 } },
+        '⚠ If sending fails with "account not registered" — click 🔐 Register phone above. WhatsApp Cloud API needs each number registered once with a PIN (use 000000 if you don\'t have 2FA on the number).')
+    ));
+
+    // ---- Webhook health card — surfaces the most common reason for
+    //      "messages send but no delivered/read/inbound" (webhook not
+    //      configured in Meta dashboard or not subscribed to fields).
+    const whCard = h('div', { class: 'card', style: { borderLeft: '4px solid #f59e0b' } });
+    whCard.appendChild(h('h4', { style: { marginTop: 0 } }, '📡 Webhook health'));
+    const whBody = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+    whCard.appendChild(whBody);
+    wrap.appendChild(whCard);
+    api('api_wb_webhook_status', location.origin).then(w => {
+      whBody.innerHTML = '';
+      const isHealthy = (w.recent_count_24h > 0) && Array.isArray(w.subscribed) && w.subscribed.length > 0;
+      whCard.style.borderLeftColor = isHealthy ? '#10b981' : '#f59e0b';
+      // Top status line
+      whBody.appendChild(h('div', { style: { fontSize: '.95rem', marginBottom: '.75rem' } },
+        isHealthy
+          ? h('span', {}, '✅ Webhook is receiving events from Meta. Last inbound: ', h('b', {}, fmtDate(w.last_inbound?.recorded_on, 'relative')), ' · ', w.recent_count_24h, ' events in last 24 h.')
+          : h('span', {}, '⚠️ Webhook is not delivering events from Meta. ',
+              w.recent_count_24h ? '' : 'Zero events in the last 24 h. ',
+              'You won\'t see delivered / read / inbound messages until this is fixed.')
+      ));
+      // Setup checklist
+      whBody.appendChild(h('div', { style: { background: '#f8fafc', padding: '.75rem 1rem', borderRadius: '6px', fontSize: '.85rem' } },
+        h('div', { style: { fontWeight: 600, marginBottom: '.5rem' } }, '🔧 Webhook setup checklist'),
+        h('ol', { style: { paddingLeft: '1.2rem', margin: 0 } },
+          h('li', { style: { marginBottom: '.4rem' } },
+            'In ', h('a', { href: 'https://developers.facebook.com/apps/' + (s.fb_app_id || ''), target: '_blank' }, 'Meta App Dashboard'),
+            ' → Left sidebar → ', h('b', {}, 'WhatsApp → Configuration'), '. ',
+            'Click ', h('b', {}, 'Edit'), ' next to Webhook.'
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Callback URL — copy and paste: ',
+            h('input', { value: w.webhook_url || (location.origin + '/hook/whatsapp_webhook'), readonly: 'readonly',
+              style: { fontFamily: 'monospace', width: '100%', marginTop: '.25rem', padding: '.4rem', fontSize: '.78rem' },
+              onclick: ev => { ev.target.select(); document.execCommand && document.execCommand('copy'); toast('Copied'); }
+            })
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Verify Token — paste this exactly: ',
+            h('input', { value: w.verify_token || s.verify_token || '', readonly: 'readonly',
+              style: { fontFamily: 'monospace', width: '100%', marginTop: '.25rem', padding: '.4rem', fontSize: '.78rem' },
+              onclick: ev => { ev.target.select(); document.execCommand && document.execCommand('copy'); toast('Copied'); }
+            })
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Click ', h('b', {}, 'Verify and save'), ' in Meta — they\'ll ping our endpoint and confirm.'
+          ),
+          h('li', { style: { marginBottom: '.4rem' } },
+            'Then in the same Webhook section, ', h('b', {}, 'Subscribe to fields'), ' — tick at least:',
+            h('ul', { style: { margin: '.25rem 0' } },
+              h('li', {}, h('code', {}, 'messages'), ' — required for inbound messages and status updates'),
+              h('li', {}, h('code', {}, 'message_template_status_update'), ' — optional, for template approval changes')
+            )
+          ),
+          h('li', {}, 'Click the ', h('b', {}, '🔄 Subscribe app'), ' button below to attach our app to the WABA (one-click).')
+        )
+      ));
+      // Action row
+      whBody.appendChild(h('div', { style: { marginTop: '.75rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' } },
+        h('button', { class: 'btn primary', onclick: async () => {
+          try { const r = await api('api_wb_webhook_subscribe'); toast('App subscribed to WABA'); showWbTab('connect'); }
+          catch (e) { toast(e.message, 'err'); }
+        } }, '🔄 Subscribe app to WABA'),
+        h('button', { class: 'btn', onclick: () => showWbTab('activity') }, '📑 View Activity Log'),
+        h('button', { class: 'btn ghost', onclick: () => showWbTab('connect') }, '🔄 Refresh status')
+      ));
+      // Subscribed apps detail
+      if (w.subscribe_error) {
+        whBody.appendChild(h('div', { class: 'error-box', style: { marginTop: '.5rem' } },
+          'Could not check subscription: ', w.subscribe_error));
+      } else if (Array.isArray(w.subscribed)) {
+        whBody.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.5rem' } },
+          w.subscribed.length === 0
+            ? '⚠ No app is subscribed to this WABA. Click "Subscribe app to WABA" above.'
+            : '✓ ' + w.subscribed.length + ' app(s) subscribed: ' + w.subscribed.map(a => a.app_name || a.app_id).join(', ')
+        ));
+      }
+    }).catch(e => {
+      whBody.innerHTML = '';
+      whBody.appendChild(h('div', { class: 'error-box' }, 'Could not load webhook status: ' + e.message));
+    });
+
+    // ---- All WABA phone numbers — pulled live from /phone_numbers ----
+    const phonesCard = h('div', { class: 'card' });
+    phonesCard.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '📞 Phone Numbers on this WABA'),
+      h('button', { class: 'btn sm ghost', onclick: () => showWbTab('connect') }, '🔄 Refresh')
+    ));
+    const phonesList = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+    phonesCard.appendChild(phonesList);
+    wrap.appendChild(phonesCard);
+    // Fire async so the rest of the page renders immediately
+    api('api_wb_phones_list').then(rows => {
+      phonesList.innerHTML = '';
+      if (!rows.length) { phonesList.appendChild(h('p', { class: 'muted' }, 'No phone numbers found on this WABA.')); return; }
+      const qColor = q => q === 'GREEN' ? '#10b981' : q === 'YELLOW' ? '#f59e0b' : q === 'RED' ? '#ef4444' : '#94a3b8';
+      const sColor = s => /CONNECTED|VERIFIED/i.test(String(s)) ? '#10b981'
+                     : /UNVERIFIED|PENDING/i.test(String(s)) ? '#f59e0b'
+                     : /OFFLINE|FLAGGED|RESTRICTED/i.test(String(s)) ? '#ef4444'
+                     : '#64748b';
+      phonesList.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Number'),
+          h('th', {}, 'Verified name'),
+          h('th', {}, 'Quality'),
+          h('th', {}, 'Status'),
+          h('th', {}, 'Name approval'),
+          h('th', {}, 'Tier'),
+          h('th', {}, 'Phone ID'),
+          h('th', {}, 'Actions')
+        )),
+        h('tbody', {}, ...rows.map(p => h('tr', {},
+          h('td', {}, p.is_current ? h('b', {}, p.display_phone_number, ' ', h('span', { style: { color: '#3b82f6', fontSize: '.7rem' } }, '★ current')) : (p.display_phone_number || '—')),
+          h('td', {}, p.verified_name || '—'),
+          h('td', {}, h('span', { class: 'tag', style: { background: qColor(p.quality_rating), color: '#fff' } }, p.quality_rating || 'UNKNOWN')),
+          h('td', {}, h('span', { class: 'tag', style: { background: sColor(p.status), color: '#fff' } }, p.status || 'UNKNOWN')),
+          h('td', { class: 'muted', style: { fontSize: '.78rem' } }, p.name_status || '—'),
+          h('td', { class: 'muted', style: { fontSize: '.78rem' } }, p.messaging_limit_tier || '—'),
+          h('td', {}, h('code', { style: { fontSize: '.72rem' } }, p.id)),
+          h('td', { style: { whiteSpace: 'nowrap' } },
+            !p.is_current ? h('button', { class: 'btn sm', onclick: async () => {
+              try { await api('api_wb_phones_set_current', p.id); toast('Switched to ' + p.display_phone_number); showWbTab('connect'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '★ Use this') : null,
+            h('button', { class: 'btn sm wa-cloud-btn', style: { marginLeft: '.25rem' },
+              onclick: () => openRegisterPhoneModal(p.id)
+            }, '🔐 Register')
+          )
+        )))
+      )));
+    }).catch(e => {
+      phonesList.innerHTML = '';
+      phonesList.appendChild(h('div', { class: 'error-box' }, 'Could not load phone numbers: ' + e.message));
+    });
+  }
+
+  if (embOn) {
+    // ============ EMBEDDED SIGNIN MODE ============
+    // Already connected → don't show the Connect button again, just an
+    // unobtrusive "Connect a different account" link at the bottom.
+    if (isConnected) {
+      const reconnectWrap = h('div', { style: { textAlign: 'center', marginTop: '1rem' } });
+      reconnectWrap.appendChild(h('a', {
+        href: '#', style: { fontSize: '.85rem', color: 'var(--text-muted, #64748b)' },
+        onclick: ev => { ev.preventDefault();
+          if (confirm('Connect a different WhatsApp Business account? Current connection will be replaced.')) {
+            startEmbeddedSignup(s.fb_app_id, s.fb_config_id);
+          }
+        }
+      }, 'Connect a different WhatsApp account'));
+      wrap.appendChild(reconnectWrap);
+      return wrap;
+    }
+
+    // Platform-managed Facebook credentials — clients never see App ID,
+    // Secret or Config ID. They just click one button and pick their
+    // WABA / phone number inside Meta's dialog.
+    const introCard = h('div', { class: 'card wb-fb-card', style: { textAlign: 'center', padding: '2rem 1.5rem' } });
+    introCard.appendChild(h('h3', { style: { marginTop: 0 } }, 'Connect your WhatsApp Business account'));
+    introCard.appendChild(h('p', { class: 'muted', style: { maxWidth: '460px', margin: '.25rem auto 1.25rem' } },
+      'Click the button below to link your WhatsApp Business Account. You\'ll be asked to log into Facebook, pick the business and phone number you want to use, and Meta will send everything back to us automatically — no API keys to copy or paste.'));
+    introCard.appendChild(h('button', {
+      class: 'btn-fb-meta',
+      onclick: () => startEmbeddedSignup(s.fb_app_id, s.fb_config_id)
+    },
+      h('span', { class: 'fb-icon' }, '🅵'),
+      ' Connect with Facebook'
+    ));
+    introCard.appendChild(h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '1rem', marginBottom: 0 } },
+      '🔒 You stay in control — Meta only shares the WABA and phone number you select.'));
+    // Self-recovery: if the user already finished the dialog but the page
+    // never refreshed, this re-fetches and reloads.
+    introCard.appendChild(h('p', { style: { fontSize: '.8rem', marginTop: '.85rem', marginBottom: 0 } },
+      h('a', { href: '#', style: { color: 'var(--text-muted, #64748b)' },
+        onclick: ev => { ev.preventDefault(); location.reload(); }
+      }, 'Already finished on Facebook? Click here to refresh status'),
+    ));
+    wrap.appendChild(introCard);
+    return wrap;
+  }
+
+  // ============ MANUAL ENTRY MODE ============
+  const manualCard = h('div', { class: 'card' });
+  manualCard.appendChild(h('div', { class: 'wb-card-title' }, 'Manual WhatsApp credentials'));
+  manualCard.appendChild(h('p', { class: 'muted', style: { marginTop: 0 } },
+    'Paste WABA ID, Phone Number ID and Access Token directly. Use Embedded SignIn (toggle above) for the easier flow.'));
+  const form = h('form', { class: 'form-grid', style: { marginTop: '.75rem' }, onsubmit: async ev => {
+    ev.preventDefault();
+    const fd = new FormData(ev.target);
+    try {
+      await api('api_wb_settings_save', {
+        waba_id: fd.get('waba_id'),
+        access_token: fd.get('access_token') || undefined,
+        phone_number_id: fd.get('phone_number_id'),
+        verify_token: fd.get('verify_token'),
+        autolead_on: !!fd.get('autolead_on'),
+        autolead_source: fd.get('autolead_source'),
+        default_user_id: fd.get('default_user_id'),
+        default_status_id: fd.get('default_status_id'),
+        default_country_code: fd.get('default_country_code') || '91'
+      });
+      toast('Settings saved'); showWbTab('connect');
+    } catch (e) { toast(e.message, 'err'); }
+  }});
+  form.appendChild(field('waba_id', 'WhatsApp Business Account ID *', s.waba_id, { required: true }));
+  form.appendChild(field('phone_number_id', 'Phone Number ID *', s.phone_number_id, { required: true }));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Access Token *',
+      s.access_token_present ? h('span', { class: 'muted', style: { fontSize: '.75rem', marginLeft: '.4rem' } }, '(saved — leave blank to keep)') : null),
+    h('input', { name: 'access_token', type: 'password', autocomplete: 'new-password',
+      placeholder: s.access_token_present ? '••••••••••••••' : 'paste from Meta App → System Users → Generate Token' })
+  ));
+  form.appendChild(field('verify_token', 'Webhook Verify Token', s.verify_token));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, 'Webhook callback URL (paste this into Meta → WhatsApp → Webhooks)'),
+    h('input', { value: s.webhook_url, readonly: 'readonly',
+      style: { background: '#f1f5f9', fontFamily: 'monospace' },
+      onclick: ev => ev.target.select() })
+  ));
+  form.appendChild(h('h4', { style: { gridColumn: '1 / -1', marginTop: '1rem' } }, 'Auto-lead from inbound message'));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Convert new messages to leads'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'autolead_on', checked: s.autolead_on ? 'checked' : null }),
+      ' Enabled')
+  ));
+  form.appendChild(field('autolead_source', 'Lead source (when auto-creating)', s.autolead_source || 'WhatsApp'));
+  form.appendChild(field('default_country_code', 'Default country code (for 10-digit numbers)', s.default_country_code || '91'));
+  // Lead defaults pickers
+  const users = CRM.cache.users || [];
+  const statuses = CRM.cache.statuses || [];
+  form.appendChild(selectField('default_user_id', 'Default assignee for new WhatsApp leads', s.default_user_id,
+    [{ value: '', label: '— Use assignment rules —' }, ...users.map(u => ({ value: u.id, label: u.name }))]));
+  form.appendChild(selectField('default_status_id', 'Default status for new WhatsApp leads', s.default_status_id,
+    [{ value: '', label: '— First status —' }, ...statuses.map(st => ({ value: st.id, label: st.name }))]));
+  form.appendChild(h('div', { class: 'f-row full' },
+    h('button', { type: 'submit', class: 'btn primary' }, '💾 Save settings')
+  ));
+  manualCard.appendChild(form);
+  wrap.appendChild(manualCard);
+  return wrap;
+}
+
+/**
+ * Register the WABA phone number with Meta's Cloud API. This is a
+ * one-time post-connect step required before any /messages call works.
+ * Without it Meta returns "account is not registered" (error 133010).
+ *
+ * If the number doesn't have two-factor PIN set, leave the input as
+ * 000000. If it does, the user must paste the 6-digit PIN they configured
+ * when first claiming the number on whatsapp.com / Business Manager.
+ */
+/**
+ * Push a "call this number" notification to the user's logged-in mobile
+ * device(s). When they tap the notification, the APK opens our /#/dial
+ * route which auto-fires `tel:` and launches the native dialer with the
+ * number pre-filled. They just press the green call button on their phone.
+ *
+ * Requires the FCM Android APK to be installed and logged in as the same
+ * user — desktop and mobile share the same user account.
+ */
+async function callViaMobile(lead) {
+  const phone = String(lead?.phone || '').trim();
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  // Auto-prepend India country code if it's a 10-digit mobile, so the
+  // dialer opens with a directly-callable number.
+  let normalized = phone.replace(/\D/g, '');
+  if (normalized.length === 10 && /^[6-9]/.test(normalized)) normalized = '91' + normalized;
+  const dial = '+' + normalized;
+  try {
+    const r = await api('api_call_via_mobile', lead?.id || null, dial, lead?.name || '');
+    const fcmCount = (r.push && r.push.fcm && r.push.fcm.sent) || 0;
+    if (fcmCount === 0) {
+      toast('No mobile device registered for push. Install the Android app + log in, then try again.', 'warn');
+    } else {
+      toast('📱 Sent to your phone — tap the notification to open the dialer.');
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+/**
+ * Send a Calendly meeting link via WhatsApp.
+ *
+ * Reads the rep's calendly_url from CRM.user (set by api_me at login).
+ * If unset, prompts the rep to paste it in their profile first. Otherwise
+ * opens wa.me with a pre-filled message including the lead's name and
+ * the booking URL — the rep just hits Send.
+ *
+ * Phase 2 will add a Calendly webhook that auto-creates a follow-up in
+ * CRM the moment the prospect picks a slot.
+ */
+function sendCalendlyLink(lead) {
+  const url = (CRM.user && CRM.user.calendly_url) || '';
+  if (!url) {
+    toast('Set your Calendly link in My Profile (top-right avatar → Edit profile) first.', 'warn');
+    return;
+  }
+  const phone = String(lead?.phone || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  const dial = phone.length === 10 && /^[6-9]/.test(phone) ? '91' + phone : phone;
+  const name = (lead?.name || 'there').split(/\s+/)[0]; // first name only
+  const me = (CRM.user && CRM.user.name) ? (' — ' + CRM.user.name) : '';
+  const text = `Hi ${name}, please pick a time that works for a quick call: ${url}${me}`;
+  const waUrl = 'https://wa.me/' + dial + '?text=' + encodeURIComponent(text);
+  // Best-effort: log a remark so the team knows a meeting link went out.
+  try { api('api_leads_addRemark', lead.id, { remark: '📅 Calendly meeting link sent via WhatsApp' }).catch(() => {}); } catch (_) {}
+  window.open(waUrl, '_blank');
+}
+
+/**
+ * Substitute {placeholders} in a personal WA template body with values
+ * from the lead and current user. Unknown tokens are left in place so
+ * the rep can spot mistakes.
+ */
+function _renderPersonalWaTemplate(body, lead) {
+  const me = CRM.user || {};
+  const ctx = {
+    name:        lead?.name || '',
+    first_name:  String(lead?.name || '').split(/\s+/)[0],
+    phone:       lead?.phone || '',
+    company:     lead?.company || '',
+    value:       lead?.value ? '₹' + Number(lead.value).toLocaleString('en-IN') : '',
+    next_followup: lead?.next_followup_at ? new Date(lead.next_followup_at).toLocaleString('en-IN') : '',
+    my_name:     me.name || '',
+    calendly:    me.calendly_url || ''
+  };
+  return String(body || '').replace(/\{(\w+)\}/g, (m, k) => ctx[k] != null ? ctx[k] : m);
+}
+
+/**
+ * 💬 personal WhatsApp picker — opens a small modal with the rep's
+ * saved templates. Picking one substitutes lead/user placeholders and
+ * launches wa.me with the full message pre-filled. Includes a
+ * "Blank — just open chat" shortcut and a "Manage templates" link.
+ */
+async function openPersonalWaPicker(lead) {
+  const phone = String(lead?.phone || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+  const dial = phone.length === 10 && /^[6-9]/.test(phone) ? '91' + phone : phone;
+
+  let templates = [];
+  try { templates = await api('api_personalWa_list'); } catch (_) {}
+
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const launch = (text) => {
+    const url = 'https://wa.me/' + dial + (text ? '?text=' + encodeURIComponent(text) : '');
+    try { if (lead?.id) api('api_leads_addRemark', lead.id, { remark: '💬 WhatsApp sent (personal): ' + (text || '(blank chat opened)').slice(0, 200) }).catch(() => {}); } catch (_) {}
+    window.open(url, '_blank');
+    modal.remove();
+  };
+  const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '.4rem', maxHeight: '50vh', overflowY: 'auto' } });
+  if (!templates.length) {
+    list.appendChild(h('p', { class: 'muted', style: { margin: 0, fontSize: '.88rem' } },
+      'No personal WhatsApp templates yet. Click "Manage templates" below to create your first — it saves typing on every chat.'));
+  }
+  templates.forEach(t => {
+    const rendered = _renderPersonalWaTemplate(t.body, lead);
+    list.appendChild(h('div', {
+      class: 'card', style: { padding: '.6rem .8rem', cursor: 'pointer', borderLeft: '3px solid #25D366' },
+      onclick: () => launch(rendered)
+    },
+      h('div', { style: { fontWeight: 600, marginBottom: '.2rem' } }, t.name),
+      h('div', { class: 'muted', style: { fontSize: '.8rem', whiteSpace: 'pre-wrap' } },
+        rendered.length > 180 ? rendered.slice(0, 180) + '…' : rendered)
+    ));
+  });
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '💬 Send WhatsApp from your number'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { fontSize: '.8rem', margin: '0 0 .75rem' } },
+      'Pick a template — WhatsApp opens with the message pre-filled, you tap Send. WhatsApp doesn\'t allow third-party apps to send silently from a personal number; if you need automated sending, use the 🟢 WA Template button (Cloud API, business number).'),
+    list,
+    h('div', { class: 'actions', style: { marginTop: '.75rem', flexWrap: 'wrap', gap: '.4rem' } },
+      h('button', { class: 'btn', onclick: () => launch('') }, 'Open blank chat'),
+      h('button', { class: 'btn primary', onclick: () => { modal.remove(); openPersonalWaTemplatesModal(); } }, '✎ Manage templates')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
+/**
+ * CRUD modal for the rep's personal WhatsApp templates. Per-user.
+ * Body supports placeholders documented in the help text.
+ */
+async function openPersonalWaTemplatesModal() {
+  let templates = [];
+  try { templates = await api('api_personalWa_list'); } catch (_) {}
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const listWrap = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '.5rem', maxHeight: '50vh', overflowY: 'auto', marginBottom: '1rem' } });
+  const renderList = () => {
+    listWrap.innerHTML = '';
+    if (!templates.length) {
+      listWrap.appendChild(h('p', { class: 'muted', style: { margin: 0 } }, 'No templates yet — add your first below.'));
+    }
+    templates.forEach(t => {
+      listWrap.appendChild(h('div', { class: 'card', style: { padding: '.6rem .8rem' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
+          h('strong', { style: { flex: 1 } }, t.name),
+          h('button', { class: 'btn sm', onclick: () => editOne(t) }, '✎'),
+          h('button', { class: 'btn sm danger', onclick: async () => {
+            if (!await confirmDialog('Delete "' + t.name + '"?')) return;
+            try { await api('api_personalWa_delete', t.id); toast('Deleted'); templates = await api('api_personalWa_list'); renderList(); }
+            catch (e) { toast(e.message, 'err'); }
+          } }, '🗑')
+        ),
+        h('div', { class: 'muted', style: { fontSize: '.78rem', whiteSpace: 'pre-wrap', marginTop: '.25rem' } }, t.body)
+      ));
+    });
+  };
+  const editOne = (t) => {
+    t = t || { name: '', body: '' };
+    const formModal = h('div', { class: 'modal-backdrop', style: { zIndex: 9999 }, onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) formModal.remove(); } },
+      h('div', { class: 'modal' },
+        h('div', { class: 'modal-head' },
+          h('h3', {}, t.id ? 'Edit template' : '+ New template'),
+          h('button', { class: 'btn icon', onclick: () => formModal.remove() }, '✕')
+        ),
+        h('form', { id: 'pwa-tpl-form', class: 'form-grid' },
+          h('div', { class: 'f-row full' },
+            h('label', {}, 'Template name'),
+            h('input', { name: 'name', value: t.name, placeholder: 'e.g. Site visit reminder', required: 'required' })
+          ),
+          h('div', { class: 'f-row full' },
+            h('label', {}, 'Message body'),
+            h('textarea', { name: 'body', rows: 6, placeholder: 'Hi {first_name}, this is {my_name} from Adbullet — just confirming our site visit tomorrow at 11 AM. Reply YES to confirm.' }, t.body || '')
+          ),
+          h('div', { class: 'f-row full' },
+            h('p', { class: 'muted', style: { margin: 0, fontSize: '.78rem' } },
+              'Placeholders auto-fill when you send: ',
+              h('code', {}, '{name}'), ', ', h('code', {}, '{first_name}'), ', ',
+              h('code', {}, '{phone}'), ', ', h('code', {}, '{company}'), ', ',
+              h('code', {}, '{value}'), ', ', h('code', {}, '{next_followup}'), ', ',
+              h('code', {}, '{my_name}'), ', ', h('code', {}, '{calendly}'))
+          )
+        ),
+        h('div', { class: 'actions' },
+          h('button', { class: 'btn', onclick: () => formModal.remove() }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: async () => {
+            const f = $('#pwa-tpl-form');
+            const fd = new FormData(f);
+            const payload = { id: t.id, name: fd.get('name'), body: fd.get('body') };
+            if (!payload.name || !payload.body) return toast('Name and body required', 'err');
+            try { await api('api_personalWa_save', payload); toast('Saved'); formModal.remove(); templates = await api('api_personalWa_list'); renderList(); }
+            catch (e) { toast(e.message, 'err'); }
+          } }, 'Save')
+        )
+      )
+    );
+    document.body.appendChild(formModal);
+  };
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '💬 My WhatsApp templates'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    listWrap,
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn primary', onclick: () => editOne(null) }, '+ New template')
+    )
+  ));
+  document.body.appendChild(modal);
+  renderList();
+}
+
+function openRegisterPhoneModal(phoneIdOverride) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🔐 Register phone with Cloud API'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  body.appendChild(h('p', { class: 'muted' },
+    'WhatsApp Cloud API requires each phone number to be registered ONCE before it can send messages. ',
+    'If two-step verification is OFF for this number, leave the PIN as ', h('code', {}, '000000'), '. ',
+    'If 2FA is ON, paste the 6-digit PIN you set on the WhatsApp app or Meta Business Manager.'));
+  if (phoneIdOverride) {
+    body.appendChild(h('p', { class: 'muted', style: { fontSize: '.8rem' } },
+      'Registering phone ID ', h('code', {}, phoneIdOverride)));
+  }
+  const pinInput = h('input', {
+    type: 'text', value: '000000', maxLength: 6,
+    style: { fontFamily: 'monospace', fontSize: '1.2rem', textAlign: 'center', letterSpacing: '.5rem' }
+  });
+  body.appendChild(h('div', { class: 'f-row full' },
+    h('label', {}, '6-digit PIN'),
+    pinInput
+  ));
+  body.appendChild(h('div', { class: 'actions', style: { marginTop: '1rem' } },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      try {
+        const pin = String(pinInput.value || '000000').replace(/\D/g, '').slice(0, 6) || '000000';
+        await api('api_wb_register_phone', pin, phoneIdOverride || undefined);
+        toast('✅ Phone registered with Cloud API. Try sending again.');
+        m.remove();
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Register')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+
+/**
+ * Embedded Signup launcher. Loads the Facebook JS SDK, calls FB.login with
+ * the WhatsApp config_id and Embedded Signup `extras`, and listens for the
+ * postMessage events that carry phone_number_id + waba_id while the user
+ * goes through the dialog. When the user clicks Finish, we have all three:
+ *   - the OAuth code (from FB.login callback)
+ *   - phone_number_id + waba_id (from the postMessage WA_EMBEDDED_SIGNUP event)
+ * → POST those to /api → server exchanges the code for an access token and
+ * persists everything. Page reloads to show the connected state.
+ */
+function startEmbeddedSignup(appId, configId) {
+  if (!appId || !configId) { toast('App ID + Config ID required', 'err'); return; }
+  // Hot path — SDK already preloaded by wbConnect(). Calling FB.login
+  // synchronously inside the click handler is critical or Chrome blocks
+  // the popup as a "non-user-initiated" window.open.
+  if (!(window.FB && typeof window.FB.login === 'function')) {
+    toast('Loading Facebook SDK… please click "Connect with Facebook" again in 2 seconds.', 'warn');
+    ensureFbSdkLoaded(appId).then(() => {
+      toast('Facebook SDK ready — click Connect with Facebook now.');
+    }).catch(e => toast(e.message, 'err'));
+    return;
+  }
+
+  let phoneNumberId = '';
+  let wabaId = '';
+  // PostMessage listener — Meta sends phone_number_id + waba_id during the
+  // dialog when the user clicks "Finish". Without this, we get the OAuth
+  // code but don't know which assets they picked.
+  const sessionInfoListener = (event) => {
+    if (event.origin !== 'https://www.facebook.com') return;
+    try {
+      const data = (typeof event.data === 'string') ? JSON.parse(event.data) : event.data;
+      if (data && data.type === 'WA_EMBEDDED_SIGNUP' && data.event === 'FINISH') {
+        phoneNumberId = data.data?.phone_number_id || '';
+        wabaId       = data.data?.waba_id || '';
+      }
+    } catch (_) { /* not JSON, ignore */ }
+  };
+  window.addEventListener('message', sessionInfoListener);
+
+  toast('Opening Facebook…');
+  // Track if we ever got a postMessage from facebook.com — if not after 12s,
+  // the popup is likely being instantly closed by Facebook because the
+  // redirect URI isn't whitelisted in the app's OAuth settings.
+  let _gotMessage = false;
+  const _origListener = sessionInfoListener;
+  const wrapped = (event) => { if (event.origin === 'https://www.facebook.com') _gotMessage = true; _origListener(event); };
+  window.removeEventListener('message', _origListener);
+  window.addEventListener('message', wrapped);
+  // The FB SDK rejects async functions as callbacks with the error
+  // 'Expression is of type asyncfunction, not function'. Use a regular
+  // function and wrap the body in an async IIFE so we can still await
+  // the api() call inside.
+  FB.login(function (response) {
+    window.removeEventListener('message', wrapped);
+    if (!response || !response.authResponse) {
+      if (!_gotMessage) {
+        toast('Facebook rejected the popup. Add "' + location.origin + '/" to Valid OAuth Redirect URIs in your Meta App → Facebook Login for Business → Settings, then save and try again.', 'err');
+      } else {
+        toast('Login cancelled by user.', 'warn');
+      }
+      return;
+    }
+    const code = response.authResponse.code;
+    if (!code) {
+      toast('No authorization code returned by Facebook.', 'err');
+      return;
+    }
+    if (!phoneNumberId || !wabaId) {
+      toast('Did not receive WABA / phone number from the dialog. Check the Config ID has WhatsApp Business Platform asset selection enabled.', 'err');
+      return;
+    }
+    (async () => {
+      try {
+        toast('Exchanging credentials with Meta…');
+        const r = await api('api_wb_emb_signin', code, phoneNumberId, wabaId);
+        let msg = `✅ Connected (WABA ${r.waba_id}, Phone ${r.phone_number_id})`;
+        if (r.templates_synced > 0) msg += ` · ${r.templates_synced} templates synced`;
+        if (!r.subscribed && r.subscribe_error) msg += ` · ⚠ webhook subscribe failed: ${r.subscribe_error}`;
+        toast(msg);
+        // Hard reload so the post-connect cards (banner / webhook / phones)
+        // render with a fully fresh fetch — a tab re-render alone has been
+        // observed to occasionally miss the freshly-saved config rows.
+        setTimeout(() => { location.hash = '#/whatsbot/connect'; location.reload(); }, 800);
+      } catch (e) { toast(e.message, 'err'); }
+    })();
+  }, {
+    config_id: configId,
+    response_type: 'code',
+    override_default_response_type: true,
+    extras: {
+      setup: {},
+      featureType: '',
+      sessionInfoVersion: '2'
+    }
+  });
+}
+
+// ---------- Templates ----------
+async function wbTemplates() {
+  const wrap = h('div', {});
+  const list = await api('api_wb_templates_list').catch(() => []);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '📋 Templates (' + list.length + ')'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      try { const r = await api('api_wb_templates_sync'); toast('Synced ' + r.count + ' templates'); showWbTab('templates'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, '🔄 Sync from Meta')
+  ));
+  if (!list.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No templates yet. Click "Sync from Meta" to pull your approved templates.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Lang'), h('th', {}, 'Category'),
+      h('th', {}, 'Status'), h('th', {}, 'Body params'), h('th', {}, 'Body preview'))),
+    h('tbody', {}, ...list.map(t => h('tr', {},
+      h('td', {}, h('code', {}, t.name)),
+      h('td', {}, t.language),
+      h('td', {}, t.category || '—'),
+      h('td', {},
+        h('span', { class: t.status === 'APPROVED' ? 'tag' : 'tag err',
+          style: t.status === 'APPROVED' ? { background: '#10b981', color: '#fff' } : null
+        }, t.status)
+      ),
+      h('td', {}, t.body_params),
+      h('td', { style: { maxWidth: '420px' }, title: t.body_text || '' }, (t.body_text || '').slice(0, 100) + ((t.body_text || '').length > 100 ? '…' : ''))
+    )))
+  )));
+  return wrap;
+}
+
+// ---------- Message Bot ----------
+async function wbMessageBots() {
+  const wrap = h('div', {});
+  const bots = await api('api_wb_message_bots_list').catch(() => []);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '💬 Message Bots'),
+    h('button', { class: 'btn primary', onclick: () => openMsgBotModal() }, '+ New bot')
+  ));
+  if (!bots.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No message bots yet. Create one to auto-reply when a contact sends a keyword.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Trigger'), h('th', {}, 'Match'),
+      h('th', {}, 'Reply'), h('th', {}, 'Active'), h('th', {}, ''))),
+    h('tbody', {}, ...bots.map(b => h('tr', {},
+      h('td', {}, b.name),
+      h('td', {}, h('code', {}, b.trigger_text)),
+      h('td', {}, b.reply_type),
+      h('td', { style: { maxWidth: '320px' }, title: b.reply_text }, String(b.reply_text || '').slice(0, 80) + (String(b.reply_text || '').length > 80 ? '…' : '')),
+      h('td', {}, Number(b.is_active) === 1 ? '✓' : '—'),
+      h('td', {},
+        h('button', { class: 'btn sm', onclick: () => openMsgBotModal(b) }, '✎'),
+        h('button', { class: 'btn sm ghost danger', style: { marginLeft: '.25rem' }, onclick: async () => {
+          if (!await confirmDialog('Delete bot "' + b.name + '"?')) return;
+          await api('api_wb_message_bots_delete', b.id); toast('Deleted'); showWbTab('msgbots');
+        } }, '🗑️')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+function openMsgBotModal(bot) {
+  const b = bot || {};
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, b.id ? 'Edit message bot' : 'New message bot'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Bot Name *', b.name, { required: true }));
+  form.appendChild(selectField('relation_type', 'Relation Type', b.relation_type || 'leads', [{ value: 'leads', label: 'Leads' }]));
+  form.appendChild(h('div', { class: 'f-row full' }, h('label', {}, 'Reply text *'),
+    h('textarea', { name: 'reply_text', rows: 5, required: true }, b.reply_text || '')));
+  form.appendChild(selectField('reply_type', 'Reply type', b.reply_type || 'contains', [
+    { value: 'contains', label: 'Reply bot: When message contains' },
+    { value: 'exact', label: 'Reply bot: On exact match' }
+  ]));
+  form.appendChild(field('trigger_text', 'Trigger keywords (comma-separated) *', b.trigger_text, { required: true }));
+  form.appendChild(field('header', 'Header (optional)', b.header));
+  form.appendChild(field('footer', 'Footer (optional)', b.footer));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Active'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'is_active', checked: (b.id && Number(b.is_active) === 0) ? null : 'checked' }),
+      ' Enabled')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const fd = new FormData(form);
+      try {
+        await api('api_wb_message_bots_save', {
+          id: b.id || undefined,
+          name: fd.get('name'), relation_type: fd.get('relation_type'),
+          reply_text: fd.get('reply_text'), reply_type: fd.get('reply_type'),
+          trigger_text: fd.get('trigger_text'),
+          header: fd.get('header'), footer: fd.get('footer'),
+          is_active: fd.get('is_active') ? 1 : 0
+        });
+        toast('Saved'); m.remove(); showWbTab('msgbots');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save bot')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+
+// ---------- Template Bot ----------
+async function wbTemplateBots() {
+  const wrap = h('div', {});
+  const [bots, templates] = await Promise.all([api('api_wb_template_bots_list'), api('api_wb_templates_list')]);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '🤖 Template Bots'),
+    h('button', { class: 'btn primary', onclick: () => openTplBotModal(null, templates) }, '+ New bot')
+  ));
+  if (!bots.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No template bots. Create one to auto-reply with an approved template.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Trigger'), h('th', {}, 'Template'), h('th', {}, 'Active'), h('th', {}, ''))),
+    h('tbody', {}, ...bots.map(b => h('tr', {},
+      h('td', {}, b.name),
+      h('td', {}, h('code', {}, b.trigger_text)),
+      h('td', {}, h('code', {}, b.template_name)),
+      h('td', {}, Number(b.is_active) === 1 ? '✓' : '—'),
+      h('td', {},
+        h('button', { class: 'btn sm', onclick: () => openTplBotModal(b, templates) }, '✎'),
+        h('button', { class: 'btn sm ghost danger', style: { marginLeft: '.25rem' }, onclick: async () => {
+          if (!await confirmDialog('Delete bot "' + b.name + '"?')) return;
+          await api('api_wb_template_bots_delete', b.id); toast('Deleted'); showWbTab('tplbots');
+        } }, '🗑️')
+      )
+    )))
+  )));
+  return wrap;
+}
+
+function openTplBotModal(bot, templates) {
+  const b = bot || {};
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, b.id ? 'Edit template bot' : 'New template bot'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Bot Name *', b.name, { required: true }));
+  form.appendChild(selectField('relation_type', 'Relation Type', b.relation_type || 'leads', [{ value: 'leads', label: 'Leads' }]));
+  // Template picker — only approved
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  const tplOpts = approved.map(t => ({ value: t.name + '||' + t.language, label: t.name + ' (' + t.language + ')' }));
+  const initialTpl = b.template_name ? (b.template_name + '||' + (b.template_language || 'en_US')) : '';
+  form.appendChild(selectField('template_combo', 'Template *', initialTpl,
+    [{ value: '', label: '— pick a template —' }, ...tplOpts], { full: true }));
+  // Variables — generate inputs based on selected template's body_params
+  const varsContainer = h('div', { class: 'f-row full', id: 'wb-var-container' });
+  form.appendChild(varsContainer);
+  function renderVars(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    varsContainer.innerHTML = '';
+    if (!t || !t.body_params) return;
+    varsContainer.appendChild(h('label', {}, 'Variables (use @{name}, @{phone}, etc.)'));
+    const existing = (b.variables_json && (typeof b.variables_json === 'string' ? safeJson_(b.variables_json) : b.variables_json)) || [];
+    for (let i = 0; i < t.body_params; i++) {
+      varsContainer.appendChild(h('input', {
+        name: 'var_' + i,
+        placeholder: 'V' + (i + 1),
+        value: existing[i] || ''
+      }));
+    }
+  }
+  form.querySelector('[name="template_combo"]')?.addEventListener('change', ev => renderVars(ev.target.value));
+  setTimeout(() => renderVars(initialTpl), 50);
+  form.appendChild(selectField('reply_type', 'Reply type', b.reply_type || 'exact', [
+    { value: 'exact', label: 'Reply bot: On exact match' },
+    { value: 'contains', label: 'Reply bot: When message contains' }
+  ]));
+  form.appendChild(field('trigger_text', 'Trigger keywords (comma-separated) *', b.trigger_text, { required: true }));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Active'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'is_active', checked: (b.id && Number(b.is_active) === 0) ? null : 'checked' }),
+      ' Enabled')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const combo = form.querySelector('[name="template_combo"]').value;
+      const [name, lang] = combo.split('||');
+      if (!name) { toast('Pick a template', 'err'); return; }
+      const variables = [];
+      [...form.querySelectorAll('input[name^="var_"]')].forEach(i => variables.push(i.value));
+      try {
+        await api('api_wb_template_bots_save', {
+          id: b.id || undefined,
+          name: form.name.value, relation_type: form.relation_type.value,
+          template_name: name, template_language: lang || 'en_US',
+          variables, reply_type: form.reply_type.value,
+          trigger_text: form.trigger_text.value,
+          is_active: form.is_active.checked ? 1 : 0
+        });
+        toast('Saved'); m.remove(); showWbTab('tplbots');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Save bot')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+function safeJson_(s) { try { return JSON.parse(s); } catch (_) { return []; } }
+
+// ---------- Campaigns ----------
+async function wbCampaigns() {
+  const wrap = h('div', {});
+  const [campaigns, templates] = await Promise.all([api('api_wb_campaigns_list'), api('api_wb_templates_list')]);
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0, flex: 1 } }, '📣 Campaigns'),
+    h('button', { class: 'btn primary', onclick: () => openCampaignModal(templates) }, '+ Send new campaign')
+  ));
+  if (!campaigns.length) {
+    wrap.appendChild(h('p', { class: 'muted' }, 'No campaigns yet.'));
+    return wrap;
+  }
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'Name'), h('th', {}, 'Template'), h('th', {}, 'Recipients'),
+      h('th', {}, 'Sent'), h('th', {}, 'Delivered'), h('th', {}, 'Read'), h('th', {}, 'Failed'),
+      h('th', {}, 'Status'), h('th', {}, 'Created'), h('th', {}, ''))),
+    h('tbody', {}, ...campaigns.map(c => h('tr', {},
+      h('td', {}, c.name),
+      h('td', {}, h('code', {}, c.template_name)),
+      h('td', {}, c.recipients_total),
+      h('td', {}, c.recipients_sent),
+      h('td', {}, c.recipients_delivered),
+      h('td', {}, c.recipients_read),
+      h('td', {}, c.recipients_failed),
+      h('td', {}, h('span', { class: 'tag', style: { background: c.status === 'completed' ? '#10b981' : c.status === 'sending' ? '#6366f1' : c.status === 'failed' ? '#ef4444' : '#64748b', color: '#fff' } }, c.status)),
+      h('td', { class: 'muted' }, fmtDate(c.created_at, 'relative')),
+      h('td', {},
+        c.status === 'draft' || c.status === 'paused'
+          ? h('button', { class: 'btn sm primary', onclick: async () => {
+              try { await api('api_wb_campaigns_send_now', c.id); toast('Sending…'); showWbTab('campaigns'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '▶ Send')
+          : c.status === 'sending'
+          ? h('button', { class: 'btn sm ghost', onclick: async () => {
+              try { await api('api_wb_campaigns_pause', c.id); toast('Paused'); showWbTab('campaigns'); }
+              catch (e) { toast(e.message, 'err'); }
+            } }, '⏸ Pause')
+          : null
+      )
+    )))
+  )));
+  return wrap;
+}
+
+/**
+ * Initiate Chat — sends an approved template to a single lead via the
+ * green WhatsApp icon in the leads list.
+ *
+ * Layout:
+ *   - Top: Template picker dropdown (only APPROVED templates).
+ *   - Left card: Variables — one input per body_param, with @{merge}
+ *     hints. If the template has no variables, shows "no variables".
+ *   - Right card: Live preview of the template body with {{N}} swapped
+ *     for the user's input AS THEY TYPE.
+ *   - Bottom: Cancel / Send.
+ *
+ * On send, calls api_wb_initiate_chat which renders @{name}, @{phone},
+ * etc. against the lead row, persists the message, and surfaces any
+ * Meta error in a toast. Status / read receipts arrive via webhook
+ * and update the chat thread automatically.
+ */
+async function openInitiateChatModal(lead) {
+  // Lazy-load the templates cache
+  let templates = CRM.cache.waTemplates;
+  if (!templates) {
+    try { templates = await api('api_wb_templates_list'); CRM.cache.waTemplates = templates; }
+    catch (e) { toast('Could not load templates: ' + e.message, 'err'); return; }
+  }
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  if (!approved.length) {
+    toast('No approved templates yet. Settings → WhatsBot → Templates → Sync from Meta.', 'warn');
+    return;
+  }
+  const phone = String(lead?.phone || lead?.whatsapp || '').replace(/\D/g, '');
+  if (!phone) { toast('Lead has no phone number', 'err'); return; }
+
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, 'Initiate Chat'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  // Show the actual phone number we'll send to (E.164) and any
+  // normalisation warning. Catches the most common "single tick but
+  // never delivered" case where the lead's stored phone is just
+  // 10 digits without a country code.
+  const phoneInfoBox = h('div', { class: 'muted', style: { padding: '.35rem .65rem', background: '#fef3c7', border: '1px solid #fbbf24', borderRadius: '6px', marginBottom: '.75rem', fontSize: '.82rem' } }, 'Resolving phone…');
+  body.appendChild(phoneInfoBox);
+  api('api_wb_phone_check', phone).then(r => {
+    phoneInfoBox.style.background = r.looks_ok ? '#dcfce7' : '#fef2f2';
+    phoneInfoBox.style.borderColor = r.looks_ok ? '#22c55e' : '#ef4444';
+    phoneInfoBox.innerHTML = '';
+    phoneInfoBox.appendChild(h('span', {}, '📞 Will send to: ',
+      h('b', { style: { fontFamily: 'monospace' } }, '+' + r.normalised),
+      r.original && r.original.replace(/\D/g, '') !== r.normalised
+        ? h('span', { class: 'muted', style: { marginLeft: '.5rem', fontSize: '.78rem' } }, '(was: ' + r.original + ')')
+        : null
+    ));
+    if (r.issues && r.issues.length) {
+      r.issues.forEach(i => {
+        phoneInfoBox.appendChild(h('div', { style: { fontSize: '.78rem', marginTop: '.2rem' } }, '• ' + i));
+      });
+    }
+  }).catch(() => { phoneInfoBox.style.display = 'none'; });
+
+  // Template picker
+  const tplSel = h('select', {},
+    h('option', { value: '' }, '— pick a template —'),
+    ...approved.map(t => h('option', { value: t.name + '||' + t.language }, t.name + ' (' + t.language + ')'))
+  );
+  const tplRow = h('div', { class: 'f-row full' },
+    h('label', {}, 'Template'),
+    tplSel
+  );
+  body.appendChild(h('form', { class: 'form-grid' }, tplRow));
+
+  // Two-column body: variables (left) + preview (right)
+  const cols = h('div', { class: 'init-chat-grid' });
+  const varsCol = h('div', { class: 'card' });
+  varsCol.appendChild(h('div', { class: 'init-chat-col-head' }, 'Variables ',
+    h('span', { class: 'muted', style: { fontWeight: 'normal', fontSize: '.78rem' } }, "Use '@' Sign for add merge fields.")));
+  const varsBody = h('div', { class: 'init-chat-vars' });
+  varsCol.appendChild(varsBody);
+
+  const previewCol = h('div', { class: 'card' });
+  previewCol.appendChild(h('div', { class: 'init-chat-col-head' }, 'Preview'));
+  const previewBox = h('div', { class: 'init-chat-preview' }, h('div', { class: 'muted', style: { textAlign: 'center', padding: '2rem' } }, 'Pick a template above…'));
+  previewCol.appendChild(previewBox);
+
+  cols.appendChild(varsCol);
+  cols.appendChild(previewCol);
+  body.appendChild(cols);
+
+  // Footer
+  const sendBtn = h('button', { class: 'btn primary', disabled: 'disabled' }, 'Send');
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Close'),
+    sendBtn
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+
+  let currentTpl = null;
+  function refreshPreview() {
+    if (!currentTpl) {
+      previewBox.innerHTML = '';
+      previewBox.appendChild(h('div', { class: 'muted', style: { textAlign: 'center', padding: '2rem' } }, 'Pick a template above…'));
+      return;
+    }
+    let bodyText = currentTpl.body_text || '';
+    const inputs = [...varsBody.querySelectorAll('input.var-input')];
+    inputs.forEach((inp, idx) => {
+      const placeholder = '{{' + (idx + 1) + '}}';
+      const val = String(inp.value || '').trim() || placeholder;
+      // Render @{merge} fields against the lead so the preview reflects what
+      // the recipient will actually receive (e.g. @{name} → "Imran Khan")
+      const merged = renderMergeClient(val, lead);
+      bodyText = bodyText.split(placeholder).join(merged);
+    });
+    // Use existing template's full body — also render header/footer
+    const components = currentTpl.components || [];
+    const header = components.find(c => c.type === 'HEADER');
+    const footer = components.find(c => c.type === 'FOOTER');
+    const buttons = components.find(c => c.type === 'BUTTONS');
+    previewBox.innerHTML = '';
+    const card = h('div', { class: 'init-chat-card' });
+    if (header && header.format === 'TEXT' && header.text) {
+      card.appendChild(h('div', { class: 'tpl-header' }, header.text));
+    }
+    if (header && header.format === 'IMAGE') {
+      card.appendChild(h('div', { class: 'tpl-header-img muted' }, '🖼 [Image header]'));
+    }
+    card.appendChild(h('div', { class: 'tpl-body' }, bodyText));
+    if (footer && footer.text) {
+      card.appendChild(h('div', { class: 'tpl-footer muted' }, footer.text));
+    }
+    if (buttons && Array.isArray(buttons.buttons)) {
+      buttons.buttons.forEach(b => {
+        card.appendChild(h('div', { class: 'tpl-btn' }, b.text || b.url || ''));
+      });
+    }
+    previewBox.appendChild(card);
+  }
+
+  function setTemplate(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    currentTpl = t || null;
+    varsBody.innerHTML = '';
+    if (!t) {
+      sendBtn.disabled = 'disabled';
+      refreshPreview();
+      return;
+    }
+    if (!t.body_params) {
+      varsBody.appendChild(h('div', { class: 'muted', style: { padding: '.75rem' } },
+        'Currently, the variable is not available for this template.'));
+    } else {
+      for (let i = 0; i < t.body_params; i++) {
+        varsBody.appendChild(h('div', { style: { marginBottom: '.5rem' } },
+          h('label', { class: 'muted', style: { fontSize: '.8rem' } }, 'Variable ' + (i + 1)),
+          h('input', { class: 'var-input', placeholder: '@{name}, @{firstname}, @{phone}, …', oninput: refreshPreview })
+        ));
+      }
+    }
+    sendBtn.disabled = null;
+    refreshPreview();
+  }
+  tplSel.addEventListener('change', () => setTemplate(tplSel.value));
+
+  sendBtn.addEventListener('click', async () => {
+    if (!currentTpl) return;
+    const variables = [...varsBody.querySelectorAll('input.var-input')].map(i => i.value);
+    sendBtn.disabled = 'disabled';
+    sendBtn.textContent = 'Sending…';
+    try {
+      await api('api_wb_initiate_chat', {
+        lead_id: lead?.id,
+        phone,
+        template_name: currentTpl.name,
+        template_language: currentTpl.language,
+        variables
+      });
+      toast('Sent — view delivery status in WhatsBot → Chat');
+      m.remove();
+    } catch (e) {
+      toast(e.message, 'err');
+      sendBtn.disabled = null;
+      sendBtn.textContent = 'Send';
+    }
+  });
+}
+
+/** Replace @{merge_field} with values from the lead row — same syntax as
+ *  the campaign worker server-side, just for the live preview here. */
+function renderMergeClient(template, lead) {
+  if (!template) return '';
+  const ctx = lead || {};
+  return String(template).replace(/@\{(\w+)\}/g, (_, key) => {
+    const k = key.toLowerCase();
+    if (k === 'firstname' || k === 'first_name') return String(ctx.name || '').split(' ')[0] || '';
+    if (k === 'lastname' || k === 'last_name')   return String(ctx.name || '').split(' ').slice(1).join(' ') || '';
+    if (k === 'name')   return String(ctx.name || '');
+    if (k === 'phone')  return String(ctx.phone || '');
+    if (k === 'email')  return String(ctx.email || '');
+    if (k === 'source') return String(ctx.source || '');
+    if (ctx[k] !== undefined) return String(ctx[k]);
+    return '@{' + key + '}';
+  });
+}
+
+function openCampaignModal(templates) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '📣 Send new campaign'),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const approved = (templates || []).filter(t => t.status === 'APPROVED');
+  const statuses = CRM.cache.statuses || [];
+  const sources = CRM.cache.sources || [];
+  const users = CRM.cache.users || [];
+  const tplOpts = approved.map(t => ({ value: t.name + '||' + t.language, label: t.name + ' (' + t.language + ')' }));
+  const form = h('form', { class: 'form-grid' });
+  form.appendChild(field('name', 'Campaign name *', '', { required: true }));
+  form.appendChild(selectField('template_combo', 'Template *', '',
+    [{ value: '', label: '— pick a template —' }, ...tplOpts]));
+  // Filter pickers
+  form.appendChild(selectField('status_id', 'Filter — status', '',
+    [{ value: '', label: 'Any status' }, ...statuses.map(s => ({ value: s.id, label: s.name }))]));
+  form.appendChild(selectField('source', 'Filter — source', '',
+    [{ value: '', label: 'Any source' }, ...sources.map(s => ({ value: s.name, label: s.name }))]));
+  form.appendChild(selectField('assigned_to', 'Filter — assignee', '',
+    [{ value: '', label: 'Any' }, ...users.map(u => ({ value: u.id, label: u.name }))]));
+  form.appendChild(field('tag', 'Filter — tag', ''));
+  // Variables block
+  const varsBox = h('div', { class: 'f-row full', id: 'cm-vars' });
+  form.appendChild(varsBox);
+  function renderVars(combo) {
+    const [name, lang] = String(combo || '').split('||');
+    const t = approved.find(x => x.name === name && x.language === lang);
+    varsBox.innerHTML = '';
+    if (!t) return;
+    varsBox.appendChild(h('label', {}, 'Variables — use @{name}, @{firstname}, @{phone}, @{email}, @{source} for merge fields'));
+    for (let i = 0; i < t.body_params; i++) {
+      varsBox.appendChild(h('input', { name: 'cv_' + i, placeholder: 'Variable ' + (i + 1) }));
+    }
+  }
+  form.querySelector('[name="template_combo"]')?.addEventListener('change', ev => renderVars(ev.target.value));
+  // Schedule
+  form.appendChild(field('scheduled_at', 'Scheduled send time (optional)', '', { type: 'datetime-local' }));
+  form.appendChild(h('div', { class: 'f-row' },
+    h('label', {}, 'Send now'),
+    h('label', { class: 'qual-toggle' },
+      h('input', { type: 'checkbox', name: 'send_now', checked: 'checked' }),
+      ' Ignore schedule and send right away')
+  ));
+  body.appendChild(form);
+  body.appendChild(h('div', { class: 'actions' },
+    h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const combo = form.querySelector('[name="template_combo"]').value;
+      const [name, lang] = combo.split('||');
+      if (!name) { toast('Pick a template', 'err'); return; }
+      const variables = [];
+      [...form.querySelectorAll('input[name^="cv_"]')].forEach((i, idx) => variables.push({ name: 'V' + (idx + 1), value: i.value }));
+      const filter = {
+        status_id: form.status_id.value || undefined,
+        source: form.source.value || undefined,
+        assigned_to: form.assigned_to.value || undefined,
+        tag: form.tag.value || undefined
+      };
+      try {
+        const r = await api('api_wb_campaigns_create', {
+          name: form.name.value,
+          template_name: name, template_language: lang || 'en_US',
+          variables, filter,
+          scheduled_at: form.scheduled_at.value ? new Date(form.scheduled_at.value).toISOString() : null,
+          send_now: form.send_now.checked ? 1 : 0
+        });
+        toast(`Campaign created — ${r.recipients} recipients`);
+        m.remove();
+        showWbTab('campaigns');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, 'Create campaign')
+  ));
+  m.appendChild(body);
+  document.body.appendChild(m);
+}
+
+// ---------- Chat ----------
+//
+// The Chat tab auto-polls so inbound messages from the WhatsApp webhook show
+// up live, without the user reloading. Two independent loops:
+//
+//   - Thread list: every 8s. Cheap query (last 1000 messages aggregated).
+//   - Active thread: every 4s while a thread is open. Re-renders the message
+//     log only if the message count or the last status field changed, so an
+//     in-progress textarea is never disturbed.
+//
+// Polling is parked on `window._wbChatTimers` so showWbTab() can clear them
+// when the user navigates to a different WhatsBot subtab.
+async function wbChat() {
+  // Kill any previous timers if wbChat is mounted twice (e.g. tab reopened).
+  if (window._wbChatTimers) {
+    clearInterval(window._wbChatTimers.threadList);
+    clearInterval(window._wbChatTimers.activeThread);
+  }
+  window._wbChatTimers = { threadList: null, activeThread: null };
+
+  const wrap = h('div', { class: 'wb-chat' });
+  const left = h('div', { class: 'wb-chat-list' });
+  const right = h('div', { class: 'wb-chat-thread' },
+    h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact'));
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+
+  // Track which thread is currently open + a fingerprint of its last render
+  // so polling can decide whether to redraw.
+  let openPhone = null;
+  let openFingerprint = '';
+  let lastThreadsFingerprint = '';
+
+  function _threadFingerprint(threads) {
+    return threads.map(t => `${t.phone}|${t.last_at}|${t.unread}`).join(';');
+  }
+  function _msgFingerprint(msgs) {
+    return msgs.map(m => `${m.id}|${m.status || ''}|${m.read_at || ''}|${m.delivered_at || ''}`).join(';');
+  }
+
+  async function renderThreadList() {
+    let threads;
+    try { threads = await api('api_wb_chat_threads'); }
+    catch (_) { threads = []; }
+    const fp = _threadFingerprint(threads);
+    if (fp === lastThreadsFingerprint) return; // No change — preserve scroll
+    lastThreadsFingerprint = fp;
+
+    left.innerHTML = '';
+    left.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '💭 Chats (' + threads.length + ')'),
+      h('button', { class: 'btn sm ghost', title: 'Refresh now', onclick: () => { lastThreadsFingerprint = ''; renderThreadList(); if (openPhone) renderActiveThread(true); } }, '↻')
+    ));
+    if (!threads.length) {
+      left.appendChild(h('p', { class: 'muted' }, 'No conversations yet. Inbound WhatsApp messages will appear here automatically.'));
+      return;
+    }
+    threads.forEach(t => {
+      const row = h('div', { class: 'wb-chat-row' + (t.phone === openPhone ? ' active' : ''), onclick: () => openThread(t.phone) },
+        h('div', {}, h('b', {}, t.lead_name || t.phone), t.unread ? h('span', { class: 'wb-unread' }, t.unread) : null),
+        h('div', { class: 'muted', style: { fontSize: '.78rem' } }, t.phone),
+        h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t.last_message_type === 'text' ? t.last_message : ('[' + t.last_message_type + ']')),
+        h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(t.last_at, 'relative'))
+      );
+      left.appendChild(row);
+    });
+  }
+
+  /**
+   * Render the message log for the currently open thread.
+   *
+   * `force` re-renders even if the fingerprint is unchanged — used when the
+   * user clicks ↻ Refresh manually.
+   *
+   * Re-renders ONLY the message log container, never the textarea, so the
+   * user's in-progress draft is preserved.
+   */
+  async function renderActiveThread(force) {
+    if (!openPhone) return;
+    let msgs;
+    try { msgs = await api('api_wb_chat_messages', openPhone); }
+    catch (_) { msgs = []; }
+    const fp = _msgFingerprint(msgs);
+    if (!force && fp === openFingerprint) return;
+    openFingerprint = fp;
+
+    const log = right.querySelector('.wb-chat-log');
+    if (!log) return; // The thread pane was torn down — bail.
+    const wasNearBottom = (log.scrollHeight - log.scrollTop - log.clientHeight) < 80;
+    log.innerHTML = '';
+    msgs.forEach(msg => {
+      const isFailed = msg.status === 'failed' || !!msg.error_text;
+      const tickClass = msg.read_at ? 'read' : msg.delivered_at ? 'delivered' : 'sent';
+      const tickGlyph = isFailed ? '⚠'
+                      : msg.read_at ? '✓✓'
+                      : msg.delivered_at ? '✓✓'
+                      : '✓';
+      log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
+        h('div', { class: 'wb-msg-body' }, msg.body || '[' + (msg.message_type || '') + ']'),
+        isFailed && msg.error_text
+          ? h('div', { class: 'wb-msg-error' }, '[ERROR: ' + msg.error_text + ']')
+          : null,
+        h('div', { class: 'wb-msg-meta muted' },
+          fmtDate(msg.created_at, 'relative'),
+          msg.direction === 'out'
+            ? h('span', { class: 'wb-tick ' + (isFailed ? 'failed' : tickClass), title: isFailed ? (msg.error_text || 'failed') : tickClass }, ' · ' + tickGlyph)
+            : null
+        )
+      ));
+    });
+    // Auto-scroll to bottom IF the user was already at/near the bottom.
+    // If they had scrolled up to read history, leave them there.
+    if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
+  }
+
+  function backToList() {
+    openPhone = null;
+    openFingerprint = '';
+    wrap.classList.remove('thread-open');
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+    right.innerHTML = h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, '← Pick a contact').outerHTML;
+  }
+
+  async function openThread(phone) {
+    openPhone = phone;
+    openFingerprint = ''; // Force a render
+    wrap.classList.add('thread-open');  // mobile: hide list, show thread
+    // Mark thread row active
+    [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
+
+    right.innerHTML = '';
+    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+      h('div', { style: { display: 'flex', alignItems: 'center' } },
+        h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
+        h('b', {}, phone)
+      ),
+      h('button', { class: 'btn sm ghost', title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
+    ));
+    const log = h('div', { class: 'wb-chat-log' });
+    log.innerHTML = '<div class="loading">Loading…</div>';
+    right.appendChild(log);
+
+    const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
+    input.addEventListener('keydown', async ev => {
+      if (ev.key === 'Enter' && !ev.shiftKey) {
+        ev.preventDefault();
+        const text = input.value.trim(); if (!text) return;
+        input.disabled = true;
+        try {
+          await api('api_wb_chat_send', { phone, text });
+          input.value = '';
+          // Force redraw without disrupting the input — user is still focused.
+          renderActiveThread(true);
+          // And refresh the thread list so this conversation jumps to the top.
+          lastThreadsFingerprint = '';
+          renderThreadList();
+        } catch (e) { toast(e.message, 'err'); }
+        finally { input.disabled = false; input.focus(); }
+      }
+    });
+    right.appendChild(h('div', { class: 'wb-chat-compose' }, input));
+
+    await renderActiveThread(true);
+    // Refresh the list too — opening a thread marks inbound as read on the
+    // server, so unread badges should clear in the left pane.
+    lastThreadsFingerprint = '';
+    await renderThreadList();
+  }
+
+  // Initial render + auto-poll
+  await renderThreadList();
+  window._wbChatTimers.threadList = setInterval(() => {
+    // Pause polling when the tab is hidden — saves battery on mobile and
+    // avoids piling up requests if the user steps away for an hour.
+    if (document.visibilityState === 'hidden') return;
+    renderThreadList().catch(() => {});
+  }, 8000);
+  window._wbChatTimers.activeThread = setInterval(() => {
+    if (document.visibilityState === 'hidden') return;
+    if (openPhone) renderActiveThread(false).catch(() => {});
+  }, 4000);
+
+  return wrap;
+}
+
+// ---------- Activity Log ----------
+async function wbActivity() {
+  const wrap = h('div', {});
+
+  // Toolbar with category filter + search + auto-refresh + clear
+  const catSel = h('select', { id: 'wb-act-cat' },
+    h('option', { value: '' }, 'All categories'),
+    h('option', { value: 'chat' }, '💬 Chat (outbound)'),
+    h('option', { value: 'campaign' }, '📣 Campaigns'),
+    h('option', { value: 'message_bot' }, '🤖 Message bots'),
+    h('option', { value: 'template_bot' }, '🤖 Template bots'),
+    h('option', { value: 'template_sync' }, '📋 Template sync'),
+    h('option', { value: 'webhook_in' }, '📥 Webhook (raw)'),
+    h('option', { value: 'webhook_status' }, '✅ Status updates'),
+    h('option', { value: 'webhook_message' }, '📩 Inbound messages')
+  );
+  const searchInp = h('input', { id: 'wb-act-q', placeholder: 'Search name / template…', style: { flex: 1 } });
+  const tbody = h('tbody', {});
+  const reload = async () => {
+    const data = await api('api_wb_activity_list', { category: catSel.value || undefined, q: searchInp.value || undefined }).catch(() => []);
+    tbody.innerHTML = '';
+    if (!data.length) {
+      tbody.appendChild(h('tr', {}, h('td', { colspan: 8, class: 'muted', style: { textAlign: 'center', padding: '1.5rem' } }, 'No activity matching this filter.')));
+      return;
+    }
+    data.forEach(r => {
+      const codeColor = r.response_code === 200 ? '#10b981' : (r.response_code ? '#ef4444' : '#94a3b8');
+      const catColor = {
+        chat: '#3b82f6', campaign: '#8b5cf6',
+        message_bot: '#06b6d4', template_bot: '#06b6d4',
+        template_sync: '#64748b',
+        webhook_in: '#fbbf24', webhook_status: '#10b981', webhook_message: '#14b8a6'
+      }[r.category] || '#64748b';
+      tbody.appendChild(h('tr', {},
+        h('td', {}, r.id),
+        h('td', {}, h('span', { class: 'tag', style: { background: catColor, color: '#fff', fontSize: '.7rem' } }, r.category)),
+        h('td', {}, r.name || '—'),
+        h('td', {}, r.template_name ? h('code', {}, r.template_name) : '—'),
+        h('td', {}, h('span', { class: 'tag', style: { background: codeColor, color: '#fff' } }, r.response_code || '—')),
+        h('td', { class: 'muted' }, r.type || '—'),
+        h('td', { class: 'muted', style: { whiteSpace: 'nowrap' } }, fmtDate(r.recorded_on, 'relative')),
+        h('td', {}, h('button', { class: 'btn sm', onclick: () => openWbActivityDetailModal(r.id) }, '🔍 View'))
+      ));
+    });
+  };
+  catSel.onchange = reload;
+  let _searchTimer = null;
+  searchInp.oninput = () => { clearTimeout(_searchTimer); _searchTimer = setTimeout(reload, 300); };
+
+  wrap.appendChild(h('div', { class: 'toolbar' },
+    h('h3', { style: { margin: 0 } }, '📑 Activity log'),
+    catSel,
+    searchInp,
+    h('button', { class: 'btn', onclick: reload, title: 'Refresh' }, '🔄'),
+    // Download raw webhook events as plain text (for offline analysis /
+    // sharing). Uses api_wb_webhook_logs_text which dumps all webhook_in /
+    // webhook_status / webhook_message entries with full JSON.
+    h('button', { class: 'btn', title: 'Download raw webhook log as wa_webhook_logs.txt', onclick: async () => {
+      try {
+        toast('Building log…');
+        const txt = await api('api_wb_webhook_logs_text');
+        const blob = new Blob([txt], { type: 'text/plain' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'wa_webhook_logs_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.txt';
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+        toast('Downloaded');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '⬇️ Download .txt'),
+    h('button', { class: 'btn ghost danger', onclick: async () => {
+      if (!await confirmDialog('Clear all activity log entries?')) return;
+      await api('api_wb_activity_clear'); toast('Cleared'); showWbTab('activity');
+    } }, '🗑️ Clear log')
+  ));
+
+  wrap.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+    'Every send to Meta and every webhook from Meta is logged here. ',
+    'Click 🔍 View on any row to see the full request/response JSON. ',
+    'Webhook URL: ', h('code', {}, location.origin + '/hook/whatsapp_webhook')
+  ));
+
+  wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, '#'), h('th', {}, 'Category'), h('th', {}, 'Name'),
+      h('th', {}, 'Template'), h('th', {}, 'Code'), h('th', {}, 'Type'),
+      h('th', {}, 'Recorded on'), h('th', {}, '')
+    )),
+    tbody
+  )));
+  await reload();
+  return wrap;
+}
+
+/**
+ * Detail modal — shows the full request and response JSON for a single
+ * activity log row. Two-column layout (request / response) with clean
+ * pretty-printing so the user can read what we sent to Meta and what
+ * Meta sent back.
+ */
+async function openWbActivityDetailModal(id) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const body = h('div', { class: 'modal modal-lg' });
+  body.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '📑 Activity #' + id),
+    h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+  ));
+  const content = h('div', {}, h('div', { class: 'muted' }, 'Loading…'));
+  body.appendChild(content);
+  m.appendChild(body);
+  document.body.appendChild(m);
+
+  try {
+    const r = await api('api_wb_activity_get', id);
+    content.innerHTML = '';
+    // Header row
+    content.appendChild(h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginBottom: '1rem' } },
+      h('span', { class: 'tag', style: { background: '#3b82f6', color: '#fff' } }, r.category || ''),
+      r.name ? h('span', { class: 'tag', style: { background: '#64748b', color: '#fff' } }, r.name) : null,
+      r.template_name ? h('span', { class: 'tag', style: { background: '#10b981', color: '#fff' } }, r.template_name) : null,
+      r.response_code ? h('span', { class: 'tag', style: { background: r.response_code === 200 ? '#10b981' : '#ef4444', color: '#fff' } }, 'HTTP ' + r.response_code) : null,
+      h('span', { class: 'muted' }, fmtDate(r.recorded_on))
+    ));
+    // Two-column request/response viewer
+    const grid = h('div', { class: 'wb-act-grid' });
+    grid.appendChild(h('div', { class: 'card' },
+      h('h4', { style: { marginTop: 0 } }, '📤 Request (we sent)'),
+      h('pre', { class: 'wb-json' }, JSON.stringify(r.request || {}, null, 2))
+    ));
+    grid.appendChild(h('div', { class: 'card' },
+      h('h4', { style: { marginTop: 0 } }, '📥 Response (Meta returned)'),
+      h('pre', { class: 'wb-json' }, JSON.stringify(r.response || {}, null, 2))
+    ));
+    content.appendChild(grid);
+    // Copy buttons
+    content.appendChild(h('div', { style: { marginTop: '1rem' } },
+      h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(JSON.stringify(r, null, 2)); toast('Copied full JSON'); } }, '📋 Copy full JSON')
+    ));
+  } catch (e) {
+    content.innerHTML = '';
+    content.appendChild(h('div', { class: 'error-box' }, 'Could not load: ' + e.message));
+  }
+}
+
+/**
+ * TAT report view. Shows three sections:
+ *   - Top KPI cards   (open violations, total leads, avg first-action min)
+ *   - Per-user table  (avg time-to-1st-action, avg time-to-2nd-action)
+ *   - Per-stage table (avg minutes leads spend in each stage)
+ *   - Active violation list (escalation level, age, assignee)
+ * Filters by date range + user.
+ */
+/* ===========================================================
+ * Monthly Target dashboard — every metric requested by product:
+ *   - Revenue Achieved        - Required Daily Target (Auto)
+ *   - Target Remaining         - Conversion Rate
+ *   - Days Left                - Forecasted Revenue
+ *   - Achievement %            - Funnel Conversion
+ *   - Weekly Trend             - Lead vs Sale Conversion Rate
+ *   - Revenue Left (= Target Remaining alias)
+ * Admins/managers can set targets per rep + org-wide.
+ * Reps see their own scope by default.
+ * =========================================================== */
+
+function _tInr(v) {
+  const n = Number(v);
+  if (!isFinite(n) || n <= 0) return '—';
+  if (n >= 10000000) return '₹' + (n / 10000000).toFixed(2) + ' Cr';
+  if (n >= 100000)   return '₹' + (n / 100000).toFixed(2) + ' L';
+  if (n >= 1000)     return '₹' + (n / 1000).toFixed(1) + 'k';
+  return '₹' + n.toFixed(0);
+}
+function _tPct(v) { return v == null ? '—' : (Math.round(v * 10) / 10) + '%'; }
+
+/* ---------------- Inventory ---------------- */
+VIEWS.inventory = async (view) => {
+  const isAdminMgr = ['admin', 'manager'].includes(CRM.user.role);
+  view.innerHTML = '';
+  let q = '';
+  let statusFilter = 'available';
+  let typeFilter = '';
+
+  const head = h('div', { class: 'card', style: { padding: '1rem', display: 'flex', flexWrap: 'wrap', gap: '.75rem', alignItems: 'center', marginBottom: '1rem' } });
+  head.appendChild(h('h3', { style: { margin: 0, flex: 1 } }, '📦 Inventory'));
+  const searchInput = h('input', { type: 'search', placeholder: '🔍 Name, location, description…', style: { minWidth: '220px' } });
+  const statusSel = h('select', {},
+    h('option', { value: '' }, 'All statuses'),
+    h('option', { value: 'available', selected: 'selected' }, 'Available'),
+    h('option', { value: 'blocked' }, 'Blocked'),
+    h('option', { value: 'sold' }, 'Sold'),
+    h('option', { value: 'inactive' }, 'Inactive')
+  );
+  const typeInput = h('input', { type: 'text', placeholder: 'Type filter (e.g. Flat, Plot)', style: { minWidth: '160px' } });
+  head.appendChild(searchInput);
+  head.appendChild(statusSel);
+  head.appendChild(typeInput);
+  if (isAdminMgr) {
+    head.appendChild(h('button', { class: 'btn primary', onclick: () => openInventoryEditModal(null, refresh) }, '+ Add item'));
+  }
+  view.appendChild(head);
+
+  const listEl = h('div', { id: 'inventory-list' });
+  view.appendChild(listEl);
+
+  let _t;
+  const debounced = () => { clearTimeout(_t); _t = setTimeout(refresh, 250); };
+  searchInput.oninput = () => { q = searchInput.value || ''; debounced(); };
+  statusSel.onchange = () => { statusFilter = statusSel.value; refresh(); };
+  typeInput.oninput  = () => { typeFilter = typeInput.value || ''; debounced(); };
+
+  async function refresh() {
+    listEl.innerHTML = '<div class="loading">Loading…</div>';
+    try {
+      const filters = { q };
+      if (statusFilter) filters.status = statusFilter;
+      if (typeFilter)   filters.item_type = typeFilter;
+      const rows = await api('api_inventory_list', filters);
+      listEl.innerHTML = '';
+      if (!rows.length) {
+        listEl.appendChild(h('p', { class: 'muted' }, 'No matching inventory.'));
+        return;
+      }
+      const grid = h('div', { class: 'cards', style: { gap: '.75rem' } });
+      rows.forEach(r => grid.appendChild(inventoryCard(r, refresh, isAdminMgr)));
+      listEl.appendChild(grid);
+    } catch (e) {
+      listEl.innerHTML = '';
+      listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+    }
+  }
+  await refresh();
+};
+
+function inventoryCard(r, refresh, isAdminMgr) {
+  const statusColors = { available: '#10b981', blocked: '#f59e0b', sold: '#6b7280', inactive: '#9ca3af' };
+  const card = h('div', { class: 'card', style: { padding: '1rem', display: 'flex', flexDirection: 'column', gap: '.5rem', minWidth: '260px' } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', justifyContent: 'space-between' } },
+      h('h4', { style: { margin: 0 } }, r.name),
+      h('span', {
+        style: { background: statusColors[r.status] || '#6b7280', color: '#fff', padding: '.15rem .55rem', borderRadius: '999px', fontSize: '.72rem', fontWeight: 600 }
+      }, String(r.status).toUpperCase())
+    ),
+    r.item_type ? h('div', { class: 'muted', style: { fontSize: '.85rem' } }, '📁 ' + r.item_type) : null,
+    h('div', { style: { fontSize: '1.1rem', fontWeight: 600 } }, '₹ ' + Number(r.price).toLocaleString('en-IN')),
+    r.location ? h('div', { class: 'muted', style: { fontSize: '.85rem' } }, '📍 ' + r.location) : null,
+    r.description ? h('div', { class: 'muted', style: { fontSize: '.8rem' } },
+      String(r.description).slice(0, 140) + (String(r.description).length > 140 ? '…' : '')
+    ) : null,
+    isAdminMgr ? h('div', { class: 'actions', style: { marginTop: '.25rem' } },
+      h('button', { class: 'btn sm', onclick: () => openInventoryEditModal(r, refresh) }, '✎ Edit'),
+      h('button', { class: 'btn sm danger', onclick: async () => {
+        if (!await confirmDialog('Mark "' + r.name + '" inactive? It stops appearing in match suggestions.')) return;
+        try { await api('api_inventory_delete', r.id); toast('Marked inactive'); refresh(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, '🗑')
+    ) : null
+  );
+  return card;
+}
+
+function openInventoryEditModal(r, onSaved) {
+  r = r || {};
+  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) modal.remove(); } });
+  const f = (name, label, val, opts) => {
+    opts = opts || {};
+    return h('div', { class: 'f-row' + (opts.full ? ' full' : '') },
+      h('label', {}, label),
+      h('input', Object.assign({ name, value: val == null ? '' : val }, opts.attrs || { type: opts.type || 'text' }))
+    );
+  };
+  modal.appendChild(h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, r.id ? 'Edit inventory item' : '+ New inventory item'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('form', { id: 'inv-form', class: 'form-grid' },
+      f('name', 'Name *', r.name, { attrs: { type: 'text', required: 'required' } }),
+      f('item_type', 'Type (Flat / Plot / Plan / Product)', r.item_type),
+      f('price', 'Price (₹)', r.price, { attrs: { type: 'number', min: 0, step: 1 } }),
+      h('div', { class: 'f-row' },
+        h('label', {}, 'Status'),
+        h('select', { name: 'status' },
+          ...['available', 'blocked', 'sold', 'inactive'].map(s =>
+            h('option', { value: s, selected: (r.status || 'available') === s ? 'selected' : null }, s)
+          )
+        )
+      ),
+      f('location', 'Location / Address', r.location, { full: true }),
+      h('div', { class: 'f-row full' },
+        h('label', {}, 'Description'),
+        h('textarea', { name: 'description', rows: 3 }, r.description || '')
+      )
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        const form = $('#inv-form');
+        const fd = new FormData(form);
+        const payload = {
+          id: r.id,
+          name:        fd.get('name'),
+          item_type:   fd.get('item_type'),
+          price:       Number(fd.get('price')) || 0,
+          status:      fd.get('status') || 'available',
+          location:    fd.get('location'),
+          description: fd.get('description')
+        };
+        if (!payload.name) return toast('Name is required', 'err');
+        try { await api('api_inventory_save', payload); toast('Saved'); modal.remove(); onSaved && onSaved(); }
+        catch (e) { toast(e.message, 'err'); }
+      } }, 'Save')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
+/* ---------------- Projects (post-sale stage board) ---------------- */
+VIEWS.projects = async (view) => {
+  view.innerHTML = '';
+  view.appendChild(h('div', { class: 'card', style: { padding: '1rem', display: 'flex', alignItems: 'center', gap: '.75rem', flexWrap: 'wrap', marginBottom: '1rem' } },
+    h('h3', { style: { margin: 0, flex: 1 } }, '🚚 Projects in delivery'),
+    h('span', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Every lead that has entered the post-sale stage tracker, grouped by stage. Stalled cards are flagged.'),
+    ['admin'].includes(CRM.user.role)
+      ? h('a', { class: 'btn', href: '#/admin', onclick: () => setTimeout(() => showAdminTab('projstages'), 100) }, '⚙ Edit stages')
+      : null
+  ));
+
+  const listEl = h('div', { id: 'proj-board' }, h('div', { class: 'loading' }, 'Loading…'));
+  view.appendChild(listEl);
+
+  let board;
+  try { board = await api('api_projectStages_board'); }
+  catch (e) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+    return;
+  }
+
+  if (!board.stages.length) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('p', { class: 'muted' },
+      'No stages defined yet. Admin: head to Settings → 🚚 Project stages to create your delivery workflow.'));
+    return;
+  }
+
+  const totalLeads = board.board.reduce((n, col) => n + col.leads.length, 0);
+  if (!totalLeads) {
+    listEl.innerHTML = '';
+    listEl.appendChild(h('p', { class: 'muted' },
+      'No leads are in delivery yet. Open a won/closed lead → "🚚 Post-sale delivery" → Start delivery tracker.'));
+    return;
+  }
+
+  const wrap = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '.75rem' } });
+  board.board.forEach(col => {
+    const stalledCount = col.leads.filter(l => l.stalled).length;
+    const head = h('div', { style: { display: 'flex', alignItems: 'center', gap: '.4rem', padding: '.5rem .75rem', background: '#f3f4f6', borderRadius: '6px 6px 0 0', borderBottom: '2px solid #3b82f6' } },
+      h('span', { style: { fontWeight: 600, flex: 1 } }, col.stage.name),
+      h('span', { class: 'tag', style: { background: '#dbeafe', color: '#1e40af' } }, col.leads.length),
+      stalledCount ? h('span', { class: 'tag', style: { background: '#fef2f2', color: '#991b1b' }, title: stalledCount + ' lead(s) stuck longer than expected' }, '⚠ ' + stalledCount) : null
+    );
+    const colWrap = h('div', { class: 'card', style: { padding: 0, display: 'flex', flexDirection: 'column', gap: 0 } });
+    colWrap.appendChild(head);
+    if (col.leads.length === 0) {
+      colWrap.appendChild(h('p', { class: 'muted', style: { padding: '.75rem', margin: 0, fontSize: '.85rem' } }, 'No leads here.'));
+    }
+    col.leads.forEach(l => {
+      colWrap.appendChild(h('div', {
+        class: 'card', style: { margin: '.4rem .5rem', padding: '.6rem .75rem', cursor: 'pointer', borderLeft: l.stalled ? '3px solid #ef4444' : '3px solid #e5e7eb' },
+        onclick: () => openLeadModal(l.id)
+      },
+        h('div', { style: { fontWeight: 600 } }, l.name),
+        l.value ? h('div', { class: 'muted', style: { fontSize: '.8rem' } }, '₹ ' + Number(l.value).toLocaleString('en-IN')) : null,
+        l.assigned_name ? h('div', { class: 'muted', style: { fontSize: '.78rem' } }, '👤 ' + l.assigned_name) : null,
+        l.days_at_stage != null ? h('div', { class: 'muted', style: { fontSize: '.78rem', color: l.stalled ? '#dc2626' : '#6b7280' } },
+          '⏱ ' + l.days_at_stage + 'd' + (l.stalled ? ' · STALLED (>' + col.stage.expected_days + 'd)' : '')) : null
+      ));
+    });
+    wrap.appendChild(colWrap);
+  });
+  listEl.innerHTML = '';
+  listEl.appendChild(wrap);
+};
+
+VIEWS.targets = async (view) => {
+  const isAdmin = ['admin', 'manager'].includes(CRM.user.role);
+  const isManagerOrUp = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+  const filtersState = JSON.parse(localStorage.getItem('crm_targets_view') || '{}');
+  const monthInput = filtersState.month || new Date().toISOString().slice(0, 7);
+  const scopeState = filtersState.scope || (isAdmin ? '' : String(CRM.user.id));
+
+  view.innerHTML = '';
+
+  // ---- Toolbar -------------------------------------------------------
+  const monthSel = h('input', { type: 'month', value: monthInput, style: { width: '160px' } });
+  const scopeSel = h('select', { id: 'tg-scope' });
+  scopeSel.appendChild(h('option', { value: '' }, '🏢 Org-wide'));
+  (CRM.cache.users || []).filter(u => isManagerOrUp || Number(u.id) === Number(CRM.user.id)).forEach(u => {
+    scopeSel.appendChild(h('option', { value: String(u.id), selected: String(u.id) === scopeState ? 'selected' : null }, u.name));
+  });
+  if (scopeState) scopeSel.value = scopeState;
+
+  monthSel.addEventListener('change', () => {
+    filtersState.month = monthSel.value;
+    localStorage.setItem('crm_targets_view', JSON.stringify(filtersState));
+    refresh();
+  });
+  scopeSel.addEventListener('change', () => {
+    filtersState.scope = scopeSel.value;
+    localStorage.setItem('crm_targets_view', JSON.stringify(filtersState));
+    refresh();
+  });
+
+  const toolbar = h('div', { class: 'toolbar' },
+    h('label', { class: 'muted', style: { marginRight: '4px' } }, 'Month'),
+    monthSel,
+    h('label', { class: 'muted', style: { marginLeft: '8px', marginRight: '4px' } }, 'Scope'),
+    scopeSel,
+    h('button', { class: 'btn', onclick: refresh }, '🔄'),
+    isAdmin ? h('button', { class: 'btn primary', onclick: () => openSetTargetModal(monthSel.value, scopeSel.value, refresh) }, '🎯 Set target') : null
+  );
+  view.appendChild(toolbar);
+
+  const body = h('div', {});
+  view.appendChild(body);
+
+  async function refresh() {
+    body.innerHTML = '';
+    body.appendChild(h('div', { class: 'muted', style: { padding: '2rem', textAlign: 'center' } }, 'Crunching numbers…'));
+    let r;
+    try {
+      r = await api('api_targets_dashboard', monthSel.value, scopeSel.value || null);
+    } catch (e) { body.innerHTML = ''; return body.appendChild(h('div', { class: 'error' }, e.message)); }
+    body.innerHTML = '';
+    renderDashboard(body, r);
+  }
+  refresh();
+};
+
+function renderDashboard(body, r) {
+  const isAdmin = ['admin', 'manager'].includes(CRM.user.role);
+
+  // ---- Header strip --------------------------------------------------
+  body.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' } },
+    h('h2', { style: { margin: 0 } }, '🎯 ' + r.month + ' · ' + r.scope.label),
+    h('div', { class: 'muted', style: { fontSize: '.85rem' } },
+      r.days_passed + ' of ' + r.days_in_month + ' days passed · ',
+      h('strong', { style: { color: 'var(--brand-dark)' } }, r.days_left + ' days left')
+    )
+  ));
+
+  // ---- Big KPI grid (the metrics product asked for) -----------------
+  const kpi = (label, value, sub, color) => h('div', { style: {
+    background: color || 'var(--bg-alt)',
+    padding: '14px 16px',
+    borderRadius: '10px',
+    minWidth: '0'
+  } },
+    h('div', { class: 'muted', style: { fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.05em', fontWeight: 600 } }, label),
+    h('div', { style: { fontSize: '1.7rem', fontWeight: 600, marginTop: '4px', lineHeight: '1.1' } }, value),
+    sub ? h('div', { class: 'muted', style: { fontSize: '.72rem', marginTop: '4px' } }, sub) : null
+  );
+
+  body.appendChild(h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' } },
+    kpi('Target', _tInr(r.target_revenue),
+      r.target_revenue ? null : 'Not set yet — admin can set above',
+      'var(--brand-soft)'),
+    kpi('Revenue Achieved', _tInr(r.revenue_achieved), r.won_leads + ' deals closed', 'var(--ok-soft)'),
+    kpi('Target Remaining', _tInr(r.target_remaining), 'a.k.a. Revenue Left', 'var(--warn-soft)'),
+    kpi('Days Left', r.days_left, r.days_in_month + '-day month'),
+    kpi('Required Daily', _tInr(r.required_daily_target), r.days_left > 0 ? 'to hit target' : 'month closed'),
+    kpi('Achievement %',
+      r.achievement_pct == null ? '—' : (r.achievement_pct + '%'),
+      r.achievement_pct == null ? 'set a target to see' : null,
+      r.achievement_pct == null ? 'var(--bg-alt)' : (r.achievement_pct >= 100 ? 'var(--ok-soft)' : r.achievement_pct >= 60 ? 'var(--warn-soft)' : 'var(--err-soft)')),
+    kpi('Forecasted Revenue', _tInr(r.forecast_revenue),
+      r.forecast_vs_target_pct != null ? (r.forecast_vs_target_pct + '% of target') : 'pace × days in month'),
+    kpi('Conversion Rate', _tPct(r.conversion_rate),
+      r.new_leads + ' new · ' + r.won_leads + ' won', 'var(--brand-soft)')
+  ));
+
+  // ---- Achievement progress bar -------------------------------------
+  if (r.achievement_pct != null) {
+    const pct = Math.min(100, Math.max(0, r.achievement_pct));
+    body.appendChild(h('div', { style: { marginBottom: '18px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '.8rem', marginBottom: '4px' } },
+        h('span', { class: 'muted' }, _tInr(r.revenue_achieved) + ' of ' + _tInr(r.target_revenue)),
+        h('span', {}, h('strong', {}, _tPct(r.achievement_pct)))
+      ),
+      h('div', { style: { height: '14px', background: 'var(--bg-alt)', borderRadius: '7px', overflow: 'hidden' } },
+        h('div', { style: {
+          width: pct + '%', height: '100%',
+          background: r.achievement_pct >= 100 ? 'var(--ok)' : r.achievement_pct >= 60 ? 'var(--warn)' : 'var(--err)',
+          transition: 'width .4s'
+        } })
+      )
+    ));
+  }
+
+  // ---- Weekly Trend chart -------------------------------------------
+  if (r.weekly_trend && r.weekly_trend.length) {
+    body.appendChild(h('h3', { style: { marginTop: '12px', marginBottom: '6px' } }, 'Weekly trend'));
+    const wrap = h('div', { class: 'chart-wrap', style: { height: '220px', marginBottom: '20px' } });
+    const canvas = h('canvas');
+    wrap.appendChild(canvas);
+    body.appendChild(wrap);
+    setTimeout(() => {
+      // eslint-disable-next-line no-undef
+      const ctx = canvas.getContext('2d');
+      // eslint-disable-next-line no-undef
+      new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: r.weekly_trend.map(w => w.week_start),
+          datasets: [
+            { label: 'Revenue', data: r.weekly_trend.map(w => Math.round(w.revenue)), backgroundColor: '#10b981', yAxisID: 'y' },
+            { label: 'Leads in', data: r.weekly_trend.map(w => w.leads), backgroundColor: '#6366f1', type: 'line', borderColor: '#6366f1', tension: .3, yAxisID: 'y1' }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          scales: {
+            y:  { beginAtZero: true, position: 'left', ticks: { callback: v => _tInr(v) } },
+            y1: { beginAtZero: true, position: 'right', grid: { display: false }, title: { display: true, text: 'Leads' } }
+          }
+        }
+      });
+    }, 10);
+  }
+
+  // ---- Funnel conversion --------------------------------------------
+  if (r.funnel && r.funnel.length) {
+    body.appendChild(h('h3', { style: { marginTop: '12px', marginBottom: '6px' } }, 'Funnel conversion'));
+    body.appendChild(h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: 0, marginBottom: '8px' } },
+      'Leads created in ' + r.month + ', currently in each stage. Drop-off is computed against the previous stage.'));
+    const fTable = h('table', { class: 'leads-table', style: { fontSize: '.85rem' } },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Stage'),
+        h('th', { style: { textAlign: 'right' } }, 'Count'),
+        h('th', { style: { textAlign: 'right' } }, '% of total'),
+        h('th', { style: { textAlign: 'right' } }, 'Drop-off vs previous')
+      )),
+      h('tbody', {}, ...r.funnel.map(f => h('tr', {},
+        h('td', {}, h('span', { class: 'tag', style: { background: f.color || 'var(--bg-alt)', color: '#fff' } }, f.name)),
+        h('td', { style: { textAlign: 'right', fontWeight: 500 } }, f.count),
+        h('td', { style: { textAlign: 'right' } }, _tPct(f.pct_of_total)),
+        h('td', { style: { textAlign: 'right', color: f.drop_pct != null && f.drop_pct > 0 ? 'var(--err)' : 'var(--text-soft)' } },
+          f.drop_pct == null ? '—' : ('-' + Math.round(f.drop_pct) + '%'))
+      )))
+    );
+    body.appendChild(fTable);
+  }
+
+  // ---- Per-rep breakdown (org-wide view only) -----------------------
+  if (r.rep_breakdown && r.rep_breakdown.length) {
+    body.appendChild(h('h3', { style: { marginTop: '20px', marginBottom: '6px' } }, 'Per-rep performance'));
+    const repTable = h('table', { class: 'leads-table', style: { fontSize: '.85rem' } },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'Rep'),
+        h('th', { style: { textAlign: 'right' } }, 'Revenue'),
+        h('th', { style: { textAlign: 'right' } }, 'Target'),
+        h('th', { style: { textAlign: 'right' } }, 'Achievement'),
+        h('th', { style: { textAlign: 'right' } }, 'New'),
+        h('th', { style: { textAlign: 'right' } }, 'Won'),
+        h('th', { style: { textAlign: 'right' } }, 'Conv. %')
+      )),
+      h('tbody', {}, ...r.rep_breakdown.map(rep => h('tr', {},
+        h('td', {}, rep.name),
+        h('td', { style: { textAlign: 'right', fontWeight: 500 } }, _tInr(rep.revenue_achieved)),
+        h('td', { style: { textAlign: 'right' } }, rep.target_revenue ? _tInr(rep.target_revenue) : '—'),
+        h('td', { style: { textAlign: 'right' } },
+          rep.achievement_pct == null
+            ? h('span', { class: 'muted' }, '—')
+            : h('span', { class: 'tag', style: {
+                background: rep.achievement_pct >= 100 ? 'var(--ok-soft)' : rep.achievement_pct >= 60 ? 'var(--warn-soft)' : 'var(--err-soft)',
+                color:      rep.achievement_pct >= 100 ? 'var(--ok)'      : rep.achievement_pct >= 60 ? 'var(--warn)'      : 'var(--err)'
+              } }, _tPct(rep.achievement_pct))
+        ),
+        h('td', { style: { textAlign: 'right' } }, rep.new_leads),
+        h('td', { style: { textAlign: 'right' } }, rep.won_leads),
+        h('td', { style: { textAlign: 'right' } }, _tPct(rep.conversion_rate))
+      )))
+    );
+    body.appendChild(repTable);
+  }
+}
+
+/**
+ * Modal for admin/manager to set / edit a monthly target. user_id = ''
+ * means org-wide; a numeric value means a specific rep.
+ */
+async function openSetTargetModal(month, userId, onDone) {
+  let existing = null;
+  try { existing = await api('api_targets_get', month, userId || null); }
+  catch (e) { /* ignore */ }
+  const e = existing || {};
+  const userField = h('select', { id: 'tg-user' });
+  userField.appendChild(h('option', { value: '', selected: !userId ? 'selected' : null }, '🏢 Org-wide target'));
+  (CRM.cache.users || []).forEach(u => userField.appendChild(h('option', { value: String(u.id), selected: String(u.id) === String(userId) ? 'selected' : null }, u.name)));
+
+  const monthField = h('input', { type: 'month', value: month || new Date().toISOString().slice(0, 7) });
+  const revInput = h('input', { type: 'number', step: '0.01', min: '0', value: e.target_revenue || '' });
+  const leadsInput = h('input', { type: 'number', min: '0', value: e.target_leads || '' });
+  const salesInput = h('input', { type: 'number', min: '0', value: e.target_sales || '' });
+  const callsInput = h('input', { type: 'number', min: '0', value: e.target_calls || '' });
+  const notesInput = h('textarea', { rows: 2 }, e.notes || '');
+
+  const modal = h('div', { class: 'modal-backdrop' }, h('div', { class: 'modal' },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '🎯 Set monthly target'),
+      h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+    ),
+    h('div', { class: 'form-grid' },
+      h('div', { class: 'f-row' }, h('label', {}, 'Month'), monthField),
+      h('div', { class: 'f-row' }, h('label', {}, 'Scope'), userField),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target revenue (₹)'), revInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target new leads'), leadsInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target sales count'), salesInput),
+      h('div', { class: 'f-row' }, h('label', {}, 'Target calls'), callsInput),
+      h('div', { class: 'f-row full' }, h('label', {}, 'Notes'), notesInput)
+    ),
+    h('div', { class: 'actions' },
+      h('button', { class: 'btn', onclick: () => modal.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', onclick: async () => {
+        try {
+          await api('api_targets_save', {
+            month: monthField.value,
+            user_id: userField.value || null,
+            target_revenue: Number(revInput.value) || 0,
+            target_leads:   Number(leadsInput.value) || 0,
+            target_sales:   Number(salesInput.value) || 0,
+            target_calls:   Number(callsInput.value) || 0,
+            notes: notesInput.value
+          });
+          toast('Target saved');
+          modal.remove();
+          if (onDone) onDone();
+        } catch (e) { toast(e.message, 'err'); }
+      } }, 'Save target')
+    )
+  ));
+  document.body.appendChild(modal);
+}
+
+/**
+ * Call ratings report — rep-wise call quality summary.
+ * Shows total calls, rated calls, manual avg, AI-suggested avg, and a
+ * 1★→5★ distribution bar per rep. Supports date range + user filter.
+ */
+/**
+ * AI usage report — month-to-date Gemini cost + per-rep breakdown.
+ * Shows actual cost (vendor) and billable cost (with markup).
+ * Plus a cost estimator that converts X minutes → ₹.
+ */
+VIEWS.aiusage = async (view) => {
+  view.innerHTML = '';
+  const out = h('div', {});
+  view.appendChild(out);
+  out.innerHTML = '<div class="muted">Loading AI usage…</div>';
 
   try {
     const u = await api('api_reports_aiUsage', {});
