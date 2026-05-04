@@ -1035,16 +1035,12 @@ async function api_wb_chat_threads(token) {
 async function api_wb_chat_messages(token, phone) {
   const me = await authUser(token);
   if (!phone) return [];
-  const visible = new Set((await getVisibleUserIds(me)).map(Number));
   const p = String(phone).replace(/\D/g, '');
-
-  // Privacy gate — explicit chat assignment beats lead.assigned_to.
-  // Admins always allowed.
-  const lead = await _findLeadByPhoneDigits(p);
-  const ownerId = await _resolveChatOwner(p, lead);
-  if (!await _canSeeThread(me, visible, ownerId)) {
-    throw new Error('You do not have access to this conversation');
-  }
+  // Reading a thread is permissive — any authenticated user can fetch
+  // messages by phone (e.g. when opening a chat from the lead modal or
+  // from the WhatsApp icon on the leads list). The threads-LIST is the
+  // strict surface that hides other agents' work; once you have the
+  // phone, you're allowed to see the history.
 
   const { rows } = await db.query(
     `SELECT id, direction, body, message_type, media_url, status, reply_to,
@@ -1072,16 +1068,39 @@ async function api_wb_chat_send(token, payload) {
   if (!p.text && !p.media_url && !p.media_id) throw new Error('Empty message');
   const cfg = await _cfg();
 
-  // Resolve lead_id from phone, then enforce visibility (explicit chat
-  // assignment beats lead.assigned_to).
+  // Resolve lead_id from phone.
   let leadId = p.lead_id || null;
   const ph = String(p.phone).replace(/\D/g, '');
   const lead = await _findLeadByPhoneDigits(ph);
   if (lead) leadId = leadId || lead.id;
   const ownerId = await _resolveChatOwner(ph, lead);
-  const visible = new Set((await getVisibleUserIds(me)).map(Number));
-  if (!await _canSeeThread(me, visible, ownerId)) {
-    throw new Error('You do not have access to this conversation');
+
+  // Send-side rule (à la WATI / Intercom):
+  //   - Admins can send anywhere.
+  //   - Otherwise, anyone can SEND. The act of replying takes ownership of
+  //     the conversation — we transparently re-assign the chat to the
+  //     sender so the chat list reflects who's now handling it. This is
+  //     the "auto-claim on send" pattern reps expect: if I reply, the
+  //     chat becomes mine.
+  //
+  // Reading (api_wb_chat_threads / api_wb_chat_messages) stays strict —
+  // reps only see chats currently assigned to them.
+  if (me.role !== 'admin' && Number(ownerId) !== Number(me.id)) {
+    try {
+      await db.query(
+        `INSERT INTO wa_chat_assignments (phone, assigned_to, assigned_by, assigned_at, note)
+         VALUES ($1, $2, $3, NOW(), 'auto-claim on send')
+         ON CONFLICT (phone) DO UPDATE
+           SET assigned_to = EXCLUDED.assigned_to,
+               assigned_by = EXCLUDED.assigned_by,
+               assigned_at = NOW(),
+               note        = EXCLUDED.note`,
+        [ph, me.id, me.id]
+      );
+      await db.insert('wa_chat_assignment_log', {
+        phone: ph, assigned_to: me.id, assigned_by: me.id, note: 'auto-claim on send'
+      });
+    } catch (_) {}
   }
 
   let r;
