@@ -1071,6 +1071,15 @@ VIEWS.leads = async (view) => {
       { id: 'only', name: '⚠️ Duplicates only' },
       { id: 'unique', name: 'No duplicates' }
     ], CRM.prefs.filters.duplicate)),
+    // Sort: newest/oldest by created_at, or by last-updated. Default
+    // 'created_desc' matches the previous hard-coded behaviour so saved
+    // filters from before this option keep working unchanged.
+    wireFilter(selectOpts('f-sort', [
+      { id: 'created_desc', name: '🆕 Created — newest first' },
+      { id: 'created_asc',  name: '⏳ Created — oldest first' },
+      { id: 'updated_desc', name: '✏️ Updated — newest first' },
+      { id: 'updated_asc',  name: '⏳ Updated — oldest first' }
+    ], CRM.prefs.filters.sort || 'created_desc')),
     h('button', { class: 'btn', onclick: () => { CRM._leadsPage = 1; loadLeads({ page: 1 }); } }, '🔎'),
     h('button', { class: 'btn ghost', onclick: openSavedFiltersMenu, title: 'Saved filter presets' }, '📌'),
     h('button', { class: 'btn ghost', onclick: clearFilters, title: 'Reset filters' }, '✕'),
@@ -1229,6 +1238,7 @@ async function loadLeads(opts) {
     followup:    $('#f-followup')?.value || undefined,
     qualified:   $('#f-qualified')?.value || undefined,
     duplicate:   $('#f-duplicate')?.value || undefined,
+    sort:        $('#f-sort')?.value || undefined,
     page,
     page_size:   pageSize
   };
@@ -5982,12 +5992,28 @@ function startEmbeddedSignup(appId, configId) {
 async function wbTemplates() {
   const wrap = h('div', {});
   const list = await api('api_wb_templates_list').catch(() => []);
+  // Template creation/edit/submission lives on the Meta side — this CRM
+  // can only consume APPROVED templates. We expose a one-click jump-off
+  // to Meta's Template Manager so admins don't have to hunt for the URL.
   wrap.appendChild(h('div', { class: 'toolbar' },
     h('h3', { style: { margin: 0, flex: 1 } }, '📋 Templates (' + list.length + ')'),
-    h('button', { class: 'btn primary', onclick: async () => {
+    h('a', {
+      class: 'btn',
+      href: 'https://business.facebook.com/wa/manage/message-templates/',
+      target: '_blank', rel: 'noopener',
+      title: 'Open Meta Business — create / edit / submit WhatsApp templates'
+    }, '🛠 Template Management ↗'),
+    h('button', { class: 'btn primary', style: { marginLeft: '.4rem' }, onclick: async () => {
       try { const r = await api('api_wb_templates_sync'); toast('Synced ' + r.count + ' templates'); showWbTab('templates'); }
       catch (e) { toast(e.message, 'err'); }
     } }, '🔄 Sync from Meta')
+  ));
+  wrap.appendChild(h('p', { class: 'muted', style: { fontSize: '.82rem', margin: '0 0 .75rem' } },
+    'Need a new template, edits to an existing one, or to check approval status? Open ',
+    h('b', {}, 'Template Management'),
+    ' to manage them in Meta Business Manager, then come back and click ',
+    h('b', {}, 'Sync from Meta'),
+    ' to refresh this list.'
   ));
   if (!list.length) {
     wrap.appendChild(h('p', { class: 'muted' }, 'No templates yet. Click "Sync from Meta" to pull your approved templates.'));

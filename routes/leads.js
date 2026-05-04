@@ -341,7 +341,28 @@ async function api_leads_list(token, filters) {
   if (filters.duplicate === 'only')        rows = rows.filter(l => Number(l.is_duplicate) === 1);
   else if (filters.duplicate === 'unique') rows = rows.filter(l => Number(l.is_duplicate) !== 1);
 
-  rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  // Sort:
+  //   created_desc (default) — newest created leads first
+  //   created_asc           — oldest created leads first
+  //   updated_desc          — most recently touched leads first
+  //   updated_asc           — least recently touched leads first
+  // Falls back to created_at if updated_at is null/missing on a row,
+  // so freshly imported leads still sort sensibly.
+  const sort = String(filters.sort || 'created_desc').toLowerCase();
+  const _key = (l) => {
+    if (sort.startsWith('updated')) {
+      return String(l.updated_at || l.last_status_change_at || l.created_at || '');
+    }
+    return String(l.created_at || '');
+  };
+  const _dir = sort.endsWith('_asc') ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = _key(a), bv = _key(b);
+    if (av < bv) return -1 * _dir;
+    if (av > bv) return  1 * _dir;
+    // Stable tiebreaker on id so paging stays deterministic
+    return (Number(a.id) - Number(b.id)) * _dir;
+  });
   const total = rows.length;
   const statusCount = {};
   rows.forEach(l => { const sid = Number(l.status_id) || 0; statusCount[sid] = (statusCount[sid] || 0) + 1; });
