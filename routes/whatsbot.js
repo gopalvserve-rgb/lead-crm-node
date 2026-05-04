@@ -773,16 +773,51 @@ async function _findLeadByPhoneDigits(digits) {
 }
 
 /**
- * Privacy gate for the live-chat module. Admins can see every conversation
- * on the API number. Everyone else can only see conversations whose linked
- * lead is assigned to a user in their visibility tree (themselves, plus
- * direct reports for managers/team-leaders). Threads with NO linked lead
- * are admin-only — non-admins shouldn't see "stranger" inbound messages.
+ * Resolve the agent currently handling a conversation. Priority:
+ *   1. Explicit row in wa_chat_assignments (set via api_wb_chat_assign,
+ *      à la WATI / Interakt's "assign to agent")
+ *   2. Lead's assigned_to (the natural owner)
+ *   3. null — orphan thread, only admins can see
  */
-async function _canSeeThread(me, visibleSet, leadId, leadAssignedTo) {
+async function _resolveChatOwner(phoneDigits, lead) {
+  try {
+    const r = await db.query(
+      `SELECT assigned_to FROM wa_chat_assignments WHERE phone = $1 LIMIT 1`,
+      [String(phoneDigits || '')]
+    );
+    if (r.rows[0] && r.rows[0].assigned_to) return Number(r.rows[0].assigned_to);
+  } catch (_) {}
+  return Number(lead?.assigned_to) || null;
+}
+
+/**
+ * Build a map of { phone -> { assigned_to, assigned_at } } for a list of
+ * phone numbers. Used by api_wb_chat_threads to hydrate the thread list
+ * with the current assigned agent in one round-trip.
+ */
+async function _chatAssignmentsByPhone(phones) {
+  if (!phones || !phones.length) return {};
+  try {
+    const r = await db.query(
+      `SELECT phone, assigned_to, assigned_at FROM wa_chat_assignments
+         WHERE phone = ANY($1::text[])`,
+      [phones]
+    );
+    const m = {};
+    r.rows.forEach(x => { m[String(x.phone)] = x; });
+    return m;
+  } catch (_) { return {}; }
+}
+
+/**
+ * Privacy gate for the live-chat module. Admins can see every conversation
+ * on the API number. Everyone else can only see conversations whose
+ * resolved owner is in their visibility tree. Threads with NO owner are
+ * admin-only — non-admins shouldn't see "stranger" inbound messages.
+ */
+async function _canSeeThread(me, visibleSet, ownerId) {
   if (me.role === 'admin') return true;
-  if (!leadId) return false;
-  const owner = Number(leadAssignedTo);
+  const owner = Number(ownerId);
   if (!owner) return false;
   return visibleSet.has(owner);
 }
@@ -829,14 +864,30 @@ async function api_wb_chat_threads(token) {
     const ld = await db.query(`SELECT id, name, assigned_to FROM leads WHERE id = ANY($1::int[])`, [leadIds]);
     ld.rows.forEach(l => { leadById[l.id] = l; });
   }
+  const phones = [...threads.keys()];
+  const explicit = await _chatAssignmentsByPhone(phones);
+  const userIds = [...new Set([
+    ...Object.values(explicit).map(e => e?.assigned_to).filter(Boolean),
+    ...Object.values(leadById).map(l => l?.assigned_to).filter(Boolean)
+  ])].map(Number);
+  let usersById = {};
+  if (userIds.length) {
+    const u = await db.query(`SELECT id, name FROM users WHERE id = ANY($1::int[])`, [userIds]);
+    u.rows.forEach(x => { usersById[x.id] = x; });
+  }
   const out = [];
   for (const t of threads.values()) {
     const lead = t.lead_id ? leadById[t.lead_id] : null;
-    if (!await _canSeeThread(me, visible, t.lead_id, lead?.assigned_to)) continue;
+    const exp  = explicit[String(t.phone)];
+    const ownerId = (exp && exp.assigned_to) ? Number(exp.assigned_to)
+                  : (lead ? Number(lead.assigned_to) || null : null);
+    if (!await _canSeeThread(me, visible, ownerId)) continue;
     out.push({
       ...t,
       lead_name: lead ? (lead.name || '') : '',
-      assigned_to: lead ? lead.assigned_to : null
+      assigned_to: ownerId,
+      assigned_name: ownerId && usersById[ownerId] ? usersById[ownerId].name : '',
+      assignment_explicit: !!(exp && exp.assigned_to)
     });
   }
   out.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)));
@@ -849,10 +900,11 @@ async function api_wb_chat_messages(token, phone) {
   const visible = new Set((await getVisibleUserIds(me)).map(Number));
   const p = String(phone).replace(/\D/g, '');
 
-  // Privacy gate — only let the user open the thread if they own (or
-  // manage the owner of) the linked lead. Admins always allowed.
+  // Privacy gate — explicit chat assignment beats lead.assigned_to.
+  // Admins always allowed.
   const lead = await _findLeadByPhoneDigits(p);
-  if (!await _canSeeThread(me, visible, lead?.id, lead?.assigned_to)) {
+  const ownerId = await _resolveChatOwner(p, lead);
+  if (!await _canSeeThread(me, visible, ownerId)) {
     throw new Error('You do not have access to this conversation');
   }
 
@@ -881,14 +933,15 @@ async function api_wb_chat_send(token, payload) {
   if (!p.text && !p.media_url && !p.media_id) throw new Error('Empty message');
   const cfg = await _cfg();
 
-  // Resolve lead_id from phone, then enforce visibility.
+  // Resolve lead_id from phone, then enforce visibility (explicit chat
+  // assignment beats lead.assigned_to).
   let leadId = p.lead_id || null;
-  let assignedTo = null;
   const ph = String(p.phone).replace(/\D/g, '');
   const lead = await _findLeadByPhoneDigits(ph);
-  if (lead) { leadId = leadId || lead.id; assignedTo = lead.assigned_to; }
+  if (lead) leadId = leadId || lead.id;
+  const ownerId = await _resolveChatOwner(ph, lead);
   const visible = new Set((await getVisibleUserIds(me)).map(Number));
-  if (!await _canSeeThread(me, visible, leadId, assignedTo)) {
+  if (!await _canSeeThread(me, visible, ownerId)) {
     throw new Error('You do not have access to this conversation');
   }
 
@@ -908,6 +961,82 @@ async function api_wb_chat_send(token, payload) {
   await _logActivity({ category: 'chat', response_code: r.status, request: { to: p.phone }, response: r.body });
   if (r.body?.error) throw new Error(r.body.error.message);
   return { ok: true, wa_message_id: r.wa_message_id };
+}
+
+/**
+ * Assign a chat thread to a specific agent (à la WATI / Interakt).
+ * Admins, managers, and team_leaders can change the assignment. Reps
+ * can only assign chats to themselves (claim a chat). Writes the
+ * current assignment to wa_chat_assignments and appends an audit row
+ * to wa_chat_assignment_log.
+ *
+ * Args: (token, { phone, user_id, note? })
+ *   - user_id may be null/0 to UNASSIGN (chat falls back to lead.assigned_to)
+ */
+async function api_wb_chat_assign(token, payload) {
+  const me = await authUser(token);
+  const p = payload || {};
+  const phone = String(p.phone || '').replace(/\D/g, '');
+  if (!phone) throw new Error('phone required');
+
+  let newOwner = p.user_id == null || p.user_id === '' ? null : Number(p.user_id);
+  if (newOwner !== null && !Number.isFinite(newOwner)) throw new Error('Invalid user_id');
+
+  // Permissions
+  const isPriv = (me.role === 'admin' || me.role === 'manager' || me.role === 'team_leader');
+  if (!isPriv) {
+    // Non-priv users may only claim a chat for themselves.
+    if (newOwner !== Number(me.id)) {
+      throw new Error('Only admins / managers / team-leaders can assign chats to other agents');
+    }
+  }
+  if (newOwner !== null) {
+    const u = await db.findById('users', newOwner);
+    if (!u) throw new Error('User not found');
+  }
+
+  // Upsert
+  await db.query(
+    `INSERT INTO wa_chat_assignments (phone, assigned_to, assigned_by, assigned_at, note)
+     VALUES ($1, $2, $3, NOW(), $4)
+     ON CONFLICT (phone) DO UPDATE
+       SET assigned_to = EXCLUDED.assigned_to,
+           assigned_by = EXCLUDED.assigned_by,
+           assigned_at = NOW(),
+           note        = EXCLUDED.note`,
+    [phone, newOwner, me.id, p.note || null]
+  );
+  await db.insert('wa_chat_assignment_log', {
+    phone, assigned_to: newOwner, assigned_by: me.id, note: p.note || null
+  });
+  return { ok: true, phone, assigned_to: newOwner };
+}
+
+/**
+ * Return the assignment history for a phone number (newest first).
+ * Used by the chat header to show who currently owns the chat plus
+ * a small "↻ Reassigned 3 times" trail.
+ */
+async function api_wb_chat_assignments_list(token, phone) {
+  await authUser(token);
+  const p = String(phone || '').replace(/\D/g, '');
+  if (!p) return { current: null, history: [] };
+  const cur = await db.query(
+    `SELECT a.phone, a.assigned_to, a.assigned_by, a.assigned_at, a.note,
+            u.name AS assigned_name, ub.name AS assigned_by_name
+       FROM wa_chat_assignments a
+       LEFT JOIN users u  ON u.id  = a.assigned_to
+       LEFT JOIN users ub ON ub.id = a.assigned_by
+      WHERE phone = $1`, [p]);
+  const hist = await db.query(
+    `SELECT l.id, l.assigned_to, l.assigned_by, l.note, l.created_at,
+            u.name AS assigned_name, ub.name AS assigned_by_name
+       FROM wa_chat_assignment_log l
+       LEFT JOIN users u  ON u.id  = l.assigned_to
+       LEFT JOIN users ub ON ub.id = l.assigned_by
+      WHERE phone = $1
+      ORDER BY created_at DESC LIMIT 50`, [p]);
+  return { current: cur.rows[0] || null, history: hist.rows };
 }
 
 /**
@@ -1541,6 +1670,7 @@ module.exports = {
   api_wb_templates_sync, api_wb_templates_list,
   // Chat
   api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send, api_wb_initiate_chat,
+  api_wb_chat_assign, api_wb_chat_assignments_list,
   // Bots
   api_wb_message_bots_list, api_wb_message_bots_save, api_wb_message_bots_delete,
   api_wb_template_bots_list, api_wb_template_bots_save, api_wb_template_bots_delete,

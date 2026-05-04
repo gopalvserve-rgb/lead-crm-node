@@ -6527,6 +6527,61 @@ function renderWaMessageMedia(msg) {
 }
 
 /**
+ * Agent assignment picker for the chat header. Admins / managers / TLs
+ * can pick any agent; reps get a "Claim chat" button that assigns the
+ * chat to themselves. Fires api_wb_chat_assign and refreshes the list.
+ */
+function buildAgentPicker(phone, threadMeta) {
+  const role = CRM.user.role;
+  const isPriv = (role === 'admin' || role === 'manager' || role === 'team_leader');
+  const wrap = h('div', { class: 'wb-agent-pick' });
+  const labelText = threadMeta.assigned_name
+    ? '👤 ' + threadMeta.assigned_name + (threadMeta.assignment_explicit ? '' : ' · auto')
+    : '👤 Unassigned';
+  const labelEl = h('span', { class: 'wb-agent-pick-label' }, labelText);
+  wrap.appendChild(labelEl);
+
+  if (!isPriv) {
+    if (Number(threadMeta.assigned_to) !== Number(CRM.user.id)) {
+      const claim = h('button', { class: 'btn xs primary', title: 'Claim this chat for me' }, 'Claim');
+      claim.onclick = async () => {
+        try {
+          await api('api_wb_chat_assign', { phone, user_id: CRM.user.id });
+          toast('✓ Chat assigned to you');
+          if (window._wbChatTimers) window._wbChatTimers.threadList && window._wbChatTimers.threadList; // poll picks up
+        } catch (e) { toast(e.message, 'err'); }
+      };
+      wrap.appendChild(claim);
+    }
+    return wrap;
+  }
+
+  // Privileged: dropdown of all users
+  const sel = h('select', { class: 'wb-agent-pick-select' }, h('option', { value: '' }, '— Unassigned —'));
+  // Lazily fetch users
+  api('api_users_list').then(users => {
+    sel.innerHTML = '';
+    sel.appendChild(h('option', { value: '' }, '— Unassigned —'));
+    users.forEach(u => {
+      const opt = h('option', { value: String(u.id) }, u.name);
+      if (Number(u.id) === Number(threadMeta.assigned_to)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }).catch(() => {});
+  sel.onchange = async () => {
+    try {
+      await api('api_wb_chat_assign', { phone, user_id: sel.value || null });
+      toast('✓ Assignment updated');
+      // Update the label inline without a full re-render
+      const opt = sel.options[sel.selectedIndex];
+      labelEl.textContent = '👤 ' + (opt && opt.value ? opt.text : 'Unassigned');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  wrap.appendChild(sel);
+  return wrap;
+}
+
+/**
  * Compose bar for a single chat thread — textarea + 📎 attach + send.
  * Calls onSent after every successful send so the parent can redraw.
  */
@@ -6651,8 +6706,13 @@ async function wbChat() {
   let lastThreadsFingerprint = '';
 
   function _threadFingerprint(threads) {
-    return threads.map(t => `${t.phone}|${t.last_at}|${t.unread}`).join(';');
+    return threads.map(t => `${t.phone}|${t.last_at}|${t.unread}|${t.assigned_to || 0}|${agentFilterId || ''}`).join(';');
   }
+  // Admin / manager filter — when non-null, threads are limited to chats
+  // assigned to that user. Persisted on `wbChat`'s closure so the filter
+  // survives auto-polling redraws.
+  let agentFilterId = '';
+  let chatUsers = [];     // populated once per render
   function _msgFingerprint(msgs) {
     return msgs.map(m => `${m.id}|${m.status || ''}|${m.read_at || ''}|${m.delivered_at || ''}`).join(';');
   }
@@ -6661,23 +6721,58 @@ async function wbChat() {
     let threads;
     try { threads = await api('api_wb_chat_threads'); }
     catch (_) { threads = []; }
-    const fp = _threadFingerprint(threads);
+
+    // Apply admin / manager agent filter if set
+    const filtered = agentFilterId
+      ? threads.filter(t => Number(t.assigned_to) === Number(agentFilterId))
+      : threads;
+
+    const fp = _threadFingerprint(filtered);
     if (fp === lastThreadsFingerprint) return; // No change — preserve scroll
     lastThreadsFingerprint = fp;
 
+    // Lazily fetch the user roster the FIRST time the list renders so we
+    // can populate the agent-filter dropdown + assignment picker.
+    if (!chatUsers.length && (CRM.user.role === 'admin' || CRM.user.role === 'manager' || CRM.user.role === 'team_leader')) {
+      try { chatUsers = await api('api_users_list'); } catch (_) { chatUsers = []; }
+    }
+
     left.innerHTML = '';
     left.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '.5rem' } },
-      h('h4', { style: { margin: 0 } }, '💭 Chats (' + threads.length + ')'),
+      h('h4', { style: { margin: 0 } }, '💭 Chats (' + filtered.length + ')'),
       h('button', { class: 'btn sm ghost', title: 'Refresh now', onclick: () => { lastThreadsFingerprint = ''; renderThreadList(); if (openPhone) renderActiveThread(true); } }, '↻')
     ));
-    if (!threads.length) {
-      left.appendChild(h('p', { class: 'muted' }, 'No conversations yet. Inbound WhatsApp messages will appear here automatically.'));
+
+    // Agent filter — admins/managers/TLs only
+    const canFilter = (CRM.user.role === 'admin' || CRM.user.role === 'manager' || CRM.user.role === 'team_leader');
+    if (canFilter && chatUsers.length) {
+      const sel = h('select', { class: 'wb-agent-filter', style: { width: '100%', marginBottom: '.5rem' } },
+        h('option', { value: '' }, 'All agents'),
+        ...chatUsers.map(u => h('option', { value: String(u.id), selected: String(u.id) === String(agentFilterId) ? 'selected' : null }, u.name))
+      );
+      sel.onchange = () => {
+        agentFilterId = sel.value;
+        lastThreadsFingerprint = '';
+        renderThreadList();
+      };
+      left.appendChild(sel);
+    }
+
+    if (!filtered.length) {
+      left.appendChild(h('p', { class: 'muted' },
+        agentFilterId ? 'No chats assigned to this agent.' : 'No conversations yet. Inbound WhatsApp messages will appear here automatically.'));
       return;
     }
-    threads.forEach(t => {
+    filtered.forEach(t => {
+      const ownerLabel = t.assigned_name
+        ? h('span', { class: 'wb-row-agent' + (t.assignment_explicit ? ' explicit' : '') },
+            '👤 ' + t.assigned_name + (t.assignment_explicit ? '' : ' · auto')
+          )
+        : h('span', { class: 'wb-row-agent unassigned' }, '👤 Unassigned');
       const row = h('div', { class: 'wb-chat-row' + (t.phone === openPhone ? ' active' : ''), onclick: () => openThread(t.phone) },
         h('div', {}, h('b', {}, t.lead_name || t.phone), t.unread ? h('span', { class: 'wb-unread' }, t.unread) : null),
         h('div', { class: 'muted', style: { fontSize: '.78rem' } }, t.phone),
+        ownerLabel,
         h('div', { class: 'muted', style: { fontSize: '.78rem', maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, t.last_message_type === 'text' ? t.last_message : ('[' + t.last_message_type + ']')),
         h('div', { class: 'muted', style: { fontSize: '.7rem' } }, fmtDate(t.last_at, 'relative'))
       );
@@ -6752,13 +6847,19 @@ async function wbChat() {
     [...left.querySelectorAll('.wb-chat-row')].forEach(r => r.classList.remove('active'));
 
     right.innerHTML = '';
-    right.appendChild(h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
-      h('div', { style: { display: 'flex', alignItems: 'center' } },
+    // Look up the thread row we have for this phone so we know who it's
+    // currently assigned to. (Comes from the threads list we just fetched.)
+    const threadMeta = (await api('api_wb_chat_threads').catch(() => [])).find(t => t.phone === phone) || {};
+    const head = h('div', { class: 'wb-chat-head', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '.5rem', flexWrap: 'wrap' } },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem' } },
         h('button', { class: 'wb-chat-back', title: 'Back to list', onclick: backToList }, '← Back'),
-        h('b', {}, phone)
+        h('b', {}, threadMeta.lead_name || phone),
+        threadMeta.lead_name ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, phone) : null
       ),
+      buildAgentPicker(phone, threadMeta),
       h('button', { class: 'btn sm ghost', title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
-    ));
+    );
+    right.appendChild(head);
     const log = h('div', { class: 'wb-chat-log' });
     log.innerHTML = '<div class="loading">Loading…</div>';
     right.appendChild(log);

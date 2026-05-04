@@ -393,6 +393,20 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .wb-msg-doc-icon { font-size: 1.15rem; }
 .wb-msg-doc-name { font-weight: 500; word-break: break-word; }
 .wb-msg-media { font-size: .85rem; }
+
+/* Agent assignment chip on each thread row + picker in the chat header */
+.wb-row-agent {
+  display: inline-block; font-size: .72rem;
+  padding: 1px 6px; border-radius: 4px;
+  background: #eef2ff; color: #4338ca;
+  margin-top: 2px;
+}
+.wb-row-agent.explicit  { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
+.wb-row-agent.unassigned { background: #fee2e2; color: #b91c1c; }
+.wb-agent-filter { padding: .35rem .5rem; font-size: .82rem; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.wb-agent-pick { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.wb-agent-pick-label { font-size: .82rem; color: var(--text-soft); }
+.wb-agent-pick-select { padding: .3rem .5rem; font-size: .82rem; border: 1px solid var(--border); border-radius: 6px; background: #fff; max-width: 180px; }
 .wb-chat-back { display: none; }
 @media (max-width: 780px) {
   /* Mobile pattern: ONE pane visible at a time. On mount we show the room

@@ -210,6 +210,14 @@ const SCHEMA = {
               'wa_media_id', 'created_at'],
     json: []
   },
+  wa_chat_assignments: {
+    columns: ['phone', 'assigned_to', 'assigned_by', 'assigned_at', 'note'],
+    json: []
+  },
+  wa_chat_assignment_log: {
+    columns: ['phone', 'assigned_to', 'assigned_by', 'note', 'created_at'],
+    json: []
+  },
   automations: {
     columns: ['name', 'event', 'condition', 'channel', 'recipient',
               'subject', 'template', 'is_active', 'created_at'],

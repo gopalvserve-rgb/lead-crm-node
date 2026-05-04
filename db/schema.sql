@@ -952,3 +952,30 @@ CREATE TABLE IF NOT EXISTS wa_attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_wa_attach_user ON wa_attachments(user_id);
 CREATE INDEX IF NOT EXISTS idx_wa_attach_created ON wa_attachments(created_at);
+
+-- ===========================================================
+-- v19: WhatsApp chat assignment (à la WATI / Interakt)
+-- One row per phone number, holds the agent currently handling
+-- that conversation. Falls back to leads.assigned_to when no
+-- explicit assignment exists. Admins/managers can re-assign at
+-- any time via api_wb_chat_assign. wa_chat_assignment_log
+-- captures every change so we have an audit trail.
+-- ===========================================================
+CREATE TABLE IF NOT EXISTS wa_chat_assignments (
+  phone        TEXT PRIMARY KEY,
+  assigned_to  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  note         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wa_chat_assigned_to ON wa_chat_assignments(assigned_to);
+
+CREATE TABLE IF NOT EXISTS wa_chat_assignment_log (
+  id           SERIAL PRIMARY KEY,
+  phone        TEXT NOT NULL,
+  assigned_to  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note         TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_chat_log_phone ON wa_chat_assignment_log(phone);
