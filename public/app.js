@@ -6696,11 +6696,70 @@ function buildWaCompose(phone, onSent) {
   });
 
   const attachBtn = h('button', { class: 'btn ghost wb-attach-btn', title: 'Attach a photo or document', onclick: () => fileInput.click() }, '📎');
+  const tplBtn    = h('button', { class: 'btn ghost wb-tpl-btn',
+    title: 'Send a pre-approved template — works even when the customer hasn\'t messaged in 24h',
+    onclick: () => openWaTemplatePicker(phone, () => { if (typeof onSent === 'function') onSent(); })
+  }, '📋');
   const sendBtn   = h('button', { class: 'btn primary wb-send-btn', title: 'Send', onclick: send }, 'Send');
 
   wrap.appendChild(previewSlot);
-  wrap.appendChild(h('div', { class: 'wb-compose-row' }, attachBtn, input, sendBtn, fileInput));
+  wrap.appendChild(h('div', { class: 'wb-compose-row' }, attachBtn, tplBtn, input, sendBtn, fileInput));
   return wrap;
+}
+
+/**
+ * Modal that lists approved WhatsApp templates and lets the rep send one
+ * to a contact. Used as a fallback when free-form text is blocked by the
+ * 24-hour window or any other Meta error.
+ */
+async function openWaTemplatePicker(phone, onSent) {
+  const m = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const card = h('div', { class: 'modal', style: { maxWidth: '560px' } },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '📋 Send a template to ', phone),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    )
+  );
+  const body = h('div', { class: 'modal-body' });
+  body.appendChild(h('p', { class: 'muted' }, 'Pre-approved templates can be sent any time — even outside the 24-hour reply window.'));
+  const listEl = h('div', { class: 'wb-tpl-list' });
+  body.appendChild(listEl);
+  card.appendChild(body);
+  m.appendChild(card);
+  document.body.appendChild(m);
+
+  let tpls = [];
+  try { tpls = await api('api_wb_templates_list'); }
+  catch (e) {
+    listEl.appendChild(h('div', { class: 'error-box' }, e.message));
+    return;
+  }
+  const approved = (tpls || []).filter(t => String(t.status || '').toUpperCase() === 'APPROVED');
+  if (!approved.length) {
+    listEl.appendChild(h('p', { class: 'muted' },
+      'No approved templates yet. Go to ', h('b', {}, 'WhatsBot → Templates'), ' to sync from Meta or create one.'));
+    return;
+  }
+  approved.forEach(t => {
+    const row = h('div', { class: 'wb-tpl-row' },
+      h('div', {},
+        h('b', {}, t.name),
+        h('span', { class: 'muted' }, ' · ' + (t.language || 'en') + ' · ' + (t.category || ''))
+      ),
+      h('button', { class: 'btn sm primary' }, 'Send')
+    );
+    row.querySelector('button').onclick = async () => {
+      try {
+        await api('api_wb_initiate_chat', {
+          phone, template_name: t.name, template_language: t.language || 'en_US', variables: []
+        });
+        toast('✓ Template sent');
+        m.remove();
+        if (typeof onSent === 'function') onSent();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    listEl.appendChild(row);
+  });
 }
 
 /**
