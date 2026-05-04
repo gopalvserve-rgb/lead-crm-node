@@ -6919,33 +6919,30 @@ async function wbAssignSettings() {
     return wrap;
   }
 
-  // Mode picker
-  const modeRow = h('div', { class: 'form-row' },
-    h('label', {}, 'Mode'),
-    h('select', { id: 'aa-mode' },
-      h('option', { value: 'lead_owner', selected: s.mode === 'lead_owner' ? 'selected' : null },
-        'Lead owner (default) — assign to whoever owns the linked lead'),
-      h('option', { value: 'round_robin', selected: s.mode === 'round_robin' ? 'selected' : null },
-        'Round-robin — cycle through the agent pool'),
-      h('option', { value: 'least_busy', selected: s.mode === 'least_busy' ? 'selected' : null },
-        'Least-busy — give it to the agent with fewest active chats'),
-      h('option', { value: 'manual', selected: s.mode === 'manual' ? 'selected' : null },
-        'Manual — admin assigns from the chat header')
-    )
+  // Direct refs — `$()` would return null because wrap isn't in the DOM yet.
+  const modeSel = h('select', {},
+    h('option', { value: 'lead_owner', selected: s.mode === 'lead_owner' ? 'selected' : null },
+      'Lead owner (default) — assign to whoever owns the linked lead'),
+    h('option', { value: 'round_robin', selected: s.mode === 'round_robin' ? 'selected' : null },
+      'Round-robin — cycle through the agent pool'),
+    h('option', { value: 'least_busy', selected: s.mode === 'least_busy' ? 'selected' : null },
+      'Least-busy — give it to the agent with fewest active chats'),
+    h('option', { value: 'manual', selected: s.mode === 'manual' ? 'selected' : null },
+      'Manual — admin assigns from the chat header')
   );
-  wrap.appendChild(modeRow);
+  wrap.appendChild(h('div', { class: 'form-row' }, h('label', {}, 'Mode'), modeSel));
 
   // Pool multi-select (only relevant for round_robin / least_busy)
+  const poolList = h('div', { class: 'aa-pool-list' });
   const poolWrap = h('div', { class: 'form-row' },
     h('label', {},
       'Agent pool ',
       h('span', { class: 'muted' }, '(round-robin / least-busy only)')
     ),
-    h('div', { id: 'aa-pool-list', class: 'aa-pool-list' })
+    poolList
   );
   wrap.appendChild(poolWrap);
 
-  const poolList = poolWrap.querySelector('#aa-pool-list');
   s.users.forEach(u => {
     const checked = s.pool.includes(Number(u.id)) ? 'checked' : null;
     poolList.appendChild(h('label', { class: 'aa-pool-item' },
@@ -6957,18 +6954,17 @@ async function wbAssignSettings() {
 
   // Show / hide pool depending on mode
   const updatePoolVisibility = () => {
-    const m = $('#aa-mode').value;
-    const isPoolMode = (m === 'round_robin' || m === 'least_busy');
+    const isPoolMode = (modeSel.value === 'round_robin' || modeSel.value === 'least_busy');
     poolWrap.style.opacity = isPoolMode ? '1' : '0.45';
     poolWrap.style.pointerEvents = isPoolMode ? 'auto' : 'none';
   };
-  $('#aa-mode').onchange = updatePoolVisibility;
-  setTimeout(updatePoolVisibility, 0);
+  modeSel.onchange = updatePoolVisibility;
+  updatePoolVisibility();
 
   // Save button
   const saveBtn = h('button', { class: 'btn primary' }, '💾 Save rules');
   saveBtn.onclick = async () => {
-    const mode = $('#aa-mode').value;
+    const mode = modeSel.value;
     const pool = [...poolList.querySelectorAll('.aa-pool-cb:checked')].map(cb => Number(cb.value));
     if ((mode === 'round_robin' || mode === 'least_busy') && !pool.length) {
       toast('Pick at least one agent for the pool', 'err');
