@@ -6,7 +6,7 @@
   --bg:           #f6f7fb;
   --bg-alt:       #eef0f7;
   --sidebar-bg:   #0f172a;
-  --sidebar-fg:   #cbd5e1;
+  --sidebar-fg:   #f1f5f9;
   --sidebar-hi:   #1e293b;
   --card:         #ffffff;
   --card-hover:   #fafbff;
@@ -151,11 +151,13 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .sidebar nav a {
   color: var(--sidebar-fg); padding: .55rem .7rem;
   border-radius: var(--radius-sm);
-  font-size: .92rem; display: flex; align-items: center; gap: .55rem;
+  font-size: .92rem; font-weight: 500;
+  display: flex; align-items: center; gap: .55rem;
   text-decoration: none;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
 .sidebar nav a:hover  { background: var(--sidebar-hi); color: #fff; text-decoration: none; }
-.sidebar nav a.active { background: var(--brand); color: #fff; }
+.sidebar nav a.active { background: var(--brand); color: #fff; font-weight: 600; box-shadow: 0 1px 3px rgba(99,102,241,.35); }
 .nav-icon { font-size: 1.05rem; width: 1.5rem; text-align: center; }
 
 /* Collapsible nav groups (à la Zoho). Each group has a clickable header
@@ -182,7 +184,8 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .nav-group.collapsed .nav-group-chev { transform: rotate(-90deg); }
 .nav-group-items { display: flex; flex-direction: column; gap: 2px; padding-left: .15rem; }
 .nav-group.collapsed .nav-group-items { display: none; }
-.nav-group-items > a { font-size: .9rem; }
+.nav-group-head { color: rgba(255,255,255,.7); }
+.nav-group-head:hover { color: #fff; }
 .sidebar-footer { border-top: 1px solid var(--sidebar-hi); padding-top: .75rem; margin-top: .75rem; }
 .me { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem; }
 .avatar {
