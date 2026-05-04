@@ -931,3 +931,24 @@ ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_output_tokens  INTEGER;
 ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_cost_usd       NUMERIC(10,6);
 ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS ai_cost_inr       NUMERIC(10,4);
 CREATE INDEX IF NOT EXISTS idx_lead_rec_ai_cost ON lead_recordings(ai_cost_usd);
+
+-- ===========================================================
+-- v18: WhatsApp attachments — files reps upload to send via WA
+-- Bytes go in BYTEA so we don't need an external bucket. The
+-- /api/wa/attachment/:id endpoint serves them back so chat threads
+-- can preview the image / document. wa_media_id is the id WhatsApp
+-- returns from /media after we forward the bytes — used for the
+-- actual outbound message.
+-- ===========================================================
+CREATE TABLE IF NOT EXISTS wa_attachments (
+  id             SERIAL PRIMARY KEY,
+  user_id        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  filename       TEXT,
+  mime_type      TEXT,
+  size_bytes     INTEGER,
+  bytes          BYTEA,
+  wa_media_id    TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_wa_attach_user ON wa_attachments(user_id);
+CREATE INDEX IF NOT EXISTS idx_wa_attach_created ON wa_attachments(created_at);

@@ -16,8 +16,9 @@
  * Express routes are mounted in server.js using the exported handlers.
  */
 const fetch = require('node-fetch');
+const FormData = require('form-data');
 const db = require('../db/pg');
-const { authUser } = require('../utils/auth');
+const { authUser, getVisibleUserIds } = require('../utils/auth');
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
 
@@ -688,17 +689,113 @@ async function _sendMedia({ to, mediaType, mediaUrl, caption, leadId, userId }, 
   return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
 
+/**
+ * Send media by WhatsApp media_id (obtained from /api/wa/upload). Cleaner
+ * than the link= variant because it doesn't require us to expose the file
+ * publicly. The local mediaUrl (our /api/wa/attachment/:id endpoint) is
+ * still saved into whatsapp_messages.media_url so the chat thread can
+ * render the preview locally.
+ */
+async function _sendMediaById({ to, mediaType, mediaId, filename, caption, leadId, userId, mediaUrl }, cfg) {
+  const c = cfg || await _cfg();
+  const payload = { id: mediaId };
+  if (caption && (mediaType === 'image' || mediaType === 'video' || mediaType === 'document')) {
+    payload.caption = caption;
+  }
+  if (mediaType === 'document' && filename) payload.filename = filename;
+  const body = {
+    messaging_product: 'whatsapp',
+    to: _normalizePhone(to, c.defaultCC),
+    type: mediaType,
+    [mediaType]: payload
+  };
+  const r = await _graphPost(`${c.phoneId}/messages`, body, c);
+  const waMsgId = r.body?.messages?.[0]?.id || null;
+  const errorText = r.body?.error?.message || null;
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, media_url, error_text)
+       VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [leadId || null, userId || null, c.phoneId, body.to, caption || '', waMsgId, r.body?.error ? 'failed' : 'sent', mediaType, mediaUrl || null, errorText]
+    );
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_out', userId || null, {
+          preview: caption || ('[' + mediaType + (filename ? ': ' + filename : '') + ']'),
+          error: errorText || null, type: mediaType
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
+}
+
+/**
+ * Upload a file to the WhatsApp Media API. Returns { id, mime_type } where
+ * `id` is the WhatsApp media_id usable in subsequent /messages calls for
+ * up to 30 days. Throws on Graph API errors.
+ *
+ * Args: buffer (Buffer), mimeType (e.g. 'image/jpeg'), filename, cfg
+ */
+async function _uploadMediaToWhatsApp(buffer, mimeType, filename, cfg) {
+  const c = cfg || await _cfg();
+  if (!c.token || !c.phoneId) throw new Error('WhatsApp not configured');
+  const fd = new FormData();
+  fd.append('messaging_product', 'whatsapp');
+  fd.append('file', buffer, { filename: filename || 'upload.bin', contentType: mimeType });
+  fd.append('type', mimeType);
+  const r = await fetch(`${GRAPH}/${c.phoneId}/media`, {
+    method: 'POST',
+    headers: Object.assign({ Authorization: 'Bearer ' + c.token }, fd.getHeaders()),
+    body: fd
+  });
+  const j = await r.json();
+  if (!j.id) throw new Error(j.error?.message || 'Upload failed');
+  return { id: j.id, mime_type: mimeType };
+}
+
 // ---------- Live Chat ---------------------------------------------
+
+/**
+ * Find the lead linked to a phone number, by exact digits match against
+ * leads.phone OR leads.whatsapp. Returns null if no lead found.
+ */
+async function _findLeadByPhoneDigits(digits) {
+  if (!digits) return null;
+  try {
+    const r = await db.query(
+      `SELECT id, assigned_to, name FROM leads
+         WHERE regexp_replace(COALESCE(phone, ''),    '\\D', '', 'g') = $1
+            OR regexp_replace(COALESCE(whatsapp, ''), '\\D', '', 'g') = $1
+         LIMIT 1`, [String(digits)]);
+    return r.rows[0] || null;
+  } catch (_) { return null; }
+}
+
+/**
+ * Privacy gate for the live-chat module. Admins can see every conversation
+ * on the API number. Everyone else can only see conversations whose linked
+ * lead is assigned to a user in their visibility tree (themselves, plus
+ * direct reports for managers/team-leaders). Threads with NO linked lead
+ * are admin-only — non-admins shouldn't see "stranger" inbound messages.
+ */
+async function _canSeeThread(me, visibleSet, leadId, leadAssignedTo) {
+  if (me.role === 'admin') return true;
+  if (!leadId) return false;
+  const owner = Number(leadAssignedTo);
+  if (!owner) return false;
+  return visibleSet.has(owner);
+}
 
 /**
  * Conversation list — group whatsapp_messages by the OTHER party's number.
  * Returns one row per contact with last message preview, lead_id link,
- * and unread count.
+ * and unread count. Filtered by what the caller is allowed to see.
  */
 async function api_wb_chat_threads(token) {
-  await authUser(token);
-  const cfg = await _cfg();
-  const myNum = String(cfg.phoneId || '');
+  const me = await authUser(token);
+  const visible = new Set((await getVisibleUserIds(me)).map(Number));
+
   // Pull last 1000 messages, group by counterpart
   const { rows } = await db.query(
     `SELECT id, lead_id, direction, from_number, to_number, body, message_type, status, read_at, created_at
@@ -724,25 +821,41 @@ async function api_wb_chat_threads(token) {
     if (m.direction === 'in' && !m.read_at) t.unread++;
     if (!t.lead_id && m.lead_id) t.lead_id = m.lead_id;
   });
-  // Hydrate with lead names
+
+  // Hydrate with lead name + assignee, then drop threads the user can't see.
   const leadIds = [...new Set([...threads.values()].map(t => t.lead_id).filter(Boolean))];
   let leadById = {};
   if (leadIds.length) {
-    const ld = await db.query(`SELECT id, name FROM leads WHERE id = ANY($1::int[])`, [leadIds]);
+    const ld = await db.query(`SELECT id, name, assigned_to FROM leads WHERE id = ANY($1::int[])`, [leadIds]);
     ld.rows.forEach(l => { leadById[l.id] = l; });
   }
-  const out = [...threads.values()].map(t => ({
-    ...t,
-    lead_name: t.lead_id ? (leadById[t.lead_id]?.name || '') : ''
-  }));
+  const out = [];
+  for (const t of threads.values()) {
+    const lead = t.lead_id ? leadById[t.lead_id] : null;
+    if (!await _canSeeThread(me, visible, t.lead_id, lead?.assigned_to)) continue;
+    out.push({
+      ...t,
+      lead_name: lead ? (lead.name || '') : '',
+      assigned_to: lead ? lead.assigned_to : null
+    });
+  }
   out.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)));
   return out;
 }
 
 async function api_wb_chat_messages(token, phone) {
-  await authUser(token);
+  const me = await authUser(token);
   if (!phone) return [];
+  const visible = new Set((await getVisibleUserIds(me)).map(Number));
   const p = String(phone).replace(/\D/g, '');
+
+  // Privacy gate — only let the user open the thread if they own (or
+  // manage the owner of) the linked lead. Admins always allowed.
+  const lead = await _findLeadByPhoneDigits(p);
+  if (!await _canSeeThread(me, visible, lead?.id, lead?.assigned_to)) {
+    throw new Error('You do not have access to this conversation');
+  }
+
   const { rows } = await db.query(
     `SELECT id, direction, body, message_type, media_url, status, reply_to, created_at, read_at, delivered_at
        FROM whatsapp_messages
@@ -765,23 +878,29 @@ async function api_wb_chat_send(token, payload) {
   const me = await authUser(token);
   const p = payload || {};
   if (!p.phone) throw new Error('phone required');
-  if (!p.text && !p.media_url) throw new Error('Empty message');
+  if (!p.text && !p.media_url && !p.media_id) throw new Error('Empty message');
   const cfg = await _cfg();
-  // Resolve lead_id from phone so the message links back in the chat thread.
+
+  // Resolve lead_id from phone, then enforce visibility.
   let leadId = p.lead_id || null;
-  if (!leadId) {
-    const ph = String(p.phone).replace(/\D/g, '');
-    try {
-      const ld = await db.query(
-        `SELECT id FROM leads
-           WHERE regexp_replace(COALESCE(phone, ''),    '\\D', '', 'g') = $1
-              OR regexp_replace(COALESCE(whatsapp, ''), '\\D', '', 'g') = $1
-           LIMIT 1`, [ph]);
-      if (ld.rows.length) leadId = ld.rows[0].id;
-    } catch (_) {}
+  let assignedTo = null;
+  const ph = String(p.phone).replace(/\D/g, '');
+  const lead = await _findLeadByPhoneDigits(ph);
+  if (lead) { leadId = leadId || lead.id; assignedTo = lead.assigned_to; }
+  const visible = new Set((await getVisibleUserIds(me)).map(Number));
+  if (!await _canSeeThread(me, visible, leadId, assignedTo)) {
+    throw new Error('You do not have access to this conversation');
   }
+
   let r;
-  if (p.media_url) {
+  if (p.media_id) {
+    // Media uploaded via /api/wa/upload — send by WA media_id.
+    r = await _sendMediaById({
+      to: p.phone, mediaType: p.media_type || 'image', mediaId: p.media_id,
+      filename: p.filename || undefined, caption: p.text, leadId, userId: me.id,
+      mediaUrl: p.media_url || null
+    }, cfg);
+  } else if (p.media_url) {
     r = await _sendMedia({ to: p.phone, mediaType: p.media_type || 'image', mediaUrl: p.media_url, caption: p.text, leadId, userId: me.id }, cfg);
   } else {
     r = await _sendText({ to: p.phone, text: p.text, replyTo: p.reply_to, leadId, userId: me.id }, cfg);
@@ -1435,5 +1554,8 @@ module.exports = {
   expressVerify, expressEvent,
   // Worker + scheduled tasks
   startCampaignWorker,
-  trimActivityLog
+  trimActivityLog,
+  // Helpers exported for the file-upload Express route in server.js
+  _cfg, _uploadMediaToWhatsApp, _findLeadByPhoneDigits, _canSeeThread,
+  getVisibleUserIds
 };

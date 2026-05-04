@@ -6494,6 +6494,141 @@ function openCampaignModal(templates) {
 //
 // Polling is parked on `window._wbChatTimers` so showWbTab() can clear them
 // when the user navigates to a different WhatsBot subtab.
+/**
+ * Render the inline media preview (image / document / video / audio) that
+ * sits at the top of a WhatsApp message bubble. Returns null for plain
+ * text messages so the caller can skip the slot.
+ */
+function renderWaMessageMedia(msg) {
+  const t = String(msg.message_type || '').toLowerCase();
+  if (!t || t === 'text') return null;
+  const url = msg.media_url || '';
+  if (t === 'image') {
+    if (!url) return h('div', { class: 'wb-msg-media muted' }, '🖼 [image]');
+    return h('a', { href: url, target: '_blank', rel: 'noopener', class: 'wb-msg-image' },
+      h('img', { src: url, alt: 'image', loading: 'lazy' })
+    );
+  }
+  if (t === 'video') {
+    if (!url) return h('div', { class: 'wb-msg-media muted' }, '🎬 [video]');
+    return h('video', { class: 'wb-msg-video', controls: true, preload: 'none', src: url });
+  }
+  if (t === 'audio') {
+    if (!url) return h('div', { class: 'wb-msg-media muted' }, '🎤 [audio]');
+    return h('audio', { class: 'wb-msg-audio', controls: true, preload: 'none', src: url });
+  }
+  if (t === 'document') {
+    return h('a', { href: url || '#', target: '_blank', rel: 'noopener', class: 'wb-msg-doc' },
+      h('span', { class: 'wb-msg-doc-icon' }, '📄'),
+      h('span', { class: 'wb-msg-doc-name' }, msg.body || 'Document')
+    );
+  }
+  return h('div', { class: 'wb-msg-media muted' }, '[' + t + ']');
+}
+
+/**
+ * Compose bar for a single chat thread — textarea + 📎 attach + send.
+ * Calls onSent after every successful send so the parent can redraw.
+ */
+function buildWaCompose(phone, onSent) {
+  const wrap = h('div', { class: 'wb-chat-compose' });
+  let pending = null; // { id, wa_media_id, mime_type, filename, url }
+
+  const previewSlot = h('div', { class: 'wb-compose-preview', hidden: 'hidden' });
+  const input = h('textarea', { rows: 2, placeholder: 'Type a message — Enter to send, Shift+Enter for newline' });
+  const fileInput = h('input', { type: 'file', style: { display: 'none' }, accept: 'image/*,application/pdf,video/mp4,video/3gp,audio/aac,audio/mp4,audio/mpeg,audio/amr,audio/ogg,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv' });
+
+  const renderPreview = () => {
+    previewSlot.innerHTML = '';
+    if (!pending) { previewSlot.hidden = true; return; }
+    previewSlot.hidden = false;
+    const isImg = String(pending.mime_type || '').startsWith('image/');
+    previewSlot.appendChild(isImg
+      ? h('img', { src: pending.url, alt: pending.filename, class: 'wb-compose-thumb' })
+      : h('span', { class: 'wb-compose-doc' }, '📄 ', pending.filename || 'Document')
+    );
+    previewSlot.appendChild(h('button', {
+      class: 'btn xs ghost', title: 'Remove attachment',
+      onclick: () => { pending = null; fileInput.value = ''; renderPreview(); }
+    }, '✕'));
+  };
+
+  const send = async () => {
+    const text = input.value.trim();
+    if (!text && !pending) return;
+    input.disabled = true;
+    try {
+      const payload = { phone, text };
+      if (pending) {
+        payload.media_id = pending.wa_media_id;
+        payload.media_type = waMediaTypeFor(pending.mime_type);
+        payload.media_url = pending.url; // for local rendering
+        payload.filename = pending.filename || undefined;
+      }
+      await api('api_wb_chat_send', payload);
+      input.value = '';
+      pending = null; fileInput.value = ''; renderPreview();
+      if (typeof onSent === 'function') onSent();
+    } catch (e) { toast(e.message, 'err'); }
+    finally { input.disabled = false; input.focus(); }
+  };
+
+  input.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); }
+  });
+
+  fileInput.addEventListener('change', async () => {
+    const f = fileInput.files && fileInput.files[0];
+    if (!f) return;
+    if (f.size > 25 * 1024 * 1024) {
+      toast('File too large — WhatsApp allows up to 16 MB images and 100 MB docs, but our upload limit is 25 MB', 'err');
+      fileInput.value = '';
+      return;
+    }
+    const fd = new FormData();
+    fd.append('file', f);
+    previewSlot.innerHTML = '';
+    previewSlot.hidden = false;
+    previewSlot.appendChild(h('span', { class: 'muted' }, 'Uploading ' + f.name + '…'));
+    try {
+      const r = await fetch('/api/wa/upload', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + (CRM.token || '') },
+        body: fd
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || ('upload failed (' + r.status + ')'));
+      pending = j;
+      renderPreview();
+      input.focus();
+    } catch (e) {
+      pending = null; fileInput.value = '';
+      previewSlot.hidden = true;
+      toast(e.message || 'Upload failed', 'err');
+    }
+  });
+
+  const attachBtn = h('button', { class: 'btn ghost wb-attach-btn', title: 'Attach a photo or document', onclick: () => fileInput.click() }, '📎');
+  const sendBtn   = h('button', { class: 'btn primary wb-send-btn', title: 'Send', onclick: send }, 'Send');
+
+  wrap.appendChild(previewSlot);
+  wrap.appendChild(h('div', { class: 'wb-compose-row' }, attachBtn, input, sendBtn, fileInput));
+  return wrap;
+}
+
+/**
+ * Pick the correct WhatsApp `type` value for a given MIME. WhatsApp accepts
+ * image / video / audio / document — anything we don't recognise falls
+ * back to `document`.
+ */
+function waMediaTypeFor(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
 async function wbChat() {
   // Kill any previous timers if wbChat is mounted twice (e.g. tab reopened).
   if (window._wbChatTimers) {
@@ -6579,8 +6714,12 @@ async function wbChat() {
                       : msg.read_at ? '✓✓'
                       : msg.delivered_at ? '✓✓'
                       : '✓';
+      // For media messages, show an inline preview / download chip on top
+      // of the caption (msg.body holds the caption when it's a media msg).
+      const mediaNode = renderWaMessageMedia(msg);
       log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
-        h('div', { class: 'wb-msg-body' }, msg.body || '[' + (msg.message_type || '') + ']'),
+        mediaNode,
+        h('div', { class: 'wb-msg-body' }, msg.body || (mediaNode ? '' : '[' + (msg.message_type || '') + ']')),
         isFailed && msg.error_text
           ? h('div', { class: 'wb-msg-error' }, '[ERROR: ' + msg.error_text + ']')
           : null,
@@ -6624,25 +6763,12 @@ async function wbChat() {
     log.innerHTML = '<div class="loading">Loading…</div>';
     right.appendChild(log);
 
-    const input = h('textarea', { rows: 2, placeholder: 'Type a message and press Enter to send…' });
-    input.addEventListener('keydown', async ev => {
-      if (ev.key === 'Enter' && !ev.shiftKey) {
-        ev.preventDefault();
-        const text = input.value.trim(); if (!text) return;
-        input.disabled = true;
-        try {
-          await api('api_wb_chat_send', { phone, text });
-          input.value = '';
-          // Force redraw without disrupting the input — user is still focused.
-          renderActiveThread(true);
-          // And refresh the thread list so this conversation jumps to the top.
-          lastThreadsFingerprint = '';
-          renderThreadList();
-        } catch (e) { toast(e.message, 'err'); }
-        finally { input.disabled = false; input.focus(); }
-      }
-    });
-    right.appendChild(h('div', { class: 'wb-chat-compose' }, input));
+    right.appendChild(buildWaCompose(phone, () => {
+      // After a successful send: redraw thread + bump the list
+      renderActiveThread(true);
+      lastThreadsFingerprint = '';
+      renderThreadList();
+    }));
 
     await renderActiveThread(true);
     // Refresh the list too — opening a thread marks inbound as read on the

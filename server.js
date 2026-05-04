@@ -184,6 +184,70 @@ app.get('/api/recordings/:id/audio', async (req, res) => {
   }
 });
 
+// POST /api/wa/upload — upload an attachment for the WhatsApp chat composer.
+// Accepts a multipart `file` field. Stores the bytes in wa_attachments,
+// uploads them to WhatsApp's /media endpoint to get a media_id, and returns
+// { id (local), wa_media_id, mime_type, filename, url } so the client can
+// follow up with api_wb_chat_send({ phone, media_id, media_type, text }).
+app.post('/api/wa/upload', upload.single('file'), async (req, res) => {
+  try {
+    const token = _tokenFrom(req);
+    const me = await authUser(token);
+    if (!req.file) return res.status(400).json({ error: 'file required' });
+    const cfg = await routes.whatsbot._cfg();
+    if (!cfg.token || !cfg.phoneId) {
+      return res.status(400).json({ error: 'WhatsApp not connected. Settings → WhatsBot → Connect Account.' });
+    }
+    const filename = (req.file.originalname || 'upload.bin').slice(0, 200);
+    const mimeType = req.file.mimetype || 'application/octet-stream';
+    // Upload to WhatsApp first — if that fails we don't store the bytes.
+    const wa = await routes.whatsbot._uploadMediaToWhatsApp(req.file.buffer, mimeType, filename, cfg);
+    const id = await db.insert('wa_attachments', {
+      user_id: me.id,
+      filename,
+      mime_type: mimeType,
+      size_bytes: req.file.size || 0,
+      bytes: req.file.buffer,
+      wa_media_id: wa.id,
+      created_at: db.nowIso()
+    });
+    res.json({
+      ok: true, id, wa_media_id: wa.id, mime_type: mimeType, filename,
+      size_bytes: req.file.size || 0,
+      url: '/api/wa/attachment/' + id + '?token=' + encodeURIComponent(token)
+    });
+  } catch (e) {
+    console.error('[/api/wa/upload]', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// GET /api/wa/attachment/:id — serves the uploaded bytes back. Used by the
+// chat thread to render the image/document inline. Token is required (passed
+// as ?token= in the URL because <img>/<a> tags can't set headers).
+app.get('/api/wa/attachment/:id', async (req, res) => {
+  try {
+    const token = _tokenFrom(req);
+    await authUser(token);
+    const id = Number(req.params.id);
+    const { rows } = await db.query(
+      'SELECT mime_type, bytes, filename FROM wa_attachments WHERE id = $1',
+      [id]
+    );
+    if (!rows[0] || !rows[0].bytes) return res.status(404).end();
+    res.setHeader('Content-Type', rows[0].mime_type || 'application/octet-stream');
+    res.setHeader('Content-Length', rows[0].bytes.length);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    if (rows[0].filename) {
+      res.setHeader('Content-Disposition', 'inline; filename="' + rows[0].filename.replace(/"/g, '') + '"');
+    }
+    res.end(rows[0].bytes);
+  } catch (e) {
+    console.error('[/api/wa/attachment/:id]', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // Webhooks
 app.get('/hook/meta',      webhooks.metaVerify);
 app.post('/hook/meta',     webhooks.metaEvent);

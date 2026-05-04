@@ -205,6 +205,11 @@ const SCHEMA = {
               'error_text', 'template_name', 'created_at'],
     json: []
   },
+  wa_attachments: {
+    columns: ['user_id', 'filename', 'mime_type', 'size_bytes', 'bytes',
+              'wa_media_id', 'created_at'],
+    json: []
+  },
   automations: {
     columns: ['name', 'event', 'condition', 'channel', 'recipient',
               'subject', 'template', 'is_active', 'created_at'],
