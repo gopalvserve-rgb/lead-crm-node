@@ -757,6 +757,33 @@ async function _uploadMediaToWhatsApp(buffer, mimeType, filename, cfg) {
 // ---------- Live Chat ---------------------------------------------
 
 /**
+ * If a chat just got assigned to user `newOwnerId`, mirror that on the
+ * matching lead so reports / kanban / dashboards all line up with who's
+ * actually handling the conversation. No-op if no lead is linked to
+ * the phone, or if the lead is already owned by the same user.
+ *
+ * Called from every code path that changes a chat owner:
+ *   - api_wb_chat_assign   (admin / manager picks an agent)
+ *   - api_wb_chat_send     (auto-claim on send by a non-admin)
+ *   - _autoAssignChat      (inbound auto-routing rule)
+ */
+async function _mirrorLeadOwner(phoneDigits, newOwnerId, actorId) {
+  if (!phoneDigits || !newOwnerId) return;
+  const lead = await _findLeadByPhoneDigits(phoneDigits);
+  if (!lead) return;
+  if (Number(lead.assigned_to) === Number(newOwnerId)) return;
+  try {
+    await db.update('leads', lead.id, { assigned_to: Number(newOwnerId) });
+    try {
+      require('./tat').logAction(lead.id, 'reassigned', actorId || null, {
+        from: lead.assigned_to, to: Number(newOwnerId),
+        reason: 'wa_chat_assignment'
+      });
+    } catch (_) {}
+  } catch (_) {}
+}
+
+/**
  * Find the lead linked to a phone number, by exact digits match against
  * leads.phone OR leads.whatsapp. Returns null if no lead found.
  */
@@ -876,6 +903,9 @@ async function _autoAssignChat(phone, leadId, leadAssignedTo) {
       phone: phoneDigits, assigned_to: pick, assigned_by: null, note: 'auto'
     });
   } catch (_) {}
+  // Mirror onto the lead so the rest of the CRM (kanban, reports,
+  // dashboards) follows who's actually owning the conversation.
+  await _mirrorLeadOwner(phoneDigits, pick, null);
   return pick;
 }
 
@@ -1101,6 +1131,8 @@ async function api_wb_chat_send(token, payload) {
         phone: ph, assigned_to: me.id, assigned_by: me.id, note: 'auto-claim on send'
       });
     } catch (_) {}
+    // Mirror onto the lead so kanban/reports follow the new owner
+    await _mirrorLeadOwner(ph, me.id, me.id);
   }
 
   let r;
@@ -1167,6 +1199,9 @@ async function api_wb_chat_assign(token, payload) {
   await db.insert('wa_chat_assignment_log', {
     phone, assigned_to: newOwner, assigned_by: me.id, note: p.note || null
   });
+  // Mirror onto the lead — when admin/manager assigns a chat to a rep,
+  // the lead also belongs to that rep without needing a rule.
+  if (newOwner) await _mirrorLeadOwner(phone, newOwner, me.id);
   return { ok: true, phone, assigned_to: newOwner };
 }
 
