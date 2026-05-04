@@ -407,6 +407,16 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .wb-agent-pick { display: inline-flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
 .wb-agent-pick-label { font-size: .82rem; color: var(--text-soft); }
 .wb-agent-pick-select { padding: .3rem .5rem; font-size: .82rem; border: 1px solid var(--border); border-radius: 6px; background: #fff; max-width: 180px; }
+
+/* Auto-assign rules — agent pool checkbox grid */
+.aa-pool-list {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: .35rem .75rem;
+  padding: .65rem; border: 1px solid var(--border); border-radius: 8px; background: #fafbff;
+  max-height: 240px; overflow-y: auto;
+}
+.aa-pool-item { display: flex; align-items: center; gap: .45rem; font-size: .9rem; cursor: pointer; }
+.aa-pool-item input { cursor: pointer; }
+@media (max-width: 600px) { .aa-pool-list { grid-template-columns: 1fr; } }
 .wb-chat-back { display: none; }
 @media (max-width: 780px) {
   /* Mobile pattern: ONE pane visible at a time. On mount we show the room

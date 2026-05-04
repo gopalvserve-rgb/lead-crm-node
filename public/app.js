@@ -5217,6 +5217,7 @@ VIEWS.whatsbot = async (view) => {
     { id: 'tplbots',   label: '🤖 Template Bot' },
     { id: 'campaigns', label: '📣 Campaigns' },
     { id: 'chat',      label: '💭 Chat' },
+    { id: 'assign',    label: '👥 Auto-assign' },
     { id: 'activity',  label: '📑 Activity Log' }
   ];
   const nav = h('div', { class: 'subtabs' },
@@ -5247,6 +5248,7 @@ async function showWbTab(id) {
     if (id === 'tplbots')   body.replaceChildren(await wbTemplateBots());
     if (id === 'campaigns') body.replaceChildren(await wbCampaigns());
     if (id === 'chat')      body.replaceChildren(await wbChat());
+    if (id === 'assign')    body.replaceChildren(await wbAssignSettings());
     if (id === 'activity')  body.replaceChildren(await wbActivity());
     location.hash = '#/whatsbot/' + id;
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
@@ -6890,6 +6892,108 @@ async function wbChat() {
     if (document.visibilityState === 'hidden') return;
     if (openPhone) renderActiveThread(false).catch(() => {});
   }, 4000);
+
+  return wrap;
+}
+
+// ---------- Auto-assign rules ----------
+/**
+ * Settings panel: how new inbound chats get routed to agents.
+ *   - lead_owner   — give it to whoever owns the linked lead (default)
+ *   - round_robin  — cycle through a pool of agents
+ *   - least_busy   — give it to the agent with the fewest active chats
+ *   - manual       — admin assigns by hand from the chat header dropdown
+ */
+async function wbAssignSettings() {
+  const wrap = h('div', { class: 'card', style: { maxWidth: '720px' } });
+  wrap.appendChild(h('h3', { style: { marginTop: 0 } }, '👥 Auto-assign rules'));
+  wrap.appendChild(h('p', { class: 'muted' },
+    'Decide how brand-new inbound WhatsApp chats are routed to agents. ',
+    'These rules only apply when a chat doesn\'t already have an agent — once a chat is assigned (manually or by a rule) the assignment sticks until someone changes it.'
+  ));
+
+  let s;
+  try { s = await api('api_wb_assign_settings_get'); }
+  catch (e) {
+    wrap.appendChild(h('div', { class: 'error-box' }, e.message));
+    return wrap;
+  }
+
+  // Mode picker
+  const modeRow = h('div', { class: 'form-row' },
+    h('label', {}, 'Mode'),
+    h('select', { id: 'aa-mode' },
+      h('option', { value: 'lead_owner', selected: s.mode === 'lead_owner' ? 'selected' : null },
+        'Lead owner (default) — assign to whoever owns the linked lead'),
+      h('option', { value: 'round_robin', selected: s.mode === 'round_robin' ? 'selected' : null },
+        'Round-robin — cycle through the agent pool'),
+      h('option', { value: 'least_busy', selected: s.mode === 'least_busy' ? 'selected' : null },
+        'Least-busy — give it to the agent with fewest active chats'),
+      h('option', { value: 'manual', selected: s.mode === 'manual' ? 'selected' : null },
+        'Manual — admin assigns from the chat header')
+    )
+  );
+  wrap.appendChild(modeRow);
+
+  // Pool multi-select (only relevant for round_robin / least_busy)
+  const poolWrap = h('div', { class: 'form-row' },
+    h('label', {},
+      'Agent pool ',
+      h('span', { class: 'muted' }, '(round-robin / least-busy only)')
+    ),
+    h('div', { id: 'aa-pool-list', class: 'aa-pool-list' })
+  );
+  wrap.appendChild(poolWrap);
+
+  const poolList = poolWrap.querySelector('#aa-pool-list');
+  s.users.forEach(u => {
+    const checked = s.pool.includes(Number(u.id)) ? 'checked' : null;
+    poolList.appendChild(h('label', { class: 'aa-pool-item' },
+      h('input', { type: 'checkbox', class: 'aa-pool-cb', value: String(u.id), checked }),
+      h('span', {}, u.name + ' '),
+      h('span', { class: 'muted' }, u.role)
+    ));
+  });
+
+  // Show / hide pool depending on mode
+  const updatePoolVisibility = () => {
+    const m = $('#aa-mode').value;
+    const isPoolMode = (m === 'round_robin' || m === 'least_busy');
+    poolWrap.style.opacity = isPoolMode ? '1' : '0.45';
+    poolWrap.style.pointerEvents = isPoolMode ? 'auto' : 'none';
+  };
+  $('#aa-mode').onchange = updatePoolVisibility;
+  setTimeout(updatePoolVisibility, 0);
+
+  // Save button
+  const saveBtn = h('button', { class: 'btn primary' }, '💾 Save rules');
+  saveBtn.onclick = async () => {
+    const mode = $('#aa-mode').value;
+    const pool = [...poolList.querySelectorAll('.aa-pool-cb:checked')].map(cb => Number(cb.value));
+    if ((mode === 'round_robin' || mode === 'least_busy') && !pool.length) {
+      toast('Pick at least one agent for the pool', 'err');
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      await api('api_wb_assign_settings_save', { mode, pool });
+      toast('✓ Auto-assign rules saved');
+    } catch (e) { toast(e.message, 'err'); }
+    finally { saveBtn.disabled = false; }
+  };
+  wrap.appendChild(h('div', { style: { marginTop: '1rem' } }, saveBtn));
+
+  // Help text
+  wrap.appendChild(h('details', { style: { marginTop: '1.25rem' } },
+    h('summary', { class: 'muted' }, 'How does this work?'),
+    h('ul', { style: { paddingLeft: '1.2rem', lineHeight: '1.6' } },
+      h('li', {}, h('b', {}, 'Lead owner'), ' — when a new WhatsApp message arrives, the chat goes to whoever owns the lead with that phone number. If the lead has no owner, the chat stays unassigned (admin only).'),
+      h('li', {}, h('b', {}, 'Round-robin'), ' — chats are distributed evenly across the agent pool. The system remembers who got the last one and gives the next chat to the next agent in line.'),
+      h('li', {}, h('b', {}, 'Least-busy'), ' — counts how many chats each agent currently owns and gives the new chat to whoever has the fewest. Good for keeping load balanced when reps work different volumes.'),
+      h('li', {}, h('b', {}, 'Manual'), ' — chats stay unassigned until an admin/manager picks an agent from the chat header dropdown.'),
+      h('li', {}, 'Already-assigned chats are never re-assigned by these rules. Use the per-chat agent picker to move them.')
+    )
+  ));
 
   return wrap;
 }

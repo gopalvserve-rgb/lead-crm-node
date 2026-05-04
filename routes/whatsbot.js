@@ -772,6 +772,144 @@ async function _findLeadByPhoneDigits(digits) {
   } catch (_) { return null; }
 }
 
+// =====================================================================
+//  Auto-assignment rules (round-robin / least-busy / lead-owner / manual)
+// =====================================================================
+
+/**
+ * Read the current auto-assign settings. Stored in admin_config so they
+ * persist without a schema migration.
+ *   mode  — 'lead_owner' | 'round_robin' | 'least_busy' | 'manual'
+ *   pool  — CSV of user IDs eligible for round-robin / least-busy
+ *   rrIdx — last assigned index (round-robin state)
+ */
+async function _autoAssignSettings() {
+  const [mode, poolCsv, rrIdx] = await Promise.all([
+    db.getConfig('WA_AUTO_ASSIGN_MODE',     'lead_owner'),
+    db.getConfig('WA_AUTO_ASSIGN_POOL',     ''),
+    db.getConfig('WA_AUTO_ASSIGN_RR_INDEX', '0')
+  ]);
+  return {
+    mode: String(mode || 'lead_owner'),
+    pool: String(poolCsv || '').split(',').map(s => Number(s)).filter(n => Number.isFinite(n) && n > 0),
+    rrIdx: Number(rrIdx) || 0
+  };
+}
+
+/**
+ * Pick the next agent for a new inbound chat, based on the active rule.
+ * Returns a userId or null. Never throws.
+ */
+async function _pickAutoAssignee(phone, leadId, leadAssignedTo) {
+  try {
+    const s = await _autoAssignSettings();
+
+    // 'manual' — admin will assign by hand
+    if (s.mode === 'manual') return null;
+
+    // 'lead_owner' — natural owner from the linked lead, falls back to null
+    if (s.mode === 'lead_owner') return Number(leadAssignedTo) || null;
+
+    if (!s.pool.length) return Number(leadAssignedTo) || null;
+
+    // 'round_robin' — pick s.pool[rrIdx % len], then advance the counter
+    if (s.mode === 'round_robin') {
+      const idx = ((s.rrIdx % s.pool.length) + s.pool.length) % s.pool.length;
+      const pick = s.pool[idx];
+      try {
+        await db.setConfig('WA_AUTO_ASSIGN_RR_INDEX', String(s.rrIdx + 1));
+      } catch (_) {}
+      return Number(pick) || null;
+    }
+
+    // 'least_busy' — agent in pool with fewest active (open) chats today
+    if (s.mode === 'least_busy') {
+      try {
+        const r = await db.query(
+          `SELECT a.assigned_to, COUNT(*) AS open_chats
+             FROM wa_chat_assignments a
+             WHERE a.assigned_to = ANY($1::int[])
+             GROUP BY a.assigned_to`,
+          [s.pool]
+        );
+        const counts = {};
+        s.pool.forEach(uid => { counts[uid] = 0; });
+        r.rows.forEach(x => { counts[Number(x.assigned_to)] = Number(x.open_chats); });
+        let bestUid = s.pool[0], bestCount = Infinity;
+        s.pool.forEach(uid => {
+          if (counts[uid] < bestCount) { bestUid = uid; bestCount = counts[uid]; }
+        });
+        return Number(bestUid) || null;
+      } catch (_) { return Number(leadAssignedTo) || null; }
+    }
+
+    return Number(leadAssignedTo) || null;
+  } catch (_) { return null; }
+}
+
+/**
+ * Apply the auto-assign rule for a brand-new chat (no explicit
+ * assignment yet). Persists the result into wa_chat_assignments +
+ * wa_chat_assignment_log so the chat list shows the agent immediately.
+ */
+async function _autoAssignChat(phone, leadId, leadAssignedTo) {
+  const phoneDigits = String(phone || '').replace(/\D/g, '');
+  if (!phoneDigits) return null;
+  // Don't override an existing explicit assignment
+  try {
+    const r = await db.query(
+      `SELECT assigned_to FROM wa_chat_assignments WHERE phone = $1 LIMIT 1`,
+      [phoneDigits]
+    );
+    if (r.rows.length) return Number(r.rows[0].assigned_to) || null;
+  } catch (_) {}
+  const pick = await _pickAutoAssignee(phoneDigits, leadId, leadAssignedTo);
+  if (!pick) return null;
+  try {
+    await db.query(
+      `INSERT INTO wa_chat_assignments (phone, assigned_to, assigned_by, assigned_at, note)
+       VALUES ($1, $2, NULL, NOW(), 'auto')
+       ON CONFLICT (phone) DO NOTHING`,
+      [phoneDigits, pick]
+    );
+    await db.insert('wa_chat_assignment_log', {
+      phone: phoneDigits, assigned_to: pick, assigned_by: null, note: 'auto'
+    });
+  } catch (_) {}
+  return pick;
+}
+
+/**
+ * Admin-only API: read the current auto-assign settings + the user roster
+ * so the settings UI can populate the multi-select.
+ */
+async function api_wb_assign_settings_get(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const s = await _autoAssignSettings();
+  const users = (await db.getAll('users')).filter(u => Number(u.is_active) !== 0)
+    .map(u => ({ id: u.id, name: u.name, role: u.role }));
+  return { mode: s.mode, pool: s.pool, users };
+}
+
+/**
+ * Admin-only API: save the auto-assign settings.
+ *   payload: { mode, pool: [userId, ...] }
+ */
+async function api_wb_assign_settings_save(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  const validModes = ['lead_owner', 'round_robin', 'least_busy', 'manual'];
+  if (!validModes.includes(p.mode)) throw new Error('Invalid mode');
+  const pool = Array.isArray(p.pool) ? p.pool.map(Number).filter(n => Number.isFinite(n) && n > 0) : [];
+  await db.setConfig('WA_AUTO_ASSIGN_MODE', p.mode);
+  await db.setConfig('WA_AUTO_ASSIGN_POOL', pool.join(','));
+  // Reset round-robin counter when the pool changes so we don't skip names.
+  await db.setConfig('WA_AUTO_ASSIGN_RR_INDEX', '0');
+  return { ok: true, mode: p.mode, pool };
+}
+
 /**
  * Resolve the agent currently handling a conversation. Priority:
  *   1. Explicit row in wa_chat_assignments (set via api_wb_chat_assign,
@@ -1614,6 +1752,17 @@ async function _handleInbound(m, value) {
     }
   } catch (e) { console.warn('[wb] save inbound failed:', e.message); }
 
+  // Auto-assign the chat if no explicit assignment exists yet — applies
+  // the active rule (lead_owner / round_robin / least_busy / manual).
+  try {
+    let leadAssignedTo = null;
+    if (leadId) {
+      const ld = await db.findById('leads', leadId);
+      leadAssignedTo = ld ? ld.assigned_to : null;
+    }
+    await _autoAssignChat(from, leadId, leadAssignedTo);
+  } catch (e) { console.warn('[wb] auto-assign failed:', e.message); }
+
   // Try matching a Message Bot or Template Bot by trigger
   try {
     const triggerLc = String(text || '').toLowerCase().trim();
@@ -1671,6 +1820,7 @@ module.exports = {
   // Chat
   api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send, api_wb_initiate_chat,
   api_wb_chat_assign, api_wb_chat_assignments_list,
+  api_wb_assign_settings_get, api_wb_assign_settings_save,
   // Bots
   api_wb_message_bots_list, api_wb_message_bots_save, api_wb_message_bots_delete,
   api_wb_template_bots_list, api_wb_template_bots_save, api_wb_template_bots_delete,
