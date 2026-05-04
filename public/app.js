@@ -6497,6 +6497,36 @@ function openCampaignModal(templates) {
 // Polling is parked on `window._wbChatTimers` so showWbTab() can clear them
 // when the user navigates to a different WhatsBot subtab.
 /**
+ * Translate a Meta API error string into a short, user-friendly hint.
+ * The full original error stays in the bubble's `title` (hover tooltip)
+ * so admins can still copy the raw text for support.
+ */
+function waFriendlyError(err) {
+  const e = String(err || '').toLowerCase();
+  if (!e) return '⚠ Send failed — no reason returned. Try again.';
+  if (e.includes('131047') || e.includes('re-engagement') || e.includes('24 hours') || e.includes('outside the allowed window')) {
+    return '⚠ 24-hour window expired — the customer hasn\'t messaged in 24h. Send a Template message instead (Templates tab).';
+  }
+  if (e.includes('131026') || e.includes('not a whatsapp user') || e.includes('recipient cannot be sent')) {
+    return '⚠ Number is not on WhatsApp.';
+  }
+  if (e.includes('131051') || e.includes('unsupported')) {
+    return '⚠ Message type not supported by WhatsApp.';
+  }
+  if (e.includes('131052') || e.includes('media download')) {
+    return '⚠ Media download error — check the file URL.';
+  }
+  if (e.includes('rate limit') || e.includes('throttle')) {
+    return '⚠ Rate limit hit — try again in a minute.';
+  }
+  if (e.includes('access token') || e.includes('expired') || e.includes('oauth')) {
+    return '⚠ WhatsApp access token expired. Settings → WhatsBot → Connect Account.';
+  }
+  // Fall back to the raw message but trimmed
+  return '⚠ ' + String(err).slice(0, 200);
+}
+
+/**
  * Render the inline media preview (image / document / video / audio) that
  * sits at the top of a WhatsApp message bubble. Returns null for plain
  * text messages so the caller can skip the slot.
@@ -6817,8 +6847,9 @@ async function wbChat() {
       log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
         mediaNode,
         h('div', { class: 'wb-msg-body' }, msg.body || (mediaNode ? '' : '[' + (msg.message_type || '') + ']')),
-        isFailed && msg.error_text
-          ? h('div', { class: 'wb-msg-error' }, '[ERROR: ' + msg.error_text + ']')
+        isFailed
+          ? h('div', { class: 'wb-msg-error', title: msg.error_text || 'Send failed' },
+              waFriendlyError(msg.error_text))
           : null,
         h('div', { class: 'wb-msg-meta muted' },
           fmtDate(msg.created_at, 'relative'),
