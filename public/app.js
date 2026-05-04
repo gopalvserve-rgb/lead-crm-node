@@ -500,38 +500,62 @@ function showOtpStep(challengeToken, who) {
 }
 
 /* ---------------- Shell ---------------- */
-const NAV = [
-  { id: 'dashboard',  label: 'Dashboard',    icon: '📊' },
-  { id: 'leads',      label: 'Leads',        icon: '🎯' },
-  { id: 'newleads',   label: 'New leads',    icon: '✨', countKey: 'new_today' },
-  { id: 'overdue',    label: 'Overdue',      icon: '⚠️', countKey: 'overdue' },
-  { id: 'duetoday',   label: 'Due today',    icon: '📅', countKey: 'due_today' },
-  { id: 'upcoming',   label: 'Upcoming',     icon: '⏰', countKey: 'upcoming' },
-  { id: 'dialer',     label: 'Dialer',       icon: '📞' },
-  { id: 'pipeline',   label: 'Pipeline',     icon: '📈' },
-  { id: 'kanban',     label: 'Kanban',       icon: '🗂️' },
-  { id: 'followups',  label: 'Follow-ups',   icon: '🔔' },
-  { id: 'calendar',   label: 'Calendar',     icon: '📅' },
-  { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
-  { id: 'inventory',  label: 'Inventory',    icon: '📦' },
-  { id: 'projects',   label: 'Projects',     icon: '🚚' },
-  { id: 'reports',    label: 'Reports',      icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
-  { id: 'reportbuilder', label: 'Report builder', icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
-  { id: 'tatreport',  label: 'TAT report',   icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] },
-  { id: 'callratings', label: 'Call ratings', icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
-  { id: 'callinsights', label: 'Call insights', icon: '🎙' },
-  { id: 'aiusage',     label: 'AI usage',     icon: '🤖', roles: ['admin', 'manager'] },
-  { id: 'whatsbot',   label: 'WhatsBot',     icon: '💬' },
-  { id: 'knowledge',  label: 'Knowledge',    icon: '📚' },
-  { id: 'teamchat',   label: 'Team chat',    icon: '👥', countKey: 'chat_unread' },
-  { id: 'tasks',      label: 'Tasks',        icon: '✅' },
-  { id: 'attendance', label: 'Attendance',   icon: '🕒' },
-  { id: 'leaves',     label: 'Leaves',       icon: '🏖️' },
-  { id: 'salary',     label: 'Salary',       icon: '💰' },
-  { id: 'bank',       label: 'Bank',         icon: '🏦' },
-  { id: 'users',      label: 'Users',        icon: '👥', roles: ['admin', 'manager'] },
-  { id: 'admin',      label: 'Settings',     icon: '⚙️', roles: ['admin'] }
+// Sidebar is grouped into collapsible sections (à la Zoho/HubSpot) to keep
+// the menu compact. `pinned: true` items render at the very top with no
+// group header. Every other item lives under a NAV_GROUP entry.
+// NAV is kept as a flat array (computed from NAV_GROUPS) so existing code
+// that does `NAV.forEach`, `NAV.find`, `mobilePrimary.includes(item.id)`
+// keeps working unchanged.
+const NAV_GROUPS = [
+  { label: '', items: [
+    { id: 'dashboard',  label: 'Dashboard',    icon: '📊', pinned: true }
+  ] },
+  { label: 'Sales', icon: '💼', items: [
+    { id: 'leads',      label: 'Leads',          icon: '🎯' },
+    { id: 'pipeline',   label: 'Pipeline',       icon: '📈' },
+    { id: 'kanban',     label: 'Kanban',         icon: '🗂️' },
+    { id: 'followups',  label: 'Follow-ups',     icon: '🔔' },
+    { id: 'calendar',   label: 'Calendar',       icon: '📅' },
+    { id: 'targets',    label: 'Monthly Target', icon: '🎯' },
+    { id: 'newleads',   label: 'New leads',      icon: '✨', countKey: 'new_today' },
+    { id: 'overdue',    label: 'Overdue',        icon: '⚠️', countKey: 'overdue' },
+    { id: 'duetoday',   label: 'Due today',      icon: '📅', countKey: 'due_today' },
+    { id: 'upcoming',   label: 'Upcoming',       icon: '⏰', countKey: 'upcoming' }
+  ] },
+  { label: 'Calls', icon: '📞', items: [
+    { id: 'dialer',       label: 'Dialer',        icon: '📞' },
+    { id: 'callinsights', label: 'Call insights', icon: '🎙' },
+    { id: 'callratings',  label: 'Call ratings',  icon: '⭐', roles: ['admin', 'manager', 'team_leader'] },
+    { id: 'aiusage',      label: 'AI usage',      icon: '🤖', roles: ['admin', 'manager'] }
+  ] },
+  { label: 'Catalog', icon: '📦', items: [
+    { id: 'inventory',  label: 'Inventory', icon: '📦' },
+    { id: 'projects',   label: 'Projects',  icon: '🚚' }
+  ] },
+  { label: 'Reports', icon: '📉', items: [
+    { id: 'reports',       label: 'Reports',         icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
+    { id: 'reportbuilder', label: 'Report builder',  icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
+    { id: 'tatreport',     label: 'TAT report',      icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] }
+  ] },
+  { label: 'Workspace', icon: '💬', items: [
+    { id: 'whatsbot',  label: 'WhatsBot',  icon: '💬' },
+    { id: 'knowledge', label: 'Knowledge', icon: '📚' },
+    { id: 'teamchat',  label: 'Team chat', icon: '👥', countKey: 'chat_unread' }
+  ] },
+  { label: 'HR & Me', icon: '🕒', items: [
+    { id: 'tasks',      label: 'Tasks',      icon: '✅' },
+    { id: 'attendance', label: 'Attendance', icon: '🕒' },
+    { id: 'leaves',     label: 'Leaves',     icon: '🏖️' },
+    { id: 'salary',     label: 'Salary',     icon: '💰' },
+    { id: 'bank',       label: 'Bank',       icon: '🏦' }
+  ] },
+  { label: 'Admin', icon: '⚙️', items: [
+    { id: 'users', label: 'Users',    icon: '👥', roles: ['admin', 'manager'] },
+    { id: 'admin', label: 'Settings', icon: '⚙️', roles: ['admin'] }
+  ] }
 ];
+// Flatten for backwards-compat with anywhere that iterates NAV.
+const NAV = NAV_GROUPS.flatMap(g => g.items);
 
 function renderShell() {
   const initials = (CRM.user.name || '?').split(/\s+/).map(s => s[0]).slice(0, 2).join('').toUpperCase();
@@ -584,21 +608,65 @@ function renderShell() {
   // them in Settings if they prefer the sidebar links.
   const hiddenNavIds = String(CRM.config.hidden_nav_ids || 'newleads,overdue,duetoday,upcoming,dialer')
     .split(',').map(s => s.trim()).filter(Boolean);
-  NAV.forEach(item => {
-    if (item.roles && !item.roles.includes(CRM.user.role)) return;
-    if (hiddenNavIds.includes(item.id)) return;
-    // Hide Team chat for users whose role admin has disabled chat for.
-    // CRM.access.can_chat is fetched right after login.
-    if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return;
-    // Count badge — populated later by refreshNavCounts() when notifications load.
+
+  // Helper: make one anchor for a NAV item. Returns null if user can't see it.
+  const _navAnchor = (item) => {
+    if (item.roles && !item.roles.includes(CRM.user.role)) return null;
+    if (hiddenNavIds.includes(item.id)) return null;
+    if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return null;
     const countBadge = item.countKey
       ? h('span', { class: 'nav-count', 'data-count-key': item.countKey, hidden: 'hidden' }, '0')
       : null;
-    const a = h('a', { href: '#/' + item.id, 'data-view': item.id },
+    return h('a', { href: '#/' + item.id, 'data-view': item.id },
       h('span', { class: 'nav-icon' }, item.icon),
       h('span', {}, item.label),
       countBadge);
-    nav.appendChild(a);
+  };
+
+  // Persist which groups the user has collapsed (per-device).
+  const collapsedKey = 'crm_nav_collapsed_v1';
+  const collapsed = new Set((localStorage.getItem(collapsedKey) || '').split(',').filter(Boolean));
+  const _saveCollapsed = () => localStorage.setItem(collapsedKey, [...collapsed].join(','));
+
+  NAV_GROUPS.forEach(group => {
+    // Build the visible item anchors first so we can skip an empty group.
+    const anchors = group.items.map(_navAnchor).filter(Boolean);
+    if (!anchors.length) return;
+
+    // Pinned group (no header) — render flat, no collapse chevron.
+    if (!group.label) {
+      anchors.forEach(a => nav.appendChild(a));
+      return;
+    }
+
+    const isCollapsed = collapsed.has(group.label);
+    const groupEl = h('div', { class: 'nav-group' + (isCollapsed ? ' collapsed' : '') });
+    const headBtn = h('button', {
+      class: 'nav-group-head',
+      type: 'button',
+      onclick: () => {
+        groupEl.classList.toggle('collapsed');
+        if (groupEl.classList.contains('collapsed')) collapsed.add(group.label);
+        else collapsed.delete(group.label);
+        _saveCollapsed();
+      }
+    },
+      h('span', { class: 'nav-group-icon' }, group.icon || ''),
+      h('span', { class: 'nav-group-label' }, group.label),
+      h('span', { class: 'nav-group-chev' }, '▾')
+    );
+    const itemsWrap = h('div', { class: 'nav-group-items' });
+    anchors.forEach(a => itemsWrap.appendChild(a));
+    groupEl.appendChild(headBtn);
+    groupEl.appendChild(itemsWrap);
+    nav.appendChild(groupEl);
+  });
+
+  // Mobile bottom bar — flat lookup against the original NAV list.
+  NAV.forEach(item => {
+    if (item.roles && !item.roles.includes(CRM.user.role)) return;
+    if (hiddenNavIds.includes(item.id)) return;
+    if (item.id === 'teamchat' && CRM.access && CRM.access.can_chat === false) return;
     if (mobilePrimary.includes(item.id)) {
       const ma = h('a', { href: '#/' + item.id, 'data-view': item.id },
         h('span', { class: 'bn-ico' }, item.icon),
