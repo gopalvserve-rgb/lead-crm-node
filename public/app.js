@@ -623,10 +623,12 @@ function renderShell() {
       countBadge);
   };
 
-  // Persist which groups the user has collapsed (per-device).
-  const collapsedKey = 'crm_nav_collapsed_v1';
-  const collapsed = new Set((localStorage.getItem(collapsedKey) || '').split(',').filter(Boolean));
-  const _saveCollapsed = () => localStorage.setItem(collapsedKey, [...collapsed].join(','));
+  // Persist which groups the user has expanded (per-device). Default is
+  // collapsed — users only see top-level section headers until they click
+  // one open, mirroring the Zoho sidebar pattern.
+  const expandedKey = 'crm_nav_expanded_v1';
+  const expanded = new Set((localStorage.getItem(expandedKey) || '').split(',').filter(Boolean));
+  const _saveExpanded = () => localStorage.setItem(expandedKey, [...expanded].join(','));
 
   NAV_GROUPS.forEach(group => {
     // Build the visible item anchors first so we can skip an empty group.
@@ -639,16 +641,20 @@ function renderShell() {
       return;
     }
 
-    const isCollapsed = collapsed.has(group.label);
+    // Auto-collapse the group whose active item lives — that one starts
+    // open so the user sees where they are. Otherwise default = collapsed
+    // unless the user has previously toggled it open.
+    const groupHasActive = group.items.some(i => i.id === (location.hash.replace('#/', '') || 'dashboard'));
+    const isCollapsed = !(expanded.has(group.label) || groupHasActive);
     const groupEl = h('div', { class: 'nav-group' + (isCollapsed ? ' collapsed' : '') });
     const headBtn = h('button', {
       class: 'nav-group-head',
       type: 'button',
       onclick: () => {
         groupEl.classList.toggle('collapsed');
-        if (groupEl.classList.contains('collapsed')) collapsed.add(group.label);
-        else collapsed.delete(group.label);
-        _saveCollapsed();
+        if (groupEl.classList.contains('collapsed')) expanded.delete(group.label);
+        else expanded.add(group.label);
+        _saveExpanded();
       }
     },
       h('span', { class: 'nav-group-icon' }, group.icon || ''),
