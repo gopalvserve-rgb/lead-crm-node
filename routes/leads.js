@@ -12,27 +12,68 @@ function _parseExtra(lead) {
 }
 
 async function _lookups() {
-  const [usersArr, statusesArr, productsArr] = await Promise.all([
-    db.getAll('users'), db.getAll('statuses'), db.getAll('products')
+  const [usersArr, statusesArr, productsArr, tatRows] = await Promise.all([
+    db.getAll('users'),
+    db.getAll('statuses'),
+    db.getAll('products'),
+    // tat_thresholds may not exist on very old installs — degrade gracefully
+    db.getAll('tat_thresholds').catch(() => [])
   ]);
   const usersById = {}, statusesById = {}, productsById = {};
   usersArr.forEach(u => { usersById[Number(u.id)] = u; });
   statusesArr.forEach(s => { statusesById[Number(s.id)] = s; });
   productsArr.forEach(p => { productsById[Number(p.id)] = p; });
-  return { usersById, statusesById, productsById };
+  // Per-status TAT threshold (minutes). Only active rows count — admin
+  // can flip is_active=0 in Settings → TAT to suspend tracking on a stage
+  // without losing the configured value.
+  const tatByStatusId = {};
+  (tatRows || []).forEach(t => {
+    if (Number(t.is_active) === 1) {
+      tatByStatusId[Number(t.status_id)] = Number(t.threshold_minutes);
+    }
+  });
+  // Final stages (Won/Lost/etc.) are exempt from violation highlighting —
+  // a lead sitting in a closed-out stage shouldn't keep flashing red.
+  const finalStatusIds = new Set(
+    statusesArr.filter(s => Number(s.is_final) === 1).map(s => Number(s.id))
+  );
+  return { usersById, statusesById, productsById, tatByStatusId, finalStatusIds };
 }
 
-function _hydrate(l, usersById, statusesById, productsById) {
+function _hydrate(l, usersById, statusesById, productsById, tatByStatusId, finalStatusIds) {
   const u = usersById[Number(l.assigned_to)];
   const s = statusesById[Number(l.status_id)];
   const p = productsById[Number(l.product_id)];
-  return Object.assign({}, l, {
+  const out = Object.assign({}, l, {
     assigned_name: u ? u.name : '',
     status_name: s ? s.name : '',
     status_color: s ? s.color : '#6b7280',
     product_name: p ? p.name : '',
     extra: _parseExtra(l)
   });
+  // TAT-violation flag: lead has been in its current status longer than
+  // the configured threshold (without progressing). Computed on hydrate
+  // so the Leads grid + New-leads tab can highlight breached rows
+  // without an extra round-trip. Final stages are exempt.
+  out.tat_violation = false;
+  out.tat_threshold_minutes = null;
+  out.tat_minutes_over = null;
+  if (tatByStatusId && finalStatusIds) {
+    const sid = Number(l.status_id) || 0;
+    const limit = tatByStatusId[sid];
+    if (limit && !finalStatusIds.has(sid)) {
+      const enteredAt = l.last_status_change_at || l.created_at;
+      if (enteredAt) {
+        const ageMin = (Date.now() - new Date(enteredAt).getTime()) / 60_000;
+        out.tat_threshold_minutes = limit;
+        if (ageMin >= limit) {
+          out.tat_violation = true;
+          out.tat_minutes_over = Math.max(0, Math.round(ageMin - limit));
+        }
+      }
+    }
+  }
+  return out;
 }
 
 function _isVisible(me, visible, lead) {
@@ -258,7 +299,7 @@ async function _resolveProductIdByName(raw) {
 async function api_leads_list(token, filters) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
-  const { usersById, statusesById, productsById } = await _lookups();
+  const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
   filters = filters || {};
   let rows = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
 
@@ -318,7 +359,7 @@ async function api_leads_list(token, filters) {
   });
 
   const hydrated = rows.map(l => {
-    const h = _hydrate(l, usersById, statusesById, productsById);
+    const h = _hydrate(l, usersById, statusesById, productsById, tatByStatusId, finalStatusIds);
     const r = remarksByLead[Number(l.id)];
     h.recent_remark = r ? r.remark : '';
     h.recent_remark_at = r ? r.created_at : '';
@@ -343,8 +384,8 @@ async function api_leads_get(token, id) {
   if (!lead) throw new Error('Not found');
   if (!_isVisible(me, visible, lead)) throw new Error('Forbidden');
 
-  const { usersById, statusesById, productsById } = await _lookups();
-  const hydrated = _hydrate(lead, usersById, statusesById, productsById);
+  const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
+  const hydrated = _hydrate(lead, usersById, statusesById, productsById, tatByStatusId, finalStatusIds);
 
   const remarks = (await db.getAll('remarks'))
     .filter(r => Number(r.lead_id) === Number(id))
@@ -994,7 +1035,7 @@ async function api_leads_addRemark(token, leadId, payload) {
 async function api_leads_pipeline(token) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
-  const { usersById, statusesById, productsById } = await _lookups();
+  const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
   const statuses = (await db.getAll('statuses')).sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
   const leads = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
   return statuses.map(s => {
@@ -1002,7 +1043,7 @@ async function api_leads_pipeline(token) {
       .filter(l => Number(l.status_id) === Number(s.id))
       .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
       .slice(0, 100)
-      .map(l => _hydrate(l, usersById, statusesById, productsById));
+      .map(l => _hydrate(l, usersById, statusesById, productsById, tatByStatusId, finalStatusIds));
     return Object.assign({}, s, { leads: cols });
   });
 }
@@ -1280,12 +1321,12 @@ async function api_leads_duplicateHistory(token, leadId) {
     if (email && email === le) return true;
     return false;
   });
-  const { usersById, statusesById, productsById } = await _lookups();
+  const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
   const remarks = await db.getAll('remarks');
   return all
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .map(l => {
-      const h = _hydrate(l, usersById, statusesById, productsById);
+      const h = _hydrate(l, usersById, statusesById, productsById, tatByStatusId, finalStatusIds);
       h.remarks = remarks
         .filter(r => Number(r.lead_id) === Number(l.id))
         .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))

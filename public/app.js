@@ -1390,14 +1390,20 @@ function renderLeadsTable(rows) {
   if (!rows.length) {
     tbody.appendChild(h('tr', {}, h('td', { colspan: activeCols.length + extraCols.length + 2, class: 'empty' }, 'No leads match your filters.')));
   } else {
-    rows.forEach(l => tbody.appendChild(h('tr', { class: l.is_duplicate ? 'row-duplicate' : '' },
-      h('td', { class: 'td-check' }, h('input', { type: 'checkbox', class: 'row-check', 'data-id': l.id, onclick: onRowCheck })),
-      ...activeCols.map(col => renderCell(col, l, statuses)),
-      ...extraCols.map(f => h('td', {}, (l.extra && l.extra[f.key]) || '')),
-      h('td', { class: 'td-actions' },
-        h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎')
-      )
-    )));
+    rows.forEach(l => {
+      const rowCls = [
+        l.is_duplicate ? 'row-duplicate' : '',
+        l.tat_violation ? 'row-tat-violation' : ''
+      ].filter(Boolean).join(' ');
+      tbody.appendChild(h('tr', { class: rowCls, title: l.tat_violation ? tatViolationTitle(l) : null },
+        h('td', { class: 'td-check' }, h('input', { type: 'checkbox', class: 'row-check', 'data-id': l.id, onclick: onRowCheck })),
+        ...activeCols.map(col => renderCell(col, l, statuses)),
+        ...extraCols.map(f => h('td', {}, (l.extra && l.extra[f.key]) || '')),
+        h('td', { class: 'td-actions' },
+          h('button', { class: 'btn sm ghost', onclick: () => openLeadModal(l.id) }, '✎')
+        )
+      ));
+    });
   }
   tbl.innerHTML = '';
   tbl.append(thead, tbody);
@@ -1432,7 +1438,10 @@ function renderLeadsMobile(rows) {
     const statusColor = l.status_color || '#6b7280';
     const due = l.next_followup_at ? new Date(l.next_followup_at) : null;
     const overdue = due && due < new Date();
-    const card = h('div', { class: 'lead-card' + (l.is_duplicate ? ' row-duplicate' : '') },
+    const cardCls = 'lead-card'
+      + (l.is_duplicate ? ' row-duplicate' : '')
+      + (l.tat_violation ? ' row-tat-violation' : '');
+    const card = h('div', { class: cardCls, title: l.tat_violation ? tatViolationTitle(l) : null },
       h('div', { class: 'lc-head' },
         h('a', { href: '#', class: 'lc-name', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
         h('span', { class: 'lc-status', style: { background: statusColor } }, l.status_name || '')
@@ -1442,6 +1451,7 @@ function renderLeadsMobile(rows) {
         l.source ? h('span', {}, '• ', l.source) : null,
         l.assigned_name ? h('span', {}, '👤 ', l.assigned_name) : null
       ),
+      l.tat_violation ? h('div', { class: 'tat-pill', title: tatViolationTitle(l) }, '⚠ TAT BREACH — ', tatOverLabel(l)) : null,
       l.is_duplicate ? h('div', { class: 'dup-pill', onclick: () => openDuplicateHistory(l.id) }, '⚠ DUP — see past') : null,
       due ? h('div', { class: 'lc-fu' + (overdue ? ' overdue' : '') }, '⏰ ' + fmtDate(l.next_followup_at, 'relative')) : null,
       l.recent_remark ? h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.3rem' } }, '💬 ' + (l.recent_remark || '').slice(0, 80)) : null,
@@ -1649,12 +1659,36 @@ async function openAfterCallModal(lead) {
   // when they return.
 }
 
+/**
+ * Format the elapsed-over-threshold time as a short human label. Used in
+ * the TAT-breach pill and tooltips. Always falls back to the full
+ * minutes-as-number if the lead doesn't carry a tat_minutes_over value
+ * (e.g. legacy server response that pre-dates the tat_violation flag).
+ */
+function tatOverLabel(l) {
+  const m = Number(l && l.tat_minutes_over);
+  if (!Number.isFinite(m) || m <= 0) return 'overdue';
+  if (m < 60)            return m + 'm over';
+  if (m < 60 * 24)       return Math.round(m / 60) + 'h over';
+  return Math.round(m / (60 * 24)) + 'd over';
+}
+function tatViolationTitle(l) {
+  const limit = Number(l && l.tat_threshold_minutes) || 0;
+  const status = (l && l.status_name) || 'this stage';
+  const over = tatOverLabel(l);
+  const limitLabel = limit < 60
+    ? limit + ' min'
+    : (limit % 60 === 0 ? (limit / 60) + ' h' : (limit + ' min'));
+  return `TAT breach — sat in "${status}" for ${over} (limit ${limitLabel})`;
+}
+
 function renderCell(col, l, statuses) {
   switch (col) {
     case 'name': {
       return h('td', { class: 'cell-name' },
         h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
-        l.is_duplicate ? h('span', { class: 'dup-pill', title: 'Duplicate — click to see past leads', onclick: ev => { ev.stopPropagation(); ev.preventDefault(); openDuplicateHistory(l.id); } }, 'DUP') : null
+        l.is_duplicate ? h('span', { class: 'dup-pill', title: 'Duplicate — click to see past leads', onclick: ev => { ev.stopPropagation(); ev.preventDefault(); openDuplicateHistory(l.id); } }, 'DUP') : null,
+        l.tat_violation ? h('span', { class: 'tat-pill', title: tatViolationTitle(l) }, '⚠ TAT ', tatOverLabel(l)) : null
       );
     }
     case 'phone': {
@@ -4252,13 +4286,28 @@ async function renderNewTodayLeads(view) {
     view.appendChild(wrap);
     return;
   }
+  // Surface a small TAT-breach summary at the top so the rep can see
+  // at a glance how many of today's leads are already past their stage
+  // threshold (rare on day-of, but possible for short thresholds).
+  const breachCount = rows.filter(l => l && l.tat_violation).length;
+  if (breachCount > 0) {
+    wrap.appendChild(h('div', { class: 'tat-banner' },
+      '⚠ ', h('b', {}, breachCount), ' of today’s leads ',
+      breachCount === 1 ? 'is' : 'are', ' already past TAT — action immediately.'));
+  }
   wrap.appendChild(h('div', { class: 'table-wrap' }, h('table', {},
     h('thead', {}, h('tr', {},
       h('th', {}, 'Name'), h('th', {}, 'Phone'), h('th', {}, 'Source'),
       h('th', {}, 'Status'), h('th', {}, 'Assigned to'), h('th', {}, 'Created')
     )),
-    h('tbody', {}, ...rows.map(l => h('tr', {},
-      h('td', {}, h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—')),
+    h('tbody', {}, ...rows.map(l => h('tr', {
+      class: l.tat_violation ? 'row-tat-violation' : '',
+      title: l.tat_violation ? tatViolationTitle(l) : null
+    },
+      h('td', {},
+        h('a', { href: '#', onclick: ev => { ev.preventDefault(); openLeadModal(l.id); } }, l.name || '—'),
+        l.tat_violation ? h('span', { class: 'tat-pill', title: tatViolationTitle(l) }, '⚠ TAT ', tatOverLabel(l)) : null
+      ),
       h('td', {}, l.phone || ''),
       h('td', {}, l.source || ''),
       h('td', {}, l.status_name || ''),
