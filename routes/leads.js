@@ -355,23 +355,44 @@ async function api_leads_list(token, filters) {
   //   created_asc           — oldest created leads first
   //   updated_desc          — most recently touched leads first
   //   updated_asc           — least recently touched leads first
-  // Falls back to created_at if updated_at is null/missing on a row,
-  // so freshly imported leads still sort sensibly.
+  //
+  // For "created_*" we sort on lead.id rather than lead.created_at —
+  // id is an auto-increment counter so it's the most reliable proxy
+  // for "actually entered into the system" creation order. Trusting
+  // created_at directly turned out to be buggy: tenants who'd done a
+  // CSV import with a `created_at` column (or whose server clock had
+  // drifted at some point) ended up with future-dated rows at the
+  // top of the list, burying today's brand-new leads. id can't be
+  // poisoned that way — it's monotonic and immune to date strings,
+  // server-clock skew, or imported files. Reported by users who
+  // said "new leads not showing in leads section" while their
+  // actual leads were sitting on page 5+.
+  //
+  // For "updated_*" we still trust updated_at since users explicitly
+  // expect that to follow status/note changes — and there's no
+  // monotonic counter for "most recently touched".
   const sort = String(filters.sort || 'created_desc').toLowerCase();
-  const _key = (l) => {
-    if (sort.startsWith('updated')) {
-      return String(l.updated_at || l.last_status_change_at || l.created_at || '');
-    }
-    return String(l.created_at || '');
-  };
   const _dir = sort.endsWith('_asc') ? 1 : -1;
-  rows.sort((a, b) => {
-    const av = _key(a), bv = _key(b);
-    if (av < bv) return -1 * _dir;
-    if (av > bv) return  1 * _dir;
-    // Stable tiebreaker on id so paging stays deterministic
-    return (Number(a.id) - Number(b.id)) * _dir;
-  });
+  if (sort.startsWith('updated')) {
+    const _now = new Date().toISOString();
+    const _key = (l) => {
+      // Clamp future-dated updated_at the same way — if a CSV import
+      // poisoned this column too, we don't want it to dominate sort.
+      let k = String(l.updated_at || l.last_status_change_at || l.created_at || '');
+      if (k > _now) k = _now;
+      return k;
+    };
+    rows.sort((a, b) => {
+      const av = _key(a), bv = _key(b);
+      if (av < bv) return -1 * _dir;
+      if (av > bv) return  1 * _dir;
+      return (Number(a.id) - Number(b.id)) * _dir;
+    });
+  } else {
+    // id-based chronological sort — simple, robust, and matches what
+    // users actually mean by "newest" (most recently entered).
+    rows.sort((a, b) => (Number(a.id) - Number(b.id)) * _dir);
+  }
   const total = rows.length;
   const statusCount = {};
   rows.forEach(l => { const sid = Number(l.status_id) || 0; statusCount[sid] = (statusCount[sid] || 0) + 1; });
@@ -648,9 +669,21 @@ async function api_leads_create(token, payload) {
   // Migration: admins can backdate created_at when importing from
   // another CRM. The DB column has DEFAULT NOW(), so leaving the key
   // off the insert keeps that behaviour for everyone else.
+  //
+  // Hard-clamp future dates: a CSV with bad date format
+  // (e.g. "04-12-2026" intended as Apr-12 but parsed as Dec-04 by the
+  // DD-MM regex below) would otherwise let admins poison created_at
+  // with future dates. Once that happens those rows sit at the top
+  // of "newest first" and bury today's actual leads — exactly the
+  // "new leads aren't showing in the leads section" bug we hit on
+  // Celeste with 140 December-2026-dated rows. Clamp to NOW() so
+  // import can't push dates into the future.
   if (me.role === 'admin' && p.created_at) {
     const parsed = _parseDate(p.created_at);
-    if (parsed) base.created_at = parsed;
+    if (parsed) {
+      const nowIso = new Date().toISOString();
+      base.created_at = parsed > nowIso ? nowIso : parsed;
+    }
   }
 
   const id = await db.insert('leads', base);
@@ -1189,6 +1222,57 @@ async function api_leads_cleanupJunk(token) {
   return { ok: true, moved, skipped, total: all.length, junk_status_id: junkId };
 }
 
+/**
+ * One-shot cleanup: find every lead with a future-dated created_at
+ * (caused by an old CSV import that mis-parsed dates, or a server
+ * clock drift) and clamp them to NOW().
+ *
+ * Why: when a row has created_at > today's date, it sits at the top
+ * of "newest first" and buries every actual new lead underneath. The
+ * id-based sort I shipped today already works around this for the
+ * UI, but the data itself is still wrong (TAT calculations, monthly
+ * reports, etc all rely on accurate created_at). This endpoint is
+ * the data fix.
+ *
+ * Strategy: clamp to NOW(). The original future-date is preserved in
+ * meta_json.original_created_at so we can audit later if needed.
+ *
+ * Returns { ok, fixed, sample } — the sample shows the first 5 rows
+ * we touched so admins can spot-check the cleanup did the right thing.
+ */
+async function api_leads_fixFutureDates(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const nowIso = new Date().toISOString();
+  const all = await db.getAll('leads');
+  const stale = all.filter(l => l.created_at && String(l.created_at) > nowIso);
+  let fixed = 0;
+  const sample = [];
+  for (const l of stale) {
+    try {
+      // Preserve the original wrong date in meta_json for forensics.
+      let meta = {};
+      try {
+        meta = typeof l.meta_json === 'string' ? JSON.parse(l.meta_json || '{}') : (l.meta_json || {});
+      } catch (_) { meta = {}; }
+      meta.original_created_at = l.created_at;
+      meta.fixed_by = me.id;
+      meta.fixed_at = nowIso;
+      await db.update('leads', l.id, {
+        created_at: nowIso,
+        meta_json: meta
+      });
+      if (sample.length < 5) {
+        sample.push({ id: l.id, name: l.name || '', original: l.created_at });
+      }
+      fixed++;
+    } catch (e) {
+      console.warn('[fix_future_dates] lead ' + l.id + ' failed:', e.message);
+    }
+  }
+  return { ok: true, fixed, total_scanned: all.length, sample };
+}
+
 async function api_leads_deleteAllDuplicates(token) {
   const me = await authUser(token);
   if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
@@ -1510,5 +1594,6 @@ module.exports = {
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
   api_leads_deleteAllDuplicates, api_leads_duplicateAndReassign,
   api_leads_cleanupJunk,
+  api_leads_fixFutureDates,
   api_whatsapp_send
 };

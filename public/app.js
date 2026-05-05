@@ -1097,6 +1097,22 @@ VIEWS.leads = async (view) => {
           catch (e) { toast(e.message, 'err'); }
         } }, '🧹 Junk cleanup')
       : null,
+    // Fix-future-dates cleanup: clamps any lead with a future-dated
+    // created_at to NOW(). Common after a CSV import that mis-parsed
+    // dates ("04-12-2026" intended as Apr-12 but parsed as Dec-04 by
+    // our DD-MM regex). Without this fix those rows sit at the top
+    // of "newest first" and bury the actual today-leads underneath.
+    // Admin-only — destructive enough that managers shouldn't run it.
+    CRM.user && CRM.user.role === 'admin'
+      ? h('button', { class: 'btn ghost', title: 'Find leads with created_at in the future (CSV-import bug) and clamp them to today', onclick: async () => {
+          if (!await confirmDialog('Scan all leads and clamp any future-dated created_at to today\'s date?\n\nThis fixes the case where new leads silently disappear from the top of the list because old rows have December-2026 timestamps. Original dates are preserved in meta_json.original_created_at for audit. Safe to run multiple times.')) return;
+          try {
+            const r = await api('api_leads_fixFutureDates');
+            toast(`Fixed ${r.fixed} of ${r.total_scanned} leads (future-dated → today)`);
+            loadLeads();
+          } catch (e) { toast(e.message, 'err'); }
+        } }, '📅 Fix future dates')
+      : null,
     h('button', { class: 'btn primary', onclick: () => openLeadModal() }, '+ New Lead')
   );
   view.appendChild(toolbar);
