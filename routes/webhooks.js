@@ -183,7 +183,37 @@ async function websiteHook(req, res) {
   // the pattern integrations.js's leadSourceWebhook already uses.
   const expected = (await db.getConfig('WEBSITE_API_KEY', '').catch(() => '')) ||
                    process.env.WEBSITE_API_KEY || '';
+
+  // Always log the inbound hit — whether it auths or not. Without this
+  // the admin has no way to debug "why isn't my webhook creating leads?"
+  // (was the key wrong? body malformed? content-type stripped?). The
+  // Admin → Website API tab renders these rows so they're visible.
+  // Note: we redact the key down to a 4-char prefix so the log isn't
+  // a goldmine if it leaks; the full key only lives in the config.
+  const _logKeyPrefix = key ? String(key).slice(0, 4) + '…' : '(none)';
+  const _logHeaders = {
+    'content-type':  req.header('content-type')  || '',
+    'user-agent':    req.header('user-agent')    || '',
+    'x-forwarded-for': req.header('x-forwarded-for') || '',
+    'authorization-present': !!req.header('authorization'),
+    'x-api-key-present':     !!req.header('x-api-key')
+  };
+
   if (!expected || key !== expected) {
+    try {
+      await db.insert('webhook_log', {
+        source: 'website',
+        payload: {
+          headers: _logHeaders,
+          key_prefix: _logKeyPrefix,
+          body_keys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+          body_preview: _safeBodyPreview(req.body)
+        },
+        processed: 0,
+        error: !expected ? 'No WEBSITE_API_KEY configured — set it in Admin → Website API'
+                          : 'Invalid API key (received "' + _logKeyPrefix + '" — does not match the configured key)'
+      });
+    } catch (_) {}
     return res.status(401).json({ error: 'Invalid API key' });
   }
   try {
@@ -275,9 +305,31 @@ async function websiteHook(req, res) {
       updated_at: db.nowIso()
     };
     const result = await _createLeadFromWebhook(lead);
+    // Log the successful ingest — visible in the Admin → Website API
+    // diagnostic table so the admin can confirm webhooks are landing.
+    try {
+      await db.insert('webhook_log', {
+        source: 'website',
+        payload: { headers: _logHeaders, body_keys: Object.keys(b), result },
+        processed: result && result.ok !== false ? 1 : 0,
+        error: result && result.error ? result.error : null
+      });
+    } catch (_) {}
     res.json({ ok: true, ...result });
   } catch (e) {
     console.error('[website] error:', e);
+    try {
+      await db.insert('webhook_log', {
+        source: 'website',
+        payload: {
+          headers: _logHeaders,
+          body_keys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+          body_preview: _safeBodyPreview(req.body)
+        },
+        processed: 0,
+        error: 'Lead-create threw: ' + (e && e.message ? e.message : String(e))
+      });
+    } catch (_) {}
     res.status(400).json({ error: e.message });
   }
 }
@@ -287,7 +339,29 @@ async function otherHook(req, res) {
   // Same DB-first resolution as websiteHook — see comment there.
   const expected = (await db.getConfig('WEBSITE_API_KEY', '').catch(() => '')) ||
                    process.env.WEBSITE_API_KEY || '';
+
+  // Same diagnostic logging as websiteHook — see big comment there.
+  const _logKeyPrefix = key ? String(key).slice(0, 4) + '…' : '(none)';
+  const _logHeaders = {
+    'content-type':  req.header('content-type')  || '',
+    'user-agent':    req.header('user-agent')    || '',
+    'x-forwarded-for': req.header('x-forwarded-for') || ''
+  };
+
   if (!expected || key !== expected) {
+    try {
+      await db.insert('webhook_log', {
+        source: 'other',
+        payload: {
+          headers: _logHeaders, key_prefix: _logKeyPrefix,
+          body_keys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+          body_preview: _safeBodyPreview(req.body)
+        },
+        processed: 0,
+        error: !expected ? 'No WEBSITE_API_KEY configured'
+                         : 'Invalid API key (received "' + _logKeyPrefix + '")'
+      });
+    } catch (_) {}
     return res.status(401).json({ error: 'Invalid API key' });
   }
   try {
@@ -303,9 +377,46 @@ async function otherHook(req, res) {
       updated_at: db.nowIso()
     };
     const r = await _createLeadFromWebhook(lead);
+    try {
+      await db.insert('webhook_log', {
+        source: 'other',
+        payload: { headers: _logHeaders, body_keys: Object.keys(b), result: r },
+        processed: r && r.ok !== false ? 1 : 0,
+        error: r && r.error ? r.error : null
+      });
+    } catch (_) {}
     res.json({ ok: true, ...r });
   } catch (e) {
+    try {
+      await db.insert('webhook_log', {
+        source: 'other',
+        payload: {
+          headers: _logHeaders,
+          body_keys: req.body && typeof req.body === 'object' ? Object.keys(req.body) : [],
+          body_preview: _safeBodyPreview(req.body)
+        },
+        processed: 0,
+        error: 'Lead-create threw: ' + (e && e.message ? e.message : String(e))
+      });
+    } catch (_) {}
     res.status(400).json({ error: e.message });
+  }
+}
+
+/**
+ * Best-effort 200-char preview of the body, never the full payload.
+ * The webhook_log table can grow fast on a busy tenant — clipping
+ * the body keeps row size bounded. The headers + body_keys are
+ * usually enough to diagnose a malformed sender; the full body lives
+ * in the upstream tool's logs anyway.
+ */
+function _safeBodyPreview(body) {
+  if (body == null) return '';
+  try {
+    const s = typeof body === 'string' ? body : JSON.stringify(body);
+    return s.slice(0, 200);
+  } catch (_) {
+    return '';
   }
 }
 

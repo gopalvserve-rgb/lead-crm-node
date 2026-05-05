@@ -10123,6 +10123,67 @@ async function adminApi() {
     h('p', { class: 'muted' }, 'Download the template, fill in your leads, then use Leads → ⬆️ Upload to import.'),
     h('a', { class: 'btn primary', href: '/api/sample.csv', download: 'lead-crm-sample.csv' }, '⬇️ Download sample CSV')
   ));
+
+  // ---- Recent inbound webhook activity (diagnostics) ----
+  // Lets the admin see exactly what's hitting /hook/website and
+  // /hook/other — including the WHY when a request is rejected
+  // (wrong key, no key, malformed body, lead-create threw, etc).
+  // Auto-refreshes when the user clicks the refresh button.
+  const logCard = h('div', { class: 'card' });
+  card.appendChild(logCard);
+  async function _renderLogCard() {
+    logCard.innerHTML = '';
+    logCard.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '.5rem' } },
+      h('h4', { style: { margin: 0 } }, '🩺 Recent webhook activity'),
+      h('button', { class: 'btn sm', onclick: _renderLogCard }, '🔄 Refresh')
+    ));
+    logCard.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem' } },
+      'Every POST to /hook/website or /hook/other is logged here — including the ones that were rejected. Use this to debug why your webhook isn\'t creating leads. ✅ = lead created, ❌ = rejected (see the Reason column).'));
+    let logs = [];
+    try { logs = await api('api_admin_webhookLog', 50); }
+    catch (e) {
+      logCard.appendChild(h('div', { class: 'error-box' }, e.message));
+      return;
+    }
+    if (!logs.length) {
+      logCard.appendChild(h('p', { class: 'muted', style: { padding: '1rem 0' } },
+        'No inbound webhook activity yet. POST a test request to /hook/website with your API key to see it appear here.'));
+      return;
+    }
+    logCard.appendChild(h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'When'),
+        h('th', {}, 'Source'),
+        h('th', { style: { textAlign: 'center', width: '60px' } }, 'OK?'),
+        h('th', {}, 'Reason / fields'),
+        h('th', {}, 'From')
+      )),
+      h('tbody', {}, ...logs.map(r => {
+        const p = (typeof r.payload === 'string' ? (() => { try { return JSON.parse(r.payload); } catch (_) { return {}; } })() : (r.payload || {}));
+        const headers = p.headers || {};
+        const ip = headers['x-forwarded-for'] || '';
+        const ua = String(headers['user-agent'] || '').slice(0, 40);
+        const ok = Number(r.processed) === 1;
+        const reason = ok
+          ? (Array.isArray(p.body_keys) && p.body_keys.length
+              ? 'Lead created · fields: ' + p.body_keys.slice(0, 8).join(', ')
+              : 'Lead created')
+          : (r.error || 'Unknown error');
+        return h('tr', { style: ok ? {} : { background: 'rgba(239,68,68,.06)' } },
+          h('td', { class: 'muted', style: { fontSize: '.8rem', whiteSpace: 'nowrap' } }, fmtDate(r.created_at, 'relative')),
+          h('td', { style: { fontSize: '.85rem' } }, r.source),
+          h('td', { style: { textAlign: 'center', fontSize: '1.1rem' } }, ok ? '✅' : '❌'),
+          h('td', { style: { fontSize: '.85rem' } }, reason),
+          h('td', { class: 'muted', style: { fontSize: '.78rem' } },
+            ip ? h('div', {}, '📍 ' + ip) : null,
+            ua ? h('div', {}, ua + (String(headers['user-agent'] || '').length > 40 ? '…' : '')) : null
+          )
+        );
+      }))
+    ));
+  }
+  _renderLogCard().catch(e => console.error('[webhook-log]', e));
+
   return card;
 }
 

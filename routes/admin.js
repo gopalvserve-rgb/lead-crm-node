@@ -321,6 +321,39 @@ async function api_admin_wipeHrData(token, categories, confirm) {
   return { ok: true, deleted };
 }
 
+/**
+ * Recent /hook/website + /hook/other inbound webhook activity, used by
+ * Admin → Website API to diagnose "why isn't my webhook creating leads?"
+ *
+ * Returns the last `limit` rows (default 50) from webhook_log filtered
+ * to source IN ('website', 'other'), newest first. Each row has:
+ *   { id, source, processed (0/1), error, created_at, payload }
+ *
+ * The `payload` field includes redacted headers + the body-keys list +
+ * (on rejected requests) the API key prefix that was tried — enough to
+ * tell the admin whether the sender is hitting auth, body-validation,
+ * or lead-create errors.
+ *
+ * Why this lives in routes/admin.js rather than a dedicated webhooksLog
+ * file: it's a one-liner, only the admin tab calls it, and the existing
+ * api_wb_webhook_logs_text already serves WhatsApp logs via this same
+ * pattern — keeping them adjacent is easier to find later.
+ */
+async function api_admin_webhookLog(token, limit) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const n = Math.max(1, Math.min(500, Number(limit) || 50));
+  const rows = await db.query(
+    `SELECT id, source, processed, error, created_at, payload
+     FROM webhook_log
+     WHERE source IN ('website', 'other')
+     ORDER BY id DESC
+     LIMIT $1`,
+    [n]
+  );
+  return rows.rows || rows;
+}
+
 module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
@@ -331,5 +364,6 @@ module.exports = {
   api_admin_emailTestSend, api_admin_emailTriggerCron,
   api_admin_urls,
   api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp,
-  api_admin_wipeHrData
+  api_admin_wipeHrData,
+  api_admin_webhookLog
 };
