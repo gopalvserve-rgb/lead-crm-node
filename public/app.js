@@ -1111,6 +1111,13 @@ VIEWS.leads = async (view) => {
     h('button', { class: 'btn sm ghost', onclick: () => clearSelection() }, 'Clear')
   ));
 
+  // Visible banner whenever any filter is active — without this users
+  // sometimes don't realise a stale filter (saved last session via
+  // localStorage) is silently hiding their new leads. Renders only
+  // when at least one filter is non-empty; clicking 🧹 clears them.
+  view.appendChild(h('div', { id: 'leads-filter-banner' }));
+  _renderLeadsFilterBanner();
+
   view.appendChild(h('div', { class: 'table-wrap' }, h('table', { id: 'leads-table', class: 'leads-table' })));
   // Mobile card container (only visible on ≤ 780px via CSS)
   view.appendChild(h('div', { class: 'leads-mobile', id: 'leads-mobile' }));
@@ -1132,6 +1139,63 @@ function clearFilters() {
   CRM.prefs.filters = {};
   localStorage.setItem('crm_filters', '{}');
   navigateTo('leads');
+}
+
+/**
+ * Render an inline "filters active" banner above the leads table when
+ * any filter is set. Without this it's easy to miss a stale filter
+ * persisted from a previous session that's silently hiding leads —
+ * the #1 cause of "where are my new leads?!" bug reports.
+ */
+function _renderLeadsFilterBanner() {
+  const host = $('#leads-filter-banner');
+  if (!host) return;
+  host.innerHTML = '';
+  const f = CRM.prefs.filters || {};
+
+  // Build a list of human-readable active filter labels.
+  const { statuses = [], sources = [], users = [] } = CRM.cache || {};
+  const _statusName = id => (statuses.find(s => Number(s.id) === Number(id)) || {}).name || ('#' + id);
+  const _userName   = id => (users.find(u => Number(u.id) === Number(id)) || {}).name || ('#' + id);
+  const active = [];
+  if (f.q)            active.push('🔎 "' + String(f.q).slice(0, 30) + '"');
+  if (f.status_id)    active.push('🏷️ Status: ' + _statusName(f.status_id));
+  if (f.source)       active.push('📥 Source: ' + f.source);
+  if (f.assigned_to)  active.push('👤 Owner: ' + _userName(f.assigned_to));
+  if (f.followup === 'today')   active.push('📅 Follow-ups due today');
+  if (f.followup === 'overdue') active.push('⚠️ Overdue follow-ups');
+  if (f.qualified === '1' || f.qualified === 'only') active.push('⭐ Qualified only');
+  if (f.qualified === '0' || f.qualified === 'unqualified') active.push('Not qualified');
+  if (f.duplicate === 'only')   active.push('⚠️ Duplicates only');
+  if (f.duplicate === 'unique') active.push('No duplicates');
+  if (f.from || f.to)           active.push('🗓️ ' + (f.from || '…') + ' → ' + (f.to || '…'));
+  if (!active.length) return;     // No filters → render nothing
+
+  const banner = h('div', {
+    style: {
+      background: 'rgba(99,102,241,.10)',
+      border: '1px solid rgba(99,102,241,.35)',
+      borderLeft: '4px solid #6366f1',
+      borderRadius: '8px',
+      padding: '.55rem .85rem',
+      margin: '.4rem 0',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '.65rem',
+      flexWrap: 'wrap',
+      fontSize: '.88rem'
+    }
+  },
+    h('span', { style: { fontWeight: '600' } }, '🔍 Filters active:'),
+    h('span', { class: 'muted' }, active.join(' · ')),
+    h('button', {
+      class: 'btn sm',
+      style: { marginLeft: 'auto' },
+      onclick: clearFilters,
+      title: 'Remove all filters and show every lead'
+    }, '🧹 Clear all')
+  );
+  host.appendChild(banner);
 }
 
 /**
@@ -1260,6 +1324,9 @@ async function loadLeads(opts) {
       page: res.page || 1,
       pageSize: res.page_size || pageSize
     });
+    // Refresh the "filters active" banner so users always see what
+    // filters are currently hiding rows from them.
+    if (typeof _renderLeadsFilterBanner === 'function') _renderLeadsFilterBanner();
   } catch (e) {
     $('#leads-table').innerHTML = `<tbody><tr><td colspan="99" class="error-box">${esc(e.message)}</td></tr></tbody>`;
   }

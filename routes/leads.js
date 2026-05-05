@@ -78,7 +78,16 @@ function _hydrate(l, usersById, statusesById, productsById, tatByStatusId, final
 
 function _isVisible(me, visible, lead) {
   if (me.role === 'admin') return true;
-  if (!lead.assigned_to) return false;
+  // Unassigned leads (assigned_to=null) — typically brand-new leads from
+  // a webhook where no auto-assignment rule matched. Previously these
+  // were hidden from EVERYONE except admin, which meant managers and
+  // team-leaders genuinely couldn't see "new leads aren't showing in
+  // the leads section". Make them visible to anyone whose job is to
+  // route — manager + team_leader — so they can claim/assign. Agents
+  // still only see their own assigned leads to avoid claim-fights.
+  if (!lead.assigned_to) {
+    return me.role === 'manager' || me.role === 'team_leader';
+  }
   return visible.includes(Number(lead.assigned_to));
 }
 
