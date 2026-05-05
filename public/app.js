@@ -2619,11 +2619,19 @@ async function openLeadModal(id) {
   form.addEventListener('submit', async ev => {
     ev.preventDefault();
 
-    // Status = "Follow Up" requires next_followup_at — both date AND time.
+    // Live-pipeline statuses (Follow Up / Visit Done / Visit Schedule /
+    // Re-visit / Not Pick) require the rep to commit to a next-follow-up
+    // date+time so leads don't go cold. Admins are exempt — they often
+    // need to bulk-fix statuses without re-typing follow-ups for every
+    // lead. See _statusRequiresFollowup() for the full whitelist.
     const statusName = selectedStatusName();
     const fuVal = form.querySelector('[name="next_followup_at"]')?.value || '';
-    if (/follow\s*up/i.test(statusName) && !fuVal) {
-      toast('Status "Follow Up" requires a next follow-up date and time', 'err');
+    if (CRM.user.role !== 'admin'
+        && _statusRequiresFollowup(statusName)
+        && !fuVal) {
+      // Surface the actual chosen status name so the rep doesn't have to
+      // guess which of the five states triggered the rule.
+      toast(`Status "${statusName}" requires a next follow-up date and time`, 'err');
       form.querySelector('[name="next_followup_at"]')?.focus();
       return;
     }
@@ -2773,14 +2781,24 @@ function openNextFollowupModal(row, onSuccess) {
   const remarkInput = h('textarea', { rows: 3, placeholder: 'What happened on this call / contact attempt?' });
 
   // Toggle the required indicator + hint based on the selected status.
+  // The rule (kept in lockstep with the lead-modal submit handler):
+  //   - Admin → always optional (they often skip the date when bulk-
+  //     fixing leads).
+  //   - Status in the live-pipeline whitelist (Follow Up, Visit Done,
+  //     Visit Schedule, Re-visit, Not Pick) → required.
+  //   - Anything else → optional (lead is closing or in a non-tracking
+  //     state).
   function syncFollowupRequired() {
     const opt = statusSel.options[statusSel.selectedIndex];
     const name = (opt ? opt.textContent : '').trim();
-    const skip = _statusSkipsRequired(name);
-    dtLabel.textContent = skip ? 'Next follow-up date & time (optional)' : 'Next follow-up date & time *';
-    dtHint.textContent  = skip
-      ? 'Optional — this status closes the lead, no further follow-up needed.'
-      : 'When should you contact this lead next?';
+    const isAdmin = CRM.user && CRM.user.role === 'admin';
+    const required = !isAdmin && _statusRequiresFollowup(name);
+    dtLabel.textContent = required ? 'Next follow-up date & time *' : 'Next follow-up date & time (optional)';
+    dtHint.textContent  = required
+      ? 'When should you contact this lead next?'
+      : (isAdmin
+          ? 'Optional — admins are exempt from the follow-up requirement.'
+          : 'Optional — this status closes the lead, no further follow-up needed.');
   }
   statusSel.addEventListener('change', syncFollowupRequired);
   syncFollowupRequired();
@@ -2804,14 +2822,16 @@ function openNextFollowupModal(row, onSuccess) {
         const newStatusId = statusSel.value ? Number(statusSel.value) : null;
         const newStatusOpt = newStatusId ? statusSel.options[statusSel.selectedIndex] : null;
         const newStatusName = newStatusOpt ? newStatusOpt.textContent.trim() : '';
-        const skipFollowup = newStatusName ? _statusSkipsRequired(newStatusName) : false;
         const nextIso = localDtInputToIso(dtInput.value);
 
-        // Validate: for non-dead-end statuses, require a next-follow-up date.
-        // Dead-end statuses (Not Picked, Not Interested, Junk, Does Not Exist,
-        // Broker) skip this gate so the rep can close the lead in one click.
-        if (!skipFollowup && !nextIso) {
-          toast('Pick a next follow-up date & time, or set a closing status (Junk / Not Interested / etc.)', 'err');
+        // Live-pipeline statuses (Follow Up / Visit Done / Visit Schedule /
+        // Re-visit / Not Pick) require a next-follow-up date+time so the
+        // lead can't slip through. Admins are exempt. Other statuses
+        // (Won / Lost / Junk / Booked / etc.) are closing — no date
+        // needed there. Single source of truth: _statusRequiresFollowup.
+        const isAdmin = CRM.user && CRM.user.role === 'admin';
+        if (!isAdmin && _statusRequiresFollowup(newStatusName) && !nextIso) {
+          toast(`Status "${newStatusName}" requires a next follow-up date & time`, 'err');
           dtInput.focus();
           return;
         }
@@ -2927,6 +2947,27 @@ const SKIP_REQUIRED_STATUSES = [
 function _statusSkipsRequired(statusName) {
   const n = String(statusName || '').toLowerCase().trim();
   return SKIP_REQUIRED_STATUSES.some(s => n.includes(s));
+}
+
+// Statuses that REQUIRE the rep to set a next-follow-up date+time.
+// These are the same five "live pipeline" statuses that the
+// Overdue / Due today / Upcoming pages filter on (kept in lockstep
+// with FOLLOWUP_ALLOWED_STATUSES on routes/notifications.js) — if a
+// lead is in one of these states it's still being worked, so the rep
+// must commit to when they'll touch it next. Admins are exempt
+// because they often need to bulk-update statuses without filling
+// every follow-up. Match is case/space/punctuation-insensitive.
+const REQUIRES_FOLLOWUP_STATUSES = [
+  'follow up', 'followup',
+  'visit done',
+  'visit schedule', 'visit scheduled',
+  're-visit', 'revisit', 're visit',
+  'not pick', 'not picked', 'not picking'
+];
+const _normStatusKey = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const REQUIRES_FOLLOWUP_NORM = new Set(REQUIRES_FOLLOWUP_STATUSES.map(_normStatusKey));
+function _statusRequiresFollowup(statusName) {
+  return REQUIRES_FOLLOWUP_NORM.has(_normStatusKey(statusName));
 }
 
 function customFieldInput(cf, val) {
