@@ -11278,13 +11278,21 @@ async function adminRules() {
 
   const rules = await api('api_rules_list');
   const card = h('div', { class: 'card' }, h('h4', {}, 'Auto-assign rules'));
-  card.appendChild(h('p', { class: 'muted' }, 'First matching rule (by lowest priority number) wins. Assigning multiple users enables round-robin.'));
+  card.appendChild(h('p', { class: 'muted' }, 'First matching rule (by lowest priority number) wins. Assigning multiple users enables round-robin. Supports built-in lead fields, UTM/campaign attribution and per-tenant custom fields.'));
+  // Friendly label resolver for the rules table — turns raw stored
+  // field keys (e.g. "cf:campaign_name") back into the human label
+  // ("Custom: Campaign name") that the rule-builder modal shows.
+  const _ruleFieldLabel = (raw) => {
+    const all = ruleFieldOptions();
+    const hit = all.find(o => o.value === raw);
+    return hit ? hit.label : raw;
+  };
   card.appendChild(h('table', { class: 'mini-table' },
     h('thead', {}, h('tr', {}, h('th', {}, 'Priority'), h('th', {}, 'Name'), h('th', {}, 'When'), h('th', {}, 'Assign to'), h('th', {}, 'Active'), h('th', {}))),
     h('tbody', {}, ...rules.map(r => h('tr', {},
       h('td', {}, r.priority),
       h('td', {}, r.name),
-      h('td', {}, `${r.field} ${r.operator} "${r.value}"`),
+      h('td', {}, `${_ruleFieldLabel(r.field)} ${r.operator} "${r.value}"`),
       h('td', {}, r.assigned_names || r.assigned_to),
       h('td', {},
         h('label', { class: 'switch' },
@@ -11305,16 +11313,63 @@ async function adminRules() {
   wrap.appendChild(card);
   return wrap;
 }
+// Build the dropdown options for the auto-assign rule "Field" picker.
+// Options come from three places:
+//   1. Built-in lead columns (source, product, name, phone, ...).
+//   2. Campaign-attribution columns (utm_*, gclid, gad_campaignid) —
+//      these are first-class columns on the leads table, so the existing
+//      `lead[field]` matcher in routes/webhooks.js already picks them up.
+//   3. Per-tenant custom fields from CRM.cache.customFields, prefixed
+//      with `cf:` so the backend can tell them apart from built-ins
+//      (custom-field values live in `leads.extra_json`, not as columns).
+function ruleFieldOptions() {
+  const builtin = [
+    { value: 'source',     label: 'Source' },
+    { value: 'product',    label: 'Product' },
+    { value: 'name',       label: 'Name' },
+    { value: 'phone',      label: 'Phone' },
+    { value: 'email',      label: 'Email' },
+    { value: 'city',       label: 'City' },
+    { value: 'state',      label: 'State' },
+    { value: 'country',    label: 'Country' },
+    { value: 'pincode',    label: 'Pincode' },
+    { value: 'company',    label: 'Company' },
+    { value: 'tags',       label: 'Tags' },
+    { value: 'notes',      label: 'Notes' },
+    { value: 'source_ref', label: 'Source ref' }
+  ];
+  const attribution = [
+    { value: 'utm_campaign',   label: 'Campaign · utm_campaign' },
+    { value: 'utm_source',     label: 'Campaign · utm_source' },
+    { value: 'utm_medium',     label: 'Campaign · utm_medium' },
+    { value: 'utm_term',       label: 'Campaign · utm_term' },
+    { value: 'utm_content',    label: 'Campaign · utm_content' },
+    { value: 'gclid',          label: 'Campaign · GCLID' },
+    { value: 'gad_campaignid', label: 'Campaign · Google Ads campaign ID' }
+  ];
+  const customs = ((CRM.cache && CRM.cache.customFields) || [])
+    .filter(cf => cf && cf.key)
+    .map(cf => ({ value: 'cf:' + cf.key, label: 'Custom · ' + (cf.label || cf.key) }));
+  return builtin.concat(attribution, customs);
+}
+
 function openRuleModal(existing) {
   const { users } = CRM.cache;
   const r = existing || { name: '', field: 'source', operator: 'equals', value: '', assigned_to: '', priority: 100, is_active: 1 };
   const assignedIds = String(r.assigned_to || '').split(',').map(s => s.trim()).filter(Boolean).map(Number);
+  // If editing a legacy rule whose `field` isn't in our current option
+  // list (e.g. a custom field that's since been deleted), surface it as
+  // a stub option so the user sees the actual stored value.
+  const _opts = ruleFieldOptions();
+  if (r.field && !_opts.some(o => o.value === r.field)) {
+    _opts.push({ value: r.field, label: r.field + ' (unknown)' });
+  }
   const modal = h('div', { class: 'modal-backdrop' },
     h('div', { class: 'modal modal-lg' },
       h('div', { class: 'modal-head' }, h('h3', {}, r.id ? 'Edit rule' : 'New auto-assign rule'), h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')),
       h('form', { class: 'form-grid', id: 'rule-form' },
         field('name', 'Rule name *', r.name, { required: true }),
-        selectField('field', 'Field', r.field, ['source', 'product', 'name', 'phone', 'email', 'city', 'notes', 'source_ref']),
+        selectField('field', 'Field', r.field, _opts),
         selectField('operator', 'Operator', r.operator, ['equals', 'contains', 'starts_with', 'ends_with']),
         field('value', 'Value *', r.value, { required: true }),
         field('priority', 'Priority (lower = first)', r.priority || 100, { type: 'number' }),
