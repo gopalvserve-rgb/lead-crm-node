@@ -579,6 +579,29 @@ async function api_recording_recentInsights(token, opts) {
   }
 }
 
+/**
+ * Admin-only bulk-clear of AI fields on every lead_recordings row.
+ * Use when the AI ran with the wrong prompt or wrote dummy / test data
+ * we want to wipe so the Call Insights page falls back to its empty
+ * state. The recording rows themselves stay (audio + metadata is real);
+ * only the AI-generated columns are nulled out, so api_recording_recentInsights
+ * (which filters by ai_processed_at IS NOT NULL) returns nothing until
+ * a fresh worker run lands real summaries.
+ */
+async function api_recording_clearAllAi(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const { rowCount } = await db.query(
+    `UPDATE lead_recordings SET
+        ai_processed_at = NULL, ai_error = NULL, summary = NULL,
+        transcript = NULL, action_items = NULL, sentiment = NULL,
+        suggested_status_id = NULL, key_insight = NULL,
+        next_followup_days = NULL, ai_suggested_rating = NULL
+      WHERE ai_processed_at IS NOT NULL`
+  );
+  return { ok: true, cleared: rowCount };
+}
+
 module.exports = {
   api_call_logEvent,
   api_call_hasRecentEvent,
@@ -593,5 +616,6 @@ module.exports = {
   api_recording_applySuggestion,
   api_recording_rate,
   _findLeadByPhone,
-  api_recording_recentInsights
+  api_recording_recentInsights,
+  api_recording_clearAllAi
 };
