@@ -449,12 +449,42 @@ async function _createLeadFromWebhook(lead) {
   }
 
   // 2. Apply assignment rules (first matching one by priority wins)
+  // Rule.field can be:
+  //   - a built-in lead column   (source, product, name, phone, city, ...)
+  //   - an attribution column    (utm_campaign, utm_source, gclid, ...)
+  //   - a custom field reference written as "cf:<key>" — values for these
+  //     live inside lead.extra_json (and may also arrive as top-level
+  //     `cf_<key>` keys on the inbound webhook payload, or sit inside
+  //     lead.meta_json from a generic /hook/website POST). We fall back
+  //     across all three so a "Custom · Campaign Name" rule matches no
+  //     matter where the source pushed the value.
+  const _safeJson = (v) => {
+    if (!v) return {};
+    if (typeof v === 'object') return v;
+    try { return JSON.parse(String(v)) || {}; } catch (_) { return {}; }
+  };
+  const _extra = _safeJson(lead.extra_json);
+  const _meta  = _safeJson(lead.meta_json);
+  const _resolveRuleField = (raw) => {
+    const key = String(raw || '');
+    if (key.startsWith('cf:')) {
+      const k = key.slice(3);
+      // Order: parsed extra_json (canonical) → top-level cf_<k> alias →
+      // generic webhook body inside meta_json (cf_<k> or bare <k>).
+      if (_extra[k] != null && _extra[k] !== '') return _extra[k];
+      if (lead['cf_' + k] != null && lead['cf_' + k] !== '') return lead['cf_' + k];
+      if (_meta['cf_' + k] != null && _meta['cf_' + k] !== '') return _meta['cf_' + k];
+      if (_meta[k] != null && _meta[k] !== '') return _meta[k];
+      return '';
+    }
+    return lead[key];
+  };
   const rules = (await db.getAll('assignment_rules'))
     .filter(r => Number(r.is_active) === 1)
     .sort((a, b) => (Number(a.priority) || 0) - (Number(b.priority) || 0));
   let assignedUserId = null;
   for (const rule of rules) {
-    const fieldVal = String(lead[rule.field] || '').toLowerCase();
+    const fieldVal = String(_resolveRuleField(rule.field) || '').toLowerCase();
     const ruleVal  = String(rule.value || '').toLowerCase();
     let match = false;
     switch (rule.operator) {
