@@ -1185,6 +1185,19 @@ function _renderLeadsFilterBanner() {
   if (f.duplicate === 'only')   active.push('⚠️ Duplicates only');
   if (f.duplicate === 'unique') active.push('No duplicates');
   if (f.from || f.to)           active.push('🗓️ ' + (f.from || '…') + ' → ' + (f.to || '…'));
+  // Surface a non-default sort in the banner. Without this, a stale
+  // 'created_asc' preference cached in localStorage from a prior session
+  // silently sorts today's leads to the bottom, and users (rightly) report
+  // the list as broken because the dropdown sits above the table where
+  // they don't see it after scrolling.
+  if (f.sort && f.sort !== 'created_desc') {
+    const sortLabels = {
+      created_asc:  '⏳ Sort: Oldest first',
+      updated_desc: '✏️ Sort: Recently updated',
+      updated_asc:  '⏳ Sort: Least recently updated'
+    };
+    active.push(sortLabels[f.sort] || ('Sort: ' + f.sort));
+  }
   if (!active.length) return;     // No filters → render nothing
 
   const banner = h('div', {
@@ -2640,7 +2653,25 @@ async function openLeadModal(id) {
   // overwrite what the customer typed in the form, the source, the GCLID,
   // or the UTMs. Admin can still change these for legitimate corrections.
   if (id && !isAdmin) {
-    const LOCKED = ['name', 'phone', 'whatsapp', 'email', 'source'];
+    // Built-in fields that mirror the backend's CAMPAIGN_LOCKED_FIELDS, plus
+    // common custom-field keys for campaign attribution. Anything else with
+    // "campaign" in the name is also locked via the regex sweep below — that
+    // way "Campaign Source", "Lead Campaign", etc. are caught too.
+    const LOCKED = [
+      'name', 'phone', 'whatsapp', 'email',
+      'source', 'source_ref',
+      'gclid', 'gad_campaignid',
+      'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+      'campaign', 'campaign_id', 'campaign_name'
+    ];
+    // Extend the list with any form input whose name contains "campaign"
+    // (case-insensitive). Catches admin-defined custom fields like
+    // "Campaign", "Campaign ID", "Lead Campaign" without us having to
+    // maintain a per-tenant list.
+    form.querySelectorAll('[name]').forEach(el => {
+      const n = String(el.name || '').toLowerCase();
+      if (/campaign/.test(n) && !LOCKED.includes(n)) LOCKED.push(n);
+    });
     LOCKED.forEach(name => {
       const el = form.querySelector(`[name="${name}"]`);
       if (!el) return;
