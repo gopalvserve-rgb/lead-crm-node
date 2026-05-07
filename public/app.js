@@ -131,6 +131,10 @@ async function apiRaw(fn, ...args) {
       setTimeout(() => _resumeLocationPingsIfCheckedIn().catch(() => {}), 3000);
       // Silent background sweep: pick up any missed recordings.
       setTimeout(() => silentBackgroundSync(), 4000);
+      // Incoming-call interception (Capacitor APK only) — catches PHONE_STATE
+      // broadcasts, looks up callers in CRM, and auto-saves unrecognised
+      // inbound calls as leads once the call ends.
+      setTimeout(() => initCallerIdPlugin().catch(() => {}), 3500);
     } catch (_) { logout(); }
   } else {
     renderLogin();
@@ -14454,4 +14458,92 @@ async function showNotifs() {
     )
   );
   document.body.appendChild(modal);
+}
+
+
+/* ───────────────────────────────────────────────────────────────────────────────
+ * INCOMING-CALL LEAD CAPTURE  (Capacitor / Android APK only)
+ *
+ * How it works end-to-end:
+ *   1. Android PhoneStateReceiver (Kotlin) catches PHONE_STATE broadcasts.
+ *   2. CallerIdPlugin bridges the events to JS via Capacitor's addListener.
+ *   3. This function wires those events to the CRM API:
+ *        callRinging -> api_call_lookup  -> show notification with lead info
+ *        callEnded   -> api_call_handleEnded -> logs call, auto-creates lead if needed
+ *
+ * The Kotlin plugin lives in cap-app/native/plugin/CallerIdPlugin.kt.
+ * The backend handlers live in routes/recordings.js.
+ * ───────────────────────────────────────────────────────────────────────────────*/
+async function initCallerIdPlugin() {
+  const cap = window.Capacitor;
+  if (!cap || typeof cap.isNativePlatform !== 'function' || !cap.isNativePlatform()) return;
+
+  const CallerId = cap.Plugins && cap.Plugins.CallerId;
+  if (!CallerId) {
+    console.warn('[callerId] CallerId plugin not found — rebuild APK after adding the plugin');
+    return;
+  }
+
+  try {
+    await CallerId.start();
+    console.log('[callerId] plugin started — listening for incoming calls');
+  } catch (e) {
+    console.warn('[callerId] start() failed:', e && e.message);
+    return;
+  }
+
+  /* ── callRinging ────────────────────────────────────────────────────────────────────── */
+  CallerId.addListener('callRinging', async (evt) => {
+    const phone = (evt && evt.phone) || '';
+    if (!phone) return;
+    console.log('[callerId] ringing:', phone);
+    try {
+      const result = await api('api_call_lookup', phone);
+      if (result && result.found) {
+        const title = result.name || phone;
+        const lines = [];
+        if (result.status)        lines.push('Status: ' + result.status);
+        if (result.recent_remark) lines.push(result.recent_remark);
+        const body     = lines.join('  •  ') || 'Existing lead';
+        const deeplink = result.lead_url || (location.origin + '/#/leads/' + result.lead_id);
+        try { await CallerId.showLeadNotification({ title, body, deeplink }); } catch (_) {}
+      } else {
+        try {
+          await CallerId.showLeadNotification({
+            title: phone, body: 'New caller — not in CRM yet', deeplink: location.origin + '/#/leads'
+          });
+        } catch (_) {}
+      }
+    } catch (e) {
+      console.warn('[callerId] lookup failed for', phone, e && e.message);
+    }
+  });
+
+  /* ── callEnded ───────────────────────────────────────────────────────────────────────────── */
+  CallerId.addListener('callEnded', async (evt) => {
+    const phone     = (evt && evt.phone)      || '';
+    const durationS = (evt && evt.duration_s) || 0;
+    const missed    = !!(evt && evt.missed);
+    const startedAt = (evt && evt.started_at) || new Date().toISOString();
+    if (!phone) return;
+    console.log('[callerId] ended:', phone, 'duration:', durationS, 'missed:', missed);
+    try {
+      const payload = { phone, direction: 'inbound', duration_s: durationS, missed, started_at: startedAt };
+      const res = await api('api_call_handleEnded', payload);
+      if (res && res.auto_created) {
+        const name = res.lead_name || phone;
+        if (typeof toast === 'function') toast('📞 New lead created: ' + name + ' (inbound call)');
+        const currentView = parseHashView();
+        if (!currentView || currentView === 'dashboard') {
+          setTimeout(() => { try { openLeadModal(res.lead_id); } catch (_) {} }, 800);
+        }
+      } else if (res && res.logged && missed) {
+        console.log('[callerId] missed call logged for lead', res.lead_id);
+      }
+    } catch (e) {
+      console.warn('[callerId] handleEnded failed for', phone, e && e.message);
+    }
+  });
+
+  console.log('[callerId] ringing + ended listeners registered OK');
 }
