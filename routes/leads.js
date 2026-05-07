@@ -356,43 +356,48 @@ async function api_leads_list(token, filters) {
   //   updated_desc          — most recently touched leads first
   //   updated_asc           — least recently touched leads first
   //
-  // For "created_*" we sort on lead.id rather than lead.created_at —
-  // id is an auto-increment counter so it's the most reliable proxy
-  // for "actually entered into the system" creation order. Trusting
-  // created_at directly turned out to be buggy: tenants who'd done a
-  // CSV import with a `created_at` column (or whose server clock had
-  // drifted at some point) ended up with future-dated rows at the
-  // top of the list, burying today's brand-new leads. id can't be
-  // poisoned that way — it's monotonic and immune to date strings,
-  // server-clock skew, or imported files. Reported by users who
-  // said "new leads not showing in leads section" while their
-  // actual leads were sitting on page 5+.
+  // Both branches use a date key with two safeguards:
+  //   1. Future-dated rows are clamped to "now" so a CSV import that
+  //      shipped Dec-2026 timestamps (or a server-clock skew) can't
+  //      bury today's brand-new leads under a wall of bogus rows.
+  //   2. Rows that tie on the date key fall back to lead.id, which is
+  //      a monotonic auto-increment counter immune to date corruption.
+  //      That way the in-system insertion order still wins ties.
   //
-  // For "updated_*" we still trust updated_at since users explicitly
-  // expect that to follow status/note changes — and there's no
-  // monotonic counter for "most recently touched".
+  // Why we sort on created_at (not lead.id): the dropdown labels
+  // promise "Created — newest/oldest first", and Celeste lets admins
+  // preserve `LEAD CREATED DATE` on CSV import. With id-only sort,
+  // those imports end up at the top of the list (high id) even though
+  // their actual created_at is months old — making asc/desc visibly
+  // wrong. Clamping future dates plus the id tie-breaker gives us the
+  // best of both: real dates dictate order, but corrupted dates can't
+  // hijack the top of the page.
   const sort = String(filters.sort || 'created_desc').toLowerCase();
   const _dir = sort.endsWith('_asc') ? 1 : -1;
-  if (sort.startsWith('updated')) {
-    const _now = new Date().toISOString();
-    const _key = (l) => {
-      // Clamp future-dated updated_at the same way — if a CSV import
-      // poisoned this column too, we don't want it to dominate sort.
-      let k = String(l.updated_at || l.last_status_change_at || l.created_at || '');
-      if (k > _now) k = _now;
-      return k;
-    };
-    rows.sort((a, b) => {
-      const av = _key(a), bv = _key(b);
-      if (av < bv) return -1 * _dir;
-      if (av > bv) return  1 * _dir;
-      return (Number(a.id) - Number(b.id)) * _dir;
-    });
-  } else {
-    // id-based chronological sort — simple, robust, and matches what
-    // users actually mean by "newest" (most recently entered).
-    rows.sort((a, b) => (Number(a.id) - Number(b.id)) * _dir);
-  }
+  const _useUpdated = sort.startsWith('updated');
+  const _now = new Date().toISOString();
+  const _raw = (l) => _useUpdated
+    ? String(l.updated_at || l.last_status_change_at || l.created_at || '')
+    : String(l.created_at || '');
+  const _isFuture = (l) => _raw(l) > _now;
+  const _key = (l) => {
+    const r = _raw(l);
+    return r > _now ? _now : r; // clamp future-dated rows to "now"
+  };
+  rows.sort((a, b) => {
+    // Future-dated rows (CSV-import bug or clock skew) are demoted to
+    // the end of the list regardless of asc/desc, so a few corrupted
+    // timestamps can never bury today's real leads at the top.
+    const af = _isFuture(a), bf = _isFuture(b);
+    if (af !== bf) return af ? 1 : -1;
+    const av = _key(a), bv = _key(b);
+    if (av < bv) return -1 * _dir;
+    if (av > bv) return  1 * _dir;
+    // Tie-break on id (monotonic, immune to date corruption) using the
+    // same direction as the primary sort so visual order stays intuitive.
+    return (Number(a.id) - Number(b.id)) * _dir;
+  });
+
   const total = rows.length;
   const statusCount = {};
   rows.forEach(l => { const sid = Number(l.status_id) || 0; statusCount[sid] = (statusCount[sid] || 0) + 1; });
@@ -873,6 +878,20 @@ async function api_leads_update(token, id, patch) {
       if (f in patch && String(patch[f] || '') !== String(lead[f] || '')) {
         blocked.push(f);
         delete patch[f];
+      }
+    }
+    // Custom fields live inside patch.extra (merged into extra_json). Strip
+    // any key whose name suggests campaign attribution — covers admin-defined
+    // custom fields like "Campaign", "Campaign ID", "campaign_name", etc.
+    // The current value on the lead is preserved by the merge in the regular
+    // path below, so the rep simply can't overwrite it.
+    if (patch.extra && typeof patch.extra === 'object') {
+      const currExtra = _parseExtra(lead);
+      for (const k of Object.keys(patch.extra)) {
+        if (/campaign/i.test(k) && String(patch.extra[k] || '') !== String(currExtra[k] || '')) {
+          blocked.push('extra.' + k);
+          delete patch.extra[k];
+        }
       }
     }
     if (blocked.length > 0) {
