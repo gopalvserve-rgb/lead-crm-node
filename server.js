@@ -14,7 +14,7 @@ const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const multer = require('multer');
-const db = require('./db/pg');
+const db = require('./db/pg');h
 const { authUser } = require('./utils/auth');
 const { _findLeadByPhone } = require('./routes/recordings');
 
@@ -56,7 +56,8 @@ const routes = {
   projectStages: require('./routes/projectStages'),
   personalWa:    require('./routes/personalWaTemplates'),
   integrations:  require('./routes/integrations'),
-  aiUsage:       require('./utils/aiUsage')
+  aiUsage:       require('./utils/aiUsage'),
+    roles:         require('./routes/roles'),
 };
 const webhooks = require('./routes/webhooks');
 
