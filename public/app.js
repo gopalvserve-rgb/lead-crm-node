@@ -1520,7 +1520,7 @@ function renderLeadsTable(rows) {
         await api('api_leads_update', Number(sel.dataset.leadStatus), { status_id: Number(sel.value) });
         toast('Status updated');
         const opt = CRM.cache.statuses.find(s => Number(s.id) === Number(sel.value));
-        if (opt) sel.style.background = opt.color;
+        if (opt) sel.style.setProperty('--status-color', opt.color || '#6b7280');
         loadLeads();
       } catch (e) { toast(e.message, 'err'); }
     })
@@ -1843,9 +1843,9 @@ function renderCell(col, l, statuses) {
       const sel = h('select', {
         class: 'status-pill',
         'data-lead-status': l.id,
-        style: { background: l.status_color || '#6b7280' },
         onclick: ev => ev.stopPropagation()
       });
+      sel.style.setProperty('--status-color', l.status_color || '#6b7280');
       statuses.forEach(s => sel.appendChild(h('option', {
         value: s.id, selected: Number(s.id) === Number(l.status_id) ? 'selected' : null
       }, s.name)));
