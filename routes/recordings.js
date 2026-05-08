@@ -274,7 +274,8 @@ async function api_call_handleEnded(token, payload) {
   const p = payload || {};
   if (!p.phone) throw new Error('phone required');
 
-  const direction = p.direction || 'in';
+  const rawDir = p.direction || 'out';
+  const direction = (rawDir === 'inbound') ? 'in' : rawDir;
   const duration = Number(p.duration_s) || 0;
   const event = direction === 'missed' ? 'missed' : (duration > 0 ? 'ended' : 'no_answer');
 
