@@ -15077,7 +15077,7 @@ function _copilotMsg(role, text) {
 // rendering is whatever VIEWS.dashboard already does — we just gate
 // each well-known section by a checkbox.
 function openDashboardWidgetPicker() {
-  const m = h('div', { class: 'modal-bd' });
+  const m = h('div', { class: 'modal-backdrop' });
   const card = h('div', { class: 'modal', style: { maxWidth: '520px' } });
   card.appendChild(h('div', { class: 'modal-head' },
     h('h3', {}, '🎛 Customise dashboard'),
