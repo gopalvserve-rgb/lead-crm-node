@@ -12568,10 +12568,29 @@ async function checkInOut(which) {
     }
     catch (e) { toast(e.message, 'err'); }
   };
-  if (!navigator.geolocation) return call(null, null);
+  if (!navigator.geolocation) {
+    toast('⚠ Geolocation not available on this device — checking in without location', 'warn');
+    return call(null, null);
+  }
+  // Show a hint while we wait so user knows we're trying
+  const _waitToast = (typeof toast === 'function') ? toast('📍 Getting your location…', 'info') : null;
   navigator.geolocation.getCurrentPosition(
     p => call(p.coords.latitude, p.coords.longitude),
-    () => call(null, null)
+    (err) => {
+      // Be honest about why location is missing — the previous silent
+      // fallback hid permission-denial bugs for months.
+      const reason = err && err.code === err.PERMISSION_DENIED
+        ? 'Location permission denied — Settings → Apps → CRM → Permissions → Location → Allow'
+        : err && err.code === err.POSITION_UNAVAILABLE
+          ? 'Location unavailable (no GPS signal) — try going outside or near a window'
+          : err && err.code === err.TIMEOUT
+            ? 'Location lookup timed out — check GPS is on'
+            : 'Could not get location: ' + (err && err.message ? err.message : 'unknown');
+      toast('⚠ ' + reason + ' · checking in without location', 'warn');
+      console.warn('[attendance] geolocation failed:', err);
+      call(null, null);
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
   );
 }
 
