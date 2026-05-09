@@ -228,8 +228,16 @@ async function websiteHook(req, res) {
     // ---- Google Ads ValueTrack normalisation ----------------------
     // Landing pages like:  ?campaign={campaignid}&network={network}&keyword={keyword}&gclid={gclid}
     // map directly into our utm_* + source_ref + meta_json columns.
-    const campaignId   = b.campaign || b.campaign_id || b.campaignid || b.utm_campaign || '';
-    const campaignName = b.campaign_name || b.campaignname || '';
+    // Accept lots of aliases - different lead-source platforms (Pabbly, Make,
+    // Zapier, Meta Lead Ads, Google Ads) send the same fields under slightly
+    // different names. Anything unmatched gets silently dropped, which is
+    // exactly the bug we hit when Pabbly was mapping `campaign_name_new`.
+    const campaignId   = b.campaign_id || b.campaignid || b.campaignId
+                       || b.campaign_id_new || b.campaignIdNew
+                       || b.campaign || b.utm_campaign || '';
+    const campaignName = b.campaign_name || b.campaignname || b.campaignName
+                       || b.campaign_name_new || b.campaignNameNew
+                       || b.campaign_title || b.campaign_label || '';
     const network      = b.network || b.utm_medium || '';   // search | content | youtube | display
     const keyword      = b.keyword || b.utm_term || '';
     const gclid        = b.gclid || b.clickid || b.click_id || '';
