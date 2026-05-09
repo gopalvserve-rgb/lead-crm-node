@@ -14825,3 +14825,149 @@ async function _renderAiBotActivity(host) {
   )));
   host.appendChild(card);
 }
+
+
+// ============================================================
+// ✨ CRM Copilot — floating Ask CRM widget
+// ============================================================
+function _initCrmCopilot() {
+  if (document.getElementById('copilot-fab')) return;
+  if (typeof CRM === 'undefined' || !CRM.user) return;
+  const fab = h('button', {
+    id: 'copilot-fab',
+    title: 'Ask CRM — Gemini-powered data assistant',
+    style: {
+      position: 'fixed', bottom: '20px', right: '20px',
+      width: '56px', height: '56px', borderRadius: '50%',
+      border: 'none', cursor: 'pointer', zIndex: '9990',
+      background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+      color: '#fff', fontSize: '22px',
+      boxShadow: '0 6px 20px rgba(99,102,241,.45)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center'
+    }
+  }, '✨');
+  document.body.appendChild(fab);
+  let drawer = null;
+  fab.onclick = () => {
+    if (drawer) { drawer.remove(); drawer = null; return; }
+    drawer = _renderCopilotDrawer();
+  };
+}
+
+function _renderCopilotDrawer() {
+  const d = h('div', {
+    id: 'copilot-drawer',
+    style: {
+      position: 'fixed', bottom: '90px', right: '20px',
+      width: '380px', maxWidth: 'calc(100vw - 40px)',
+      height: 'min(580px, calc(100vh - 140px))',
+      background: '#fff', borderRadius: '14px',
+      boxShadow: '0 14px 40px rgba(15,23,42,.35)',
+      zIndex: '9989', display: 'flex', flexDirection: 'column',
+      border: '1px solid #e2e8f0', overflow: 'hidden'
+    }
+  });
+  document.body.appendChild(d);
+  const head = h('div', { style: { padding: '.75rem 1rem', background: 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)', color: '#fff' } });
+  head.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between' } },
+    h('div', {},
+      h('b', {}, '✨ Ask CRM'),
+      h('div', { style: { fontSize: '.75rem', opacity: '.85', marginTop: '.15rem' } }, 'Gemini-powered — reads your CRM data'),
+      h('div', { id: 'copilot-quota', style: { fontSize: '.7rem', opacity: '.85', marginTop: '.15rem' } }, '')
+    ),
+    h('button', { style: { background: 'transparent', border: 'none', color: '#fff', fontSize: '20px', cursor: 'pointer' }, onclick: () => d.remove() }, '✕')
+  ));
+  d.appendChild(head);
+  const log = h('div', { id: 'copilot-log', style: { flex: '1', overflowY: 'auto', padding: '.75rem', background: '#f8fafc', display: 'flex', flexDirection: 'column', gap: '.5rem' } });
+  d.appendChild(log);
+  log.appendChild(_copilotMsg('model',
+    'Hi ' + ((CRM.user && CRM.user.name) || '').split(' ')[0] + '! Ask me anything about your CRM data — like:\n' +
+    '• How many leads in total?\n' +
+    '• Top 3 performers this month\n' +
+    '• Tell me about lead <name>\n' +
+    '• Conversion by source\n' +
+    '• Who came late today?\n' +
+    '• Unattended WhatsApp chats'
+  ));
+  api('api_copilot_usage').then(r => {
+    const q = document.getElementById('copilot-quota');
+    if (q) q.textContent = (r.today || 0) + ' / ' + (r.daily_limit || 50) + ' questions used today';
+  }).catch(() => {});
+  const inputRow = h('div', { style: { display: 'flex', gap: '.4rem', padding: '.5rem .5rem .65rem', borderTop: '1px solid #e2e8f0', background: '#fff' } });
+  const inp = h('textarea', {
+    rows: 1, placeholder: 'Type your question… (Enter to send, Shift+Enter for newline)',
+    style: { flex: '1', resize: 'none', padding: '.55rem .7rem', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '.9rem', maxHeight: '100px' }
+  });
+  const sendBtn = h('button', { class: 'btn primary', style: { padding: '.55rem .9rem' } }, 'Send');
+  inputRow.appendChild(inp); inputRow.appendChild(sendBtn);
+  d.appendChild(inputRow);
+  const history = [];
+  async function send() {
+    const q = inp.value.trim(); if (!q) return;
+    inp.value = ''; inp.style.height = 'auto';
+    log.appendChild(_copilotMsg('user', q));
+    log.scrollTop = log.scrollHeight;
+    history.push({ role: 'user', text: q });
+    sendBtn.disabled = true;
+    const thinking = _copilotMsg('model', '…');
+    log.appendChild(thinking);
+    log.scrollTop = log.scrollHeight;
+    try {
+      const r = await api('api_copilot_ask', q, history.slice(0, -1));
+      thinking.querySelector('.copilot-text').textContent = r.text || '(no answer)';
+      history.push({ role: 'model', text: r.text || '' });
+      if (r.tools_called && r.tools_called.length) {
+        thinking.appendChild(h('div', { style: { fontSize: '.7rem', color: '#64748b', marginTop: '.4rem' } },
+          'Tools used: ' + r.tools_called.map(t => t.name).join(', ')));
+      }
+      const q2 = document.getElementById('copilot-quota');
+      if (q2) q2.textContent = (r.daily_used || 0) + ' / ' + (r.daily_limit || 50) + ' questions used today';
+    } catch (e) {
+      thinking.querySelector('.copilot-text').textContent = '⚠ ' + e.message;
+    } finally {
+      sendBtn.disabled = false;
+      log.scrollTop = log.scrollHeight;
+      inp.focus();
+    }
+  }
+  sendBtn.onclick = send;
+  inp.addEventListener('keydown', ev => {
+    if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); send(); }
+  });
+  inp.addEventListener('input', () => {
+    inp.style.height = 'auto';
+    inp.style.height = Math.min(100, inp.scrollHeight) + 'px';
+  });
+  setTimeout(() => inp.focus(), 50);
+  return d;
+}
+
+function _copilotMsg(role, text) {
+  const isUser = role === 'user';
+  return h('div', {
+    class: 'copilot-msg ' + role,
+    style: {
+      alignSelf: isUser ? 'flex-end' : 'flex-start',
+      background: isUser ? '#6366f1' : '#fff',
+      color: isUser ? '#fff' : '#0f172a',
+      padding: '.55rem .75rem', borderRadius: '12px',
+      maxWidth: '85%', fontSize: '.88rem', lineHeight: '1.4',
+      whiteSpace: 'pre-wrap', boxShadow: isUser ? 'none' : '0 1px 2px rgba(15,23,42,.08)',
+      border: isUser ? 'none' : '1px solid #e2e8f0',
+    }
+  }, h('div', { class: 'copilot-text' }, text));
+}
+
+// Boot the FAB. Polls until CRM.user is hydrated.
+(function bootCopilot() {
+  function start() {
+    let n = 0;
+    const t = setInterval(() => {
+      if (typeof CRM !== 'undefined' && CRM.user) { _initCrmCopilot(); clearInterval(t); }
+      else if (++n > 120) clearInterval(t);
+    }, 500);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else { start(); }
+})();
