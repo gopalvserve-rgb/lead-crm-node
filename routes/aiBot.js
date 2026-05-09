@@ -540,11 +540,17 @@ function _isAfterHours(bh) {
 }
 
 async function _buildPrompt(settings, phone, leadId, inboundText) {
-  const persona = String(settings.system_prompt || '').trim()
+  const LANG_NAMES = { en: 'English', hi: 'Hindi', mr: 'Marathi', gu: 'Gujarati', ta: 'Tamil', te: 'Telugu', bn: 'Bengali', kn: 'Kannada', ml: 'Malayalam', pa: 'Punjabi', ur: 'Urdu', ar: 'Arabic' };
+  const langCodes = String(settings.language || 'en').split(/[+,\s]/).map(x => x.trim()).filter(Boolean);
+  const langNames = langCodes.map(c => LANG_NAMES[c] || c);
+  const langInstr = langNames.length === 1
+    ? `Always reply in ${langNames[0]}.`
+    : `Detect the customer's language and reply in the SAME language. Acceptable languages: ${langNames.join(', ')}. If the customer writes in a language outside this list, default to ${langNames[0]}.`;
+  const persona = (String(settings.system_prompt || '').trim()
     || (`You are ${settings.bot_name || 'an assistant'} for ${settings.business_name || 'this business'}. ` +
         `Answer customer questions on WhatsApp, briefly and helpfully. ` +
         `Use ONLY the knowledge base below. If you don't know, say so politely and offer to connect with a human. ` +
-        `Reply in the customer's language. Keep responses under 60 words unless they explicitly ask for detail.`);
+        `Keep responses under 60 words unless they explicitly ask for detail.`)) + '\n\n' + langInstr;
 
   // KB
   let kb = '';
