@@ -543,6 +543,7 @@ const NAV_GROUPS = [
   ] },
   { label: 'Workspace', icon: '💬', items: [
     { id: 'whatsbot',  label: 'WhatsBot',  icon: '💬' },
+    { id: 'aibot',     label: 'AI Bot',    icon: '🤖' },
     { id: 'knowledge', label: 'Knowledge', icon: '📚' },
     { id: 'teamchat',  label: 'Team chat', icon: '👥', countKey: 'chat_unread' }
   ] },
@@ -14970,4 +14971,97 @@ function _copilotMsg(role, text) {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });
   } else { start(); }
+})();
+
+
+// ============================================================
+// 🎛 Dashboard Widget Picker — minimal customisation overlay
+// ============================================================
+// Adds a "Customise" button to every dashboard view that lets users
+// pick which widgets they want to see. Layout is persisted per-user
+// via api_dashboard_get / api_dashboard_save. The actual widget
+// rendering is whatever VIEWS.dashboard already does — we just gate
+// each well-known section by a checkbox.
+function openDashboardWidgetPicker() {
+  const m = h('div', { class: 'modal-bd' });
+  const card = h('div', { class: 'modal', style: { maxWidth: '520px' } });
+  card.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🎛 Customise dashboard'),
+    h('button', { class: 'x', onclick: () => m.remove() }, '✕')
+  ));
+  const body = h('div', { class: 'modal-body' });
+  body.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: 0 } },
+    'Pick which widgets to show on YOUR dashboard. Other users keep their own layout.'));
+
+  const WIDGET_TYPES = [
+    { type: 'kpi_total_leads',   label: '📊 Total leads (KPI)' },
+    { type: 'kpi_new_today',     label: '✨ New leads today (KPI)' },
+    { type: 'kpi_won',           label: '🏆 Won (KPI)' },
+    { type: 'kpi_due_today',     label: '📅 Follow-ups due today (KPI)' },
+    { type: 'kpi_overdue',       label: '⚠️ Overdue follow-ups (KPI)' },
+    { type: 'followups_panel',   label: '🔔 Follow-ups list' },
+    { type: 'chart_status',      label: '📊 Leads by status (chart)' },
+    { type: 'chart_source',      label: '📥 Leads by source (chart)' },
+    { type: 'funnel_pipeline',   label: '📈 Pipeline funnel' },
+    { type: 'tat_alerts',        label: '⏱ TAT violations' },
+    { type: 'project_stages',    label: '🚚 Project stages' }
+  ];
+
+  let saved = { widgets: [] };
+  api('api_dashboard_get').then(r => { saved = r; renderChecks(); }).catch(() => renderChecks());
+  const list = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '.4rem' } });
+  body.appendChild(list);
+
+  const checks = {};
+  function renderChecks() {
+    list.innerHTML = '';
+    WIDGET_TYPES.forEach(w => {
+      const isOn = saved.widgets && saved.widgets.some(x => x.type === w.type);
+      const c = h('input', { type: 'checkbox', checked: isOn ? 'checked' : null });
+      checks[w.type] = c;
+      list.appendChild(h('label', {
+        style: { display: 'flex', alignItems: 'center', gap: '.5rem', padding: '.5rem .7rem', background: '#f8fafc', borderRadius: '6px', cursor: 'pointer' }
+      }, c, h('span', {}, w.label)));
+    });
+  }
+
+  body.appendChild(h('div', { style: { display: 'flex', gap: '.5rem', justifyContent: 'flex-end', marginTop: '1rem' } },
+    h('button', { class: 'btn ghost', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn ghost', onclick: async () => {
+      try { await api('api_dashboard_reset'); toast('Reset to defaults'); m.remove(); navigateTo('dashboard'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, 'Reset to defaults'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const picks = WIDGET_TYPES.filter(w => checks[w.type] && checks[w.type].checked).map((w, i) => ({
+        id: 'u-' + i + '-' + w.type,
+        type: w.type,
+        size: w.type.startsWith('kpi_') ? 'small' : (w.type === 'funnel_pipeline' || w.type === 'project_stages' ? 'wide' : 'medium')
+      }));
+      try {
+        await api('api_dashboard_save', { widgets: picks });
+        toast('Dashboard saved');
+        m.remove();
+        navigateTo('dashboard');
+      } catch (e) { toast(e.message, 'err'); }
+    } }, '💾 Save layout')
+  ));
+  card.appendChild(body); m.appendChild(card); document.body.appendChild(m);
+}
+
+// Patch the existing dashboard view to include a "Customise" button
+// in the toolbar. Done as a render-time interceptor so we don't have
+// to reach into the (large) original VIEWS.dashboard implementation.
+(function _patchDashboardCustomise() {
+  const original = VIEWS.dashboard;
+  if (!original || original._patched) return;
+  VIEWS.dashboard = async function (view) {
+    const btn = h('button', {
+      class: 'btn ghost', style: { position: 'absolute', top: '1rem', right: '1.25rem', zIndex: 10 },
+      onclick: () => openDashboardWidgetPicker()
+    }, '🎛 Customise');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+    await original.call(this, view);
+  };
+  VIEWS.dashboard._patched = true;
 })();

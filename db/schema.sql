@@ -1052,3 +1052,13 @@ CREATE TABLE IF NOT EXISTS ai_chat_log (
 CREATE INDEX IF NOT EXISTS idx_ai_chat_phone   ON ai_chat_log(phone, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ai_chat_status  ON ai_chat_log(status);
 CREATE INDEX IF NOT EXISTS idx_ai_chat_created ON ai_chat_log(created_at DESC);
+
+
+-- ============================================================
+-- Custom Dashboard (2026-05-09) — per-user widget layouts
+-- ============================================================
+CREATE TABLE IF NOT EXISTS user_dashboard (
+  user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  widgets      JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

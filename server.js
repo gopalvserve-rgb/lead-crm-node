@@ -34,6 +34,7 @@ const routes = {
   tags:        require('./routes/tags'),
   tat:         require('./routes/tat'),
   whatsbot:    require('./routes/whatsbot'),
+  dashboard:   require('./routes/dashboard'),
   aiBot:       require('./routes/aiBot'),
   crmCopilot:  require('./routes/crmCopilot'),
   sources:     require('./routes/sources'),
