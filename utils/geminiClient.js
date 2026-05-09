@@ -59,7 +59,7 @@ async function loadSettings(force) {
   const priceIn         = num(await db.getConfig('GEMINI_PRICE_INPUT_USD_PER_M',  '0.10').catch(() => '0.10'), 0.10);
   const priceOut        = num(await db.getConfig('GEMINI_PRICE_OUTPUT_USD_PER_M', '0.40').catch(() => '0.40'), 0.40);
   const exchangeRateInr = num(await db.getConfig('GEMINI_USD_INR_RATE',           '84').catch(() => '84'),    84);
-  const markupPct       = num(await db.getConfig('GEMINI_MARKUP_PCT',             '0').catch(() => '0'),       0);
+  const markupPct       = num(await db.getConfig('GEMINI_MARKUP_PCT',             '30').catch(() => '30'),     30);
 
   _settingsCache = {
     apiKey, keySource,
@@ -148,7 +148,8 @@ async function generate(args) {
  * Append a row to ai_chat_log so the operator can see usage in Activity.
  * Best-effort — never throws.
  */
-async function logUsage({ phone, lead_id, phone_number_id, draft_text, reply_text, mode_used, status, suppressed_reason, error_text, result }) {
+async function logUsage({ phone, lead_id, phone_number_id, draft_text, reply_text, mode_used, status, suppressed_reason, error_text, call_kind, result }) {
+  // 1) Local row in ai_chat_log so the operator sees activity in this CRM.
   try {
     await db.query(
       `INSERT INTO ai_chat_log
@@ -168,6 +169,41 @@ async function logUsage({ phone, lead_id, phone_number_id, draft_text, reply_tex
       ]
     );
   } catch (e) { console.warn('[gemini] logUsage failed:', e.message); }
+
+  // 2) Cross-deployment usage report to smartcrm-saas. Fire-and-forget.
+  //    Env required:
+  //      GEMINI_USAGE_REPORT_URL    (e.g. https://crm.smartcrmsolution.com/ai-usage/ingest)
+  //      GEMINI_USAGE_REPORT_TOKEN  (matches AI_USAGE_INGEST_TOKEN on smartcrm-saas)
+  //      GEMINI_USAGE_REPORT_TENANT_SLUG (e.g. 'stockbox' or 'celeste')
+  //    Skipped silently if any of these are missing.
+  try {
+    const url   = String(process.env.GEMINI_USAGE_REPORT_URL    || '').trim() ||
+                  (await db.getConfig('GEMINI_USAGE_REPORT_URL', '').catch(() => '')).trim();
+    const token = String(process.env.GEMINI_USAGE_REPORT_TOKEN  || '').trim() ||
+                  (await db.getConfig('GEMINI_USAGE_REPORT_TOKEN', '').catch(() => '')).trim();
+    const slug  = String(process.env.GEMINI_USAGE_REPORT_TENANT_SLUG || '').trim() ||
+                  (await db.getConfig('GEMINI_USAGE_REPORT_TENANT_SLUG', '').catch(() => '')).trim();
+    if (url && token && slug && result) {
+      // Fire-and-forget: don't await, don't crash on failure.
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tenant_slug:     slug,
+          call_kind:       call_kind || mode_used || 'reply',
+          model:           result.model || '',
+          input_tokens:    result.input_tokens || 0,
+          output_tokens:   result.output_tokens || 0,
+          cost_usd:        result.cost_usd || 0,
+          cost_inr_real:   result.cost_inr_real || 0,
+          cost_inr_billed: result.cost_inr_billed || 0,
+          phone:           phone || null,
+          lead_id:         lead_id || null,
+          error_text:      result.ok ? null : (result.error || 'failed').slice(0, 500)
+        })
+      }).catch(() => { /* swallow */ });
+    }
+  } catch (_) { /* swallow */ }
 }
 
 /**
