@@ -6162,7 +6162,8 @@ async function wbTemplates() {
       target: '_blank', rel: 'noopener',
       title: 'Open Meta Business — create / edit / submit WhatsApp templates'
     }, '🛠 Template Management ↗'),
-    h('button', { class: 'btn primary', style: { marginLeft: '.4rem' }, onclick: async () => {
+    h('button', { class: 'btn primary', style: { marginLeft: '.4rem' }, onclick: () => openCreateTemplateModal() }, '+ Create template'),
+    h('button', { class: 'btn ghost', style: { marginLeft: '.4rem' }, onclick: async () => {
       try { const r = await api('api_wb_templates_sync'); toast('Synced ' + r.count + ' templates'); showWbTab('templates'); }
       catch (e) { toast(e.message, 'err'); }
     } }, '🔄 Sync from Meta')
@@ -14546,4 +14547,281 @@ async function initCallerIdPlugin() {
   });
 
   console.log('[callerId] ringing + ended listeners registered OK');
+}
+
+
+// ============================================================
+// + Create Template — POST direct to Meta + persist locally
+// ============================================================
+function openCreateTemplateModal() {
+  const m = h('div', { class: 'modal-bd' });
+  const card = h('div', { class: 'modal', style: { maxWidth: '640px' } });
+  card.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '+ Create WhatsApp Template'),
+    h('button', { class: 'x', onclick: () => m.remove() }, '✕')
+  ));
+  const body = h('div', { class: 'modal-body' });
+  body.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: 0 } },
+    'Submits the template directly to Meta. Status starts as PENDING and Meta usually approves within a few minutes for simple UTILITY templates.'));
+
+  const f = (label, ctrl, hint) => h('div', { class: 'field', style: { marginBottom: '.6rem' } },
+    h('label', { style: { display: 'block', fontSize: '.78rem', marginBottom: '.2rem', color: '#475569' } }, label),
+    ctrl,
+    hint ? h('div', { class: 'muted', style: { fontSize: '.74rem', marginTop: '.2rem' } }, hint) : null
+  );
+
+  const nameInp     = h('input', { placeholder: 'order_confirm', style: { width: '100%' }, pattern: '[a-z0-9_]+' });
+  const langSel     = h('select', { style: { width: '100%' } },
+    h('option', { value: 'en' },    'English (en)'),
+    h('option', { value: 'en_US' }, 'English – US (en_US)'),
+    h('option', { value: 'hi' },    'Hindi (hi)'),
+    h('option', { value: 'es' },    'Spanish (es)'),
+    h('option', { value: 'pt_BR' }, 'Portuguese – Brazil (pt_BR)')
+  );
+  const catSel      = h('select', { style: { width: '100%' } },
+    h('option', { value: 'UTILITY' }, 'UTILITY (transactional, order updates)'),
+    h('option', { value: 'MARKETING' }, 'MARKETING (promotional, offers)'),
+    h('option', { value: 'AUTHENTICATION' }, 'AUTHENTICATION (OTP, login codes)')
+  );
+  const headerInp   = h('input', { placeholder: 'Optional headline (max 60 chars)', style: { width: '100%' } });
+  const bodyInp     = h('textarea', { rows: 5, placeholder: 'Hello {{1}}, your order {{2}} has shipped.', style: { width: '100%' } });
+  const footerInp   = h('input', { placeholder: 'Optional footer (max 60 chars)', style: { width: '100%' } });
+  const samplesInp  = h('input', { placeholder: 'Sample values for {{1}}, {{2}} (comma-separated)', style: { width: '100%' } });
+
+  body.appendChild(f('Name (lowercase + underscores) *', nameInp, 'e.g. order_confirm — must match Meta naming rules'));
+  body.appendChild(f('Language *',   langSel));
+  body.appendChild(f('Category *',   catSel));
+  body.appendChild(f('Header text',  headerInp, 'Optional. Static text only — for image/document headers, use Meta’s template manager.'));
+  body.appendChild(f('Body text *',  bodyInp, 'Required. Use {{1}}, {{2}} for variables.'));
+  body.appendChild(f('Footer text',  footerInp, 'Optional small print at bottom.'));
+  body.appendChild(f('Variable samples', samplesInp, 'Required if body has placeholders. Meta needs example values to approve.'));
+
+  const status = h('div', { style: { marginTop: '.6rem', fontSize: '.85rem' } });
+  body.appendChild(status);
+
+  body.appendChild(h('div', { style: { display: 'flex', gap: '.5rem', justifyContent: 'flex-end', marginTop: '1rem' } },
+    h('button', { class: 'btn ghost', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class: 'btn primary', onclick: async () => {
+      const name = nameInp.value.trim();
+      if (!name)             return (status.textContent = '⚠ Name is required');
+      if (!bodyInp.value.trim()) return (status.textContent = '⚠ Body text is required');
+      const variables = samplesInp.value.trim()
+        ? samplesInp.value.split(',').map(s => s.trim()).filter(Boolean)
+        : undefined;
+      const payload = {
+        name, language: langSel.value, category: catSel.value,
+        header: headerInp.value.trim() ? { format: 'TEXT', text: headerInp.value.trim() } : undefined,
+        body:   { text: bodyInp.value.trim() },
+        footer: footerInp.value.trim() ? { text: footerInp.value.trim() } : undefined,
+        variables
+      };
+      status.textContent = '⏳ Submitting to Meta…';
+      try {
+        const r = await api('api_wb_templates_create', payload);
+        status.textContent = '✅ Submitted to Meta — status: ' + (r.status || 'PENDING') + '. It will appear in the Templates list once approved.';
+        toast('Template submitted');
+        setTimeout(() => { m.remove(); showWbTab('templates'); }, 1200);
+      } catch (e) {
+        status.textContent = '❌ ' + e.message;
+      }
+    } }, '🚀 Submit to Meta')
+  ));
+  card.appendChild(body);
+  m.appendChild(card); document.body.appendChild(m);
+  setTimeout(() => nameInp.focus(), 50);
+}
+
+// ============================================================
+// 🤖 AI Bot — Settings + KB + Activity (compact admin page)
+// ============================================================
+// Accessible from a button we'll add in the WhatsBot tab Connect screen
+// or just by setting location.hash = '#/aibot'.
+VIEWS.aibot = async (view) => {
+  view.appendChild(h('h2', {}, '🤖 AI WhatsApp Bot'));
+  view.appendChild(h('p', { class: 'muted' },
+    'Auto-replies to incoming WhatsApp messages using Gemini, grounded in the Knowledge Base you upload below. Configurable: response delay, business hours, fallback to human agent.'));
+
+  // Sub-tabs
+  const tabBar = h('div', { class: 'toolbar', style: { gap: '.4rem', marginBottom: '.75rem' } });
+  const subView = h('div', {});
+  const subTabs = [
+    { id: 'settings', label: '⚙️ Settings' },
+    { id: 'kb',       label: '📚 Knowledge Base' },
+    { id: 'activity', label: '📞 Activity' },
+  ];
+  let activeSub = location.hash.split('?')[1] || 'settings';
+  function _renderSub() {
+    subView.innerHTML = '';
+    if (activeSub === 'settings')      _renderAiBotSettings(subView);
+    else if (activeSub === 'kb')       _renderAiBotKb(subView);
+    else if (activeSub === 'activity') _renderAiBotActivity(subView);
+  }
+  subTabs.forEach(t => {
+    tabBar.appendChild(h('button', {
+      class: 'btn' + (activeSub === t.id ? ' primary' : ' ghost'),
+      onclick: () => { activeSub = t.id; tabBar.querySelectorAll('button').forEach(b => b.className = b.dataset.id === t.id ? 'btn primary' : 'btn ghost'); _renderSub(); },
+      'data-id': t.id
+    }, t.label));
+  });
+  view.appendChild(tabBar);
+  view.appendChild(subView);
+  _renderSub();
+};
+
+async function _renderAiBotSettings(host) {
+  let data;
+  try { data = await api('api_aibot_settings_get'); }
+  catch (e) { host.appendChild(h('div', { class: 'error-box' }, e.message)); return; }
+  const s = data.settings || {};
+  const card = h('div', { class: 'card' });
+
+  if (!data.global || !data.global.is_active) {
+    card.appendChild(h('div', { style: { padding: '.6rem .8rem', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '6px', marginBottom: '.75rem', fontSize: '.85rem' } },
+      '⚠ Gemini API key is not configured. Add ',
+      h('code', {}, 'GEMINI_API_KEY'),
+      ' to your config (Admin → Settings → Gemini API key) or set it as an env variable.'
+    ));
+  }
+
+  const f = (label, ctrl, hint) => h('div', { style: { marginBottom: '.6rem' } },
+    h('label', { style: { display: 'block', fontWeight: '500', fontSize: '.85rem', marginBottom: '.2rem' } }, label),
+    ctrl,
+    hint ? h('div', { class: 'muted', style: { fontSize: '.78rem', marginTop: '.2rem' } }, hint) : null
+  );
+
+  const enabledChk    = h('input', { type: 'checkbox', checked: Number(s.is_enabled) === 1 ? 'checked' : null });
+  const botNameInp    = h('input', { value: s.bot_name || 'Assistant', style: { width: '100%' } });
+  const businessInp   = h('input', { value: s.business_name || '', style: { width: '100%' } });
+  const langInp       = h('input', { value: s.language || 'en', style: { width: '100%' } });
+  const promptArea    = h('textarea', { rows: 6, style: { width: '100%' }, placeholder: 'You are a helpful assistant for {business}. Answer using the knowledge base provided. If unsure, ask the user to wait while a human agent joins.' }, s.system_prompt || '');
+  const welcomeArea   = h('textarea', { rows: 2, style: { width: '100%' } }, s.welcome_message || '');
+  const idleSecInp    = h('input', { type: 'number', min: '0', max: '604800', value: String(s.resume_after_idle_seconds || 86400), style: { width: '120px' } });
+  const useKbChk      = h('input', { type: 'checkbox', checked: Number(s.use_kb || 0) === 1 ? 'checked' : null });
+  const kbMaxInp      = h('input', { type: 'number', min: '1000', max: '120000', value: String(s.kb_max_chars || 60000), style: { width: '120px' } });
+  const histInp       = h('input', { type: 'number', min: '0', max: '40', value: String(s.history_messages || 8), style: { width: '120px' } });
+
+  card.appendChild(f('',
+    h('label', { style: { display: 'flex', alignItems: 'center', gap: '.4rem', fontSize: '.95rem' } },
+      enabledChk, h('span', { style: { fontWeight: '600' } }, 'Enable AI Bot — auto-reply to incoming messages')
+    ),
+    'Master switch. When off, the bot is paused and incoming messages fall through to your existing message/template bots.'
+  ));
+  card.appendChild(f('Bot name',         botNameInp,   'Shown in transcripts.'));
+  card.appendChild(f('Business name',    businessInp,  'Used in {business} placeholder of system prompt.'));
+  card.appendChild(f('Language',         langInp,      'ISO code (e.g. en, hi, es).'));
+  card.appendChild(f('System prompt',    promptArea,   'Tells the bot how to behave. Use {business}, {bot_name} placeholders.'));
+  card.appendChild(f('Welcome message',  welcomeArea,  'Optional first auto-reply when a new contact messages.'));
+  card.appendChild(f('Resume after idle (seconds)', idleSecInp,
+    'How long the bot waits after the LAST AGENT REPLY before resuming auto-replies. 86400 = 1 day.'));
+  card.appendChild(f('',
+    h('label', { style: { display: 'flex', alignItems: 'center', gap: '.4rem' } },
+      useKbChk, h('span', {}, 'Use Knowledge Base (recommended)')
+    ),
+    'Bot answers grounded in your KB documents. When off, answers come from the system prompt only.'
+  ));
+  card.appendChild(f('KB context cap (chars)', kbMaxInp, 'Max characters of KB included per request. 60000 ≈ ~10k tokens.'));
+  card.appendChild(f('History messages',       histInp,  'Last N messages of the WhatsApp thread fed to Gemini for context.'));
+
+  const status = h('div', { style: { fontSize: '.85rem', marginTop: '.5rem' } });
+  card.appendChild(h('div', { style: { display: 'flex', gap: '.5rem', marginTop: '1rem' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      try {
+        await api('api_aibot_settings_save', {
+          is_enabled: enabledChk.checked ? 1 : 0,
+          bot_name: botNameInp.value, business_name: businessInp.value,
+          language: langInp.value,
+          system_prompt: promptArea.value, welcome_message: welcomeArea.value,
+          resume_after_idle_seconds: Number(idleSecInp.value || 86400),
+          use_kb: useKbChk.checked ? 1 : 0,
+          kb_max_chars: Number(kbMaxInp.value || 60000),
+          history_messages: Number(histInp.value || 8)
+        });
+        status.textContent = '✅ Saved'; status.style.color = '#16a34a';
+      } catch (e) { status.textContent = '❌ ' + e.message; status.style.color = '#dc2626'; }
+    } }, '💾 Save settings'),
+    status
+  ));
+
+  host.appendChild(card);
+}
+
+async function _renderAiBotKb(host) {
+  const card = h('div', { class: 'card' });
+  card.appendChild(h('h3', { style: { marginTop: 0 } }, '📚 Knowledge Base'));
+  card.appendChild(h('p', { class: 'muted' },
+    'Upload product info, FAQs, pricing — anything the bot should reference. Add as many text snippets as you need.'));
+
+  // Add new
+  const titleInp = h('input', { placeholder: 'e.g. "Pricing FAQ"', style: { width: '100%', marginBottom: '.4rem' } });
+  const txtInp   = h('textarea', { rows: 6, placeholder: 'Paste any text here…', style: { width: '100%' } });
+  const addStatus = h('div', { style: { fontSize: '.85rem', marginTop: '.4rem' } });
+  card.appendChild(h('div', { style: { padding: '.6rem', background: '#f8fafc', borderRadius: '6px', marginBottom: '.75rem' } },
+    h('div', { style: { fontWeight: '600', marginBottom: '.3rem' } }, '+ Add text snippet'),
+    titleInp, txtInp,
+    h('div', { style: { display: 'flex', gap: '.5rem', marginTop: '.4rem' } },
+      h('button', { class: 'btn primary', onclick: async () => {
+        if (!titleInp.value.trim() || !txtInp.value.trim()) { addStatus.textContent = '⚠ Title + text required'; return; }
+        try {
+          await api('api_aibot_kb_save_text', { title: titleInp.value, text: txtInp.value });
+          addStatus.textContent = '✅ Added'; titleInp.value = ''; txtInp.value = '';
+          _renderAiBotKb(host); host.firstChild.remove();
+        } catch (e) { addStatus.textContent = '❌ ' + e.message; }
+      } }, '+ Add'),
+      addStatus
+    )
+  ));
+
+  // List existing
+  let list = [];
+  try { list = await api('api_aibot_kb_list'); } catch (e) { card.appendChild(h('div', { class: 'error-box' }, e.message)); host.appendChild(card); return; }
+  card.appendChild(h('div', { style: { fontWeight: '600', marginBottom: '.4rem' } }, 'Existing snippets (' + list.length + ')'));
+  if (!list.length) {
+    card.appendChild(h('p', { class: 'muted' }, 'No KB documents yet. Add one above.'));
+  } else {
+    list.forEach(d => {
+      const row = h('div', { style: { padding: '.5rem .7rem', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '6px', marginBottom: '.4rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '.5rem' } },
+        h('div', { style: { flex: '1' } },
+          h('div', { style: { fontWeight: '600' } }, d.title || '(untitled)'),
+          h('div', { class: 'muted', style: { fontSize: '.78rem' } }, (d.char_count || 0) + ' chars · ' + (d.is_active ? 'active' : 'inactive'))
+        ),
+        h('button', { class: 'btn ghost xs', title: 'Toggle active', onclick: async () => {
+          try { await api('api_aibot_kb_toggle', d.id); _renderAiBotKb(host); host.firstChild.remove(); } catch (e) { toast(e.message, 'err'); }
+        } }, d.is_active ? '⏸' : '▶'),
+        h('button', { class: 'btn ghost xs danger', onclick: async () => {
+          if (!confirm('Delete "' + (d.title || 'this snippet') + '"?')) return;
+          try { await api('api_aibot_kb_delete', d.id); _renderAiBotKb(host); host.firstChild.remove(); } catch (e) { toast(e.message, 'err'); }
+        } }, '🗑️')
+      );
+      card.appendChild(row);
+    });
+  }
+  host.appendChild(card);
+}
+
+async function _renderAiBotActivity(host) {
+  let rows = [];
+  try { rows = await api('api_aibot_chatlog_list', { limit: 100 }); }
+  catch (e) { host.appendChild(h('div', { class: 'error-box' }, e.message)); return; }
+  const card = h('div', { class: 'card' });
+  card.appendChild(h('h3', { style: { marginTop: 0 } }, '📞 Recent AI Activity'));
+  if (!rows.length || !rows.length) {
+    card.appendChild(h('p', { class: 'muted' }, 'No AI activity yet — once the bot starts replying, you’ll see logs here.'));
+    host.appendChild(card); return;
+  }
+  const data = Array.isArray(rows) ? rows : (rows.rows || []);
+  card.appendChild(h('div', { class: 'table-wrap' }, h('table', { class: 'mini-table' },
+    h('thead', {}, h('tr', {},
+      h('th', {}, 'When'), h('th', {}, 'Phone'), h('th', {}, 'Mode'),
+      h('th', {}, 'Status'), h('th', {}, 'Reply'), h('th', {}, 'Cost ₹')
+    )),
+    h('tbody', {}, ...data.map(r => h('tr', {},
+      h('td', {}, fmtDate(r.created_at, 'relative') || r.created_at),
+      h('td', {}, r.phone),
+      h('td', {}, r.mode_used),
+      h('td', {}, h('span', { style: { color: r.status === 'sent' ? '#16a34a' : r.status === 'error' ? '#dc2626' : '#64748b' } }, r.status)),
+      h('td', { style: { maxWidth: '320px' } }, String(r.reply_text || r.draft_text || '').slice(0, 120)),
+      h('td', {}, '₹' + Number(r.cost_inr_billed || 0).toFixed(2))
+    )))
+  )));
+  host.appendChild(card);
 }

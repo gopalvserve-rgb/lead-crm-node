@@ -34,6 +34,7 @@ const routes = {
   tags:        require('./routes/tags'),
   tat:         require('./routes/tat'),
   whatsbot:    require('./routes/whatsbot'),
+  aiBot:       require('./routes/aiBot'),
   sources:     require('./routes/sources'),
   products:    require('./routes/products'),
   statuses:    require('./routes/statuses'),

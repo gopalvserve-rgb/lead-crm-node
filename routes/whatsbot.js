@@ -1938,6 +1938,126 @@ async function _handleInbound(m, value) {
       return;
     }
   } catch (e) { console.warn('[wb] bot dispatch failed:', e.message); }
+
+  // ---- AI Bot fallback ---------------------------------------------------
+  // If no message bot or template bot fired, hand off to the Gemini-
+  // powered AI bot. It enforces its own gating (is_enabled, business
+  // hours, idle rule, modes, etc) and quietly no-ops when not eligible.
+  try {
+    const aiBot = require('./aiBot');
+    if (typeof aiBot.maybeReplyToInbound === 'function') {
+      await aiBot.maybeReplyToInbound(m, value, leadId, null, null);
+    }
+  } catch (e) { console.warn('[wb] AI bot dispatch failed:', e.message); }
+}
+
+
+/**
+ * api_wb_templates_create — create a WhatsApp template by POSTing to
+ * Meta Graph API and persist it locally with status='PENDING' (Meta
+ * usually approves within a few minutes for simple templates).
+ *
+ * payload = {
+ *   name:         string  (lowercase + underscores, e.g. "order_confirm")
+ *   language:     string  (e.g. "en", "en_US", "hi")
+ *   category:     'MARKETING' | 'UTILITY' | 'AUTHENTICATION'
+ *   header:       optional { format: 'TEXT'|'IMAGE'|'DOCUMENT'|'VIDEO', text?: string }
+ *   body:         { text: string }            (required)
+ *   footer:       optional { text: string }
+ *   buttons:      optional [{ type: 'QUICK_REPLY'|'URL'|'PHONE_NUMBER', text, url?, phone_number? }]
+ *   variables:    optional list of placeholder values for body samples
+ * }
+ *
+ * Returns: { ok: true, template_id, status, name, language }
+ */
+async function api_wb_templates_create(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin/manager only');
+  const p = payload || {};
+  const name      = String(p.name || '').toLowerCase().trim().replace(/[^a-z0-9_]/g, '_');
+  const language  = String(p.language || 'en');
+  const category  = String(p.category || 'UTILITY').toUpperCase();
+  if (!name)             throw new Error('Template name is required');
+  if (!p.body || !p.body.text) throw new Error('Body text is required');
+  if (!['MARKETING', 'UTILITY', 'AUTHENTICATION'].includes(category)) {
+    throw new Error('category must be MARKETING / UTILITY / AUTHENTICATION');
+  }
+
+  const cfg = await _cfg();
+  if (!cfg.token || !cfg.wabaId) throw new Error('WhatsApp Cloud API not connected — finish embedded signup first');
+
+  // Build Meta Graph "components" array
+  const components = [];
+  if (p.header && p.header.text) {
+    components.push({ type: 'HEADER', format: p.header.format || 'TEXT', text: String(p.header.text).slice(0, 60) });
+  } else if (p.header && p.header.format && p.header.format !== 'TEXT') {
+    components.push({ type: 'HEADER', format: p.header.format });
+  }
+  const bodyComp = { type: 'BODY', text: String(p.body.text).slice(0, 1024) };
+  // If body has placeholders {{1}}{{2}} we MUST send sample values, else Meta rejects.
+  const placeholderCount = (String(p.body.text).match(/\{\{\d+\}\}/g) || []).length;
+  if (placeholderCount > 0) {
+    const examples = Array.isArray(p.variables) ? p.variables.map(String) : [];
+    while (examples.length < placeholderCount) examples.push('Sample');
+    bodyComp.example = { body_text: [examples.slice(0, placeholderCount)] };
+  }
+  components.push(bodyComp);
+  if (p.footer && p.footer.text) {
+    components.push({ type: 'FOOTER', text: String(p.footer.text).slice(0, 60) });
+  }
+  if (Array.isArray(p.buttons) && p.buttons.length) {
+    components.push({
+      type: 'BUTTONS',
+      buttons: p.buttons.map(b => {
+        const out = { type: String(b.type || 'QUICK_REPLY').toUpperCase(), text: String(b.text || '').slice(0, 25) };
+        if (out.type === 'URL'          && b.url)          out.url          = String(b.url);
+        if (out.type === 'PHONE_NUMBER' && b.phone_number) out.phone_number = String(b.phone_number);
+        return out;
+      })
+    });
+  }
+
+  const body = { name, language, category, components };
+  const url = `https://graph.facebook.com/v22.0/${cfg.wabaId}/message_templates`;
+  let resp, json;
+  try {
+    resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + cfg.token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    json = await resp.json();
+  } catch (e) {
+    throw new Error('Network error calling Meta: ' + e.message);
+  }
+  if (!resp.ok || json.error) {
+    const msg = (json && json.error && (json.error.error_user_msg || json.error.message)) || ('HTTP ' + resp.status);
+    throw new Error('Meta rejected the template: ' + msg);
+  }
+  const templateId = json.id || null;
+  const status     = json.status || 'PENDING';
+
+  // Persist locally so the Templates tab + send-template flow see it
+  // immediately. Status will sync to APPROVED/REJECTED on the next
+  // api_wb_templates_sync call (or webhook update if subscribed).
+  try {
+    await db.query(
+      `INSERT INTO wa_templates (template_id, name, language, category, status, components, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW(), NOW())
+       ON CONFLICT (template_id) DO UPDATE SET
+         name = EXCLUDED.name, language = EXCLUDED.language, category = EXCLUDED.category,
+         status = EXCLUDED.status, components = EXCLUDED.components, updated_at = NOW()`,
+      [templateId, name, language, category, status, JSON.stringify(components)]
+    );
+  } catch (_) {}
+
+  await _logActivity({
+    category: 'template_create', name,
+    response_code: resp.status,
+    request: body, response: json
+  });
+
+  return { ok: true, template_id: templateId, status, name, language };
 }
 
 module.exports = {
@@ -1947,7 +2067,7 @@ module.exports = {
   api_wb_phones_list, api_wb_phones_set_current, api_wb_phone_check,
   api_wb_webhook_status, api_wb_webhook_subscribe,
   // Templates
-  api_wb_templates_sync, api_wb_templates_list,
+  api_wb_templates_sync, api_wb_templates_list, api_wb_templates_create,
   // Chat
   api_wb_chat_threads, api_wb_chat_messages, api_wb_chat_send, api_wb_initiate_chat,
   api_wb_chat_assign, api_wb_chat_assignments_list,
