@@ -14,7 +14,7 @@ const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const multer = require('multer');
-const db = require('./db/pg');h
+const db = require('./db/pg');
 const { authUser } = require('./utils/auth');
 const { _findLeadByPhone } = require('./routes/recordings');
 
