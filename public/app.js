@@ -15145,35 +15145,38 @@ function openDashboardWidgetPicker() {
 // Patch the existing dashboard view to include a "Customise" button
 // in the toolbar. Done as a render-time interceptor so we don't have
 // to reach into the (large) original VIEWS.dashboard implementation.
-// Body-level Customise button — survives the dashboard's view.innerHTML reset.
-// Visible only when the route is /#/dashboard. Click opens the widget picker.
-(function _initCustomiseButton() {
-  if (document.getElementById('dash-customise-btn')) return;
-  const btn = document.createElement('button');
-  btn.id = 'dash-customise-btn';
-  btn.textContent = '🎛 Customise dashboard';
-  btn.style.cssText = [
-    'position:fixed', 'top:14px', 'right:140px', 'z-index:9991',
-    'padding:.4rem .8rem', 'border-radius:8px',
-    'border:1px solid #cbd5e1', 'background:#fff',
-    'cursor:pointer', 'font-size:.85rem', 'font-weight:500',
-    'box-shadow:0 2px 6px rgba(15,23,42,.08)',
-    'display:none'
-  ].join(';');
-  btn.onclick = () => { try { openDashboardWidgetPicker(); } catch (e) { console.warn('[customise]', e); } };
-  function refresh() {
-    const onDash = !location.hash || location.hash === '#' || location.hash.startsWith('#/dashboard');
-    btn.style.display = onDash ? 'inline-block' : 'none';
+// Wrap VIEWS.dashboard so we add a Customise button AFTER the original
+// renderer runs (it does view.innerHTML = '' which would wipe a button
+// added before). The button sits at the TOP of the dashboard content,
+// inside the view container, so it doesn't overlap the topbar.
+(function _wrapDashboardWithCustomise() {
+  function wrap() {
+    if (typeof VIEWS === 'undefined' || !VIEWS.dashboard || VIEWS.dashboard._customiseWrapped) {
+      return setTimeout(wrap, 100);
+    }
+    const original = VIEWS.dashboard;
+    VIEWS.dashboard = async function (view) {
+      await original.call(this, view);
+      // Now append the button — view.innerHTML has already been reset.
+      try {
+        if (view.querySelector('.dash-customise-bar')) return;
+        const bar = document.createElement('div');
+        bar.className = 'dash-customise-bar';
+        bar.style.cssText = 'display:flex;justify-content:flex-end;margin:0 0 .75rem;gap:.4rem';
+        const btn = document.createElement('button');
+        btn.textContent = '🎛 Customise dashboard';
+        btn.style.cssText = 'padding:.4rem .8rem;border-radius:8px;border:1px solid #cbd5e1;background:#fff;cursor:pointer;font-size:.85rem;font-weight:500;box-shadow:0 1px 2px rgba(15,23,42,.06)';
+        btn.onclick = () => {
+          if (typeof openDashboardWidgetPicker === 'function') openDashboardWidgetPicker();
+          else alert('Dashboard customisation is not available right now. Please refresh the page.');
+        };
+        bar.appendChild(btn);
+        // Insert at the top of the view (before existing content)
+        if (view.firstChild) view.insertBefore(bar, view.firstChild);
+        else view.appendChild(bar);
+      } catch (e) { console.warn('[customise]', e); }
+    };
+    VIEWS.dashboard._customiseWrapped = true;
   }
-  function start() {
-    if (!document.body) { setTimeout(start, 50); return; }
-    document.body.appendChild(btn);
-    refresh();
-    window.addEventListener('hashchange', refresh);
-  }
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start, { once: true });
-  } else {
-    start();
-  }
+  wrap();
 })();
