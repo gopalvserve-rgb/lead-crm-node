@@ -89,6 +89,7 @@ small.muted { color: var(--muted); font-size: .78rem; margin-top: .25rem; displa
 .status-pill {
   display: inline-flex; align-items: center;
   padding: 2px 8px; border: none; border-radius: 999px;
+  background: var(--status-color, #6b7280);
   color: #fff; font-size: .75rem; font-weight: 500; cursor: pointer;
   max-width: 140px;
   -webkit-appearance: none; appearance: none;

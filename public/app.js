@@ -8383,12 +8383,55 @@ VIEWS.tatreport = async (view) => {
       out.innerHTML = `<div class="error-box">${esc(e.message)}</div>`;
     }
   }
+  // Excel/CSV download — exports the current filtered TAT data to .xls
+  // (HTML table format that Excel opens cleanly).
+  async function downloadXls() {
+    let r;
+    try {
+      r = await api('api_tat_report', { from: fromInp.value || undefined, to: toInp.value || undefined, user_id: userSel.value || undefined });
+    } catch (e) { return toast('Load failed: ' + e.message, 'err'); }
+    const fm = m => m == null ? '' : (m < 60 ? m + ' min' : (m / 60 < 24 ? (m / 60).toFixed(1) + ' hr' : (m / 1440).toFixed(1) + ' days'));
+    const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const today = new Date().toISOString().slice(0, 10);
+    let html = '<html><head><meta charset="utf-8"></head><body>';
+    html += '<h2>TAT Report — ' + (fromInp.value || 'all') + ' → ' + (toInp.value || today) + '</h2>';
+    html += '<h3>Summary</h3><table border="1" cellpadding="4">'
+         + '<tr><th>Total leads</th><th>Avg → 1st action</th><th>Open violations</th></tr>'
+         + '<tr><td>' + (r.totals.leads || 0) + '</td><td>' + fm(r.totals.avg_first_min) + '</td><td>' + (r.open_violations || 0) + '</td></tr>'
+         + '</table><br>';
+    html += '<h3>By user</h3><table border="1" cellpadding="4">'
+         + '<tr><th>User</th><th>Leads</th><th>Actioned</th><th>Avg → 1st action</th><th>Avg → 2nd action</th></tr>';
+    (r.by_user || []).forEach(u => {
+      html += '<tr><td>' + esc(u.user_name) + '</td><td>' + u.leads + '</td><td>' + u.actioned + '</td><td>' + fm(u.avg_first_min) + '</td><td>' + fm(u.avg_second_min) + '</td></tr>';
+    });
+    html += '</table><br><h3>By stage</h3><table border="1" cellpadding="4">'
+         + '<tr><th>Stage</th><th>Transitions</th><th>Avg minutes</th></tr>';
+    (r.by_stage || []).forEach(s => {
+      html += '<tr><td>' + esc(s.status_name) + '</td><td>' + s.transitions + '</td><td>' + fm(s.avg_minutes) + '</td></tr>';
+    });
+    html += '</table><br><h3>Active TAT violations</h3><table border="1" cellpadding="4">'
+         + '<tr><th>Lead</th><th>Stage</th><th>Owner</th><th>Threshold</th><th>Triggered</th><th>Escalation</th></tr>';
+    (r.open_violation_rows || []).forEach(v => {
+      const escLvl = v.escalation_level === 3 ? 'Admin (L3)' : v.escalation_level === 2 ? 'Manager (L2)' : 'Employee (L1)';
+      html += '<tr><td>' + esc(v.lead_name || ('Lead #' + v.lead_id)) + '</td><td>' + esc(v.status_name) + '</td><td>' + esc(v.user_name || '') + '</td><td>' + v.threshold_minutes + ' min</td><td>' + esc(v.triggered_at) + '</td><td>' + escLvl + '</td></tr>';
+    });
+    html += '</table></body></html>';
+    const blob = new Blob([html], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tat-report-' + today + '.xls';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
   view.append(
     h('div', { class: 'toolbar' },
       h('span', {}, 'From'), fromInp,
       h('span', {}, 'to'), toInp,
       userSel,
-      h('button', { class: 'btn primary', onclick: load }, '🔎 Apply')
+      h('button', { class: 'btn primary', onclick: load }, '🔎 Apply'),
+      h('button', { class: 'btn', onclick: downloadXls, title: 'Download a .xls (Excel) report of the current filter' }, '📊 Download Excel')
     ),
     out
   );
