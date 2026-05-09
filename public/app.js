@@ -15051,17 +15051,35 @@ function openDashboardWidgetPicker() {
 // Patch the existing dashboard view to include a "Customise" button
 // in the toolbar. Done as a render-time interceptor so we don't have
 // to reach into the (large) original VIEWS.dashboard implementation.
-(function _patchDashboardCustomise() {
-  const original = VIEWS.dashboard;
-  if (!original || original._patched) return;
-  VIEWS.dashboard = async function (view) {
-    const btn = h('button', {
-      class: 'btn ghost', style: { position: 'absolute', top: '1rem', right: '1.25rem', zIndex: 10 },
-      onclick: () => openDashboardWidgetPicker()
-    }, '🎛 Customise');
-    view.style.position = 'relative';
-    view.appendChild(btn);
-    await original.call(this, view);
-  };
-  VIEWS.dashboard._patched = true;
+// Body-level Customise button — survives the dashboard's view.innerHTML reset.
+// Visible only when the route is /#/dashboard. Click opens the widget picker.
+(function _initCustomiseButton() {
+  if (document.getElementById('dash-customise-btn')) return;
+  const btn = document.createElement('button');
+  btn.id = 'dash-customise-btn';
+  btn.textContent = '🎛 Customise dashboard';
+  btn.style.cssText = [
+    'position:fixed', 'top:14px', 'right:140px', 'z-index:9991',
+    'padding:.4rem .8rem', 'border-radius:8px',
+    'border:1px solid #cbd5e1', 'background:#fff',
+    'cursor:pointer', 'font-size:.85rem', 'font-weight:500',
+    'box-shadow:0 2px 6px rgba(15,23,42,.08)',
+    'display:none'
+  ].join(';');
+  btn.onclick = () => { try { openDashboardWidgetPicker(); } catch (e) { console.warn('[customise]', e); } };
+  function refresh() {
+    const onDash = !location.hash || location.hash === '#' || location.hash.startsWith('#/dashboard');
+    btn.style.display = onDash ? 'inline-block' : 'none';
+  }
+  function start() {
+    if (!document.body) { setTimeout(start, 50); return; }
+    document.body.appendChild(btn);
+    refresh();
+    window.addEventListener('hashchange', refresh);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
 })();
