@@ -1945,8 +1945,19 @@ async function _handleInbound(m, value) {
   // hours, idle rule, modes, etc) and quietly no-ops when not eligible.
   try {
     const aiBot = require('./aiBot');
+    const _from = String((m.from || '')).replace(/\D/g, '');
+    const _text = (m.text && m.text.body) || (m.button && m.button.text) || (m.interactive && m.interactive.button_reply && m.interactive.button_reply.title) || '';
+    const _inboundPhoneId = (value && value.metadata && value.metadata.phone_number_id) || null;
     if (typeof aiBot.maybeReplyToInbound === 'function') {
-      await aiBot.maybeReplyToInbound(m, value, leadId, null, null);
+      aiBot.maybeReplyToInbound({
+        phone: _from, leadId, inboundText: _text, inboundPhoneId: _inboundPhoneId,
+        inboundMsgId: m.id || null
+      }).catch(e => console.warn('[ai-bot] reply failed:', e.message));
+    }
+    if (typeof aiBot.classifyAndAlertOnInbound === 'function') {
+      aiBot.classifyAndAlertOnInbound({
+        phone: _from, leadId, inboundText: _text, inboundPhoneId: _inboundPhoneId
+      }).catch(e => console.warn('[heat] classify failed:', e.message));
     }
   } catch (e) { console.warn('[wb] AI bot dispatch failed:', e.message); }
 }

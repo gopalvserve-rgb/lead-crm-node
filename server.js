@@ -928,6 +928,14 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
   catch (e) { console.error('[boot] tat worker start failed:', e.message); }
   try { require('./routes/whatsbot').startCampaignWorker(); }
   catch (e) { console.error('[boot] wb campaign worker start failed:', e.message); }
+  try {
+    const aiBot = require('./routes/aiBot');
+    if (aiBot._reengageTick) {
+      setTimeout(() => aiBot._reengageTick().catch(() => {}), 60_000);
+      setInterval(() => aiBot._reengageTick().catch(e => console.warn('[reengage] tick failed:', e.message)), Number(process.env.REENGAGE_INTERVAL_MS || 60_000));
+      console.log('[reengage] AI bot re-engagement worker started');
+    }
+  } catch (e) { console.error('[boot] reengage worker start failed:', e.message); }
   try { require('./utils/aiCallSummary').startWorker(); }
   catch (e) { console.error('[boot] ai-summary worker start failed:', e.message); }
   // Hourly trim of WhatsApp activity log — drops rows older than 24h.
