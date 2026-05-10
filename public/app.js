@@ -15013,9 +15013,11 @@ async function _renderAiBotKb(host) {
     )
   ));
 
-  // List existing
-  let list = [];
-  try { list = await api('api_aibot_kb_list'); } catch (e) { card.appendChild(h('div', { class: 'error-box' }, e.message)); host.appendChild(card); return; }
+  // List existing — accept both the legacy bare-array response AND the newer
+  // { docs: [...], total_active_chars: N } shape used by saas.
+  let listResp;
+  try { listResp = await api('api_aibot_kb_list'); } catch (e) { card.appendChild(h('div', { class: 'error-box' }, e.message)); host.appendChild(card); return; }
+  const list = Array.isArray(listResp) ? listResp : (listResp && listResp.docs) || [];
   card.appendChild(h('div', { style: { fontWeight: '600', marginBottom: '.4rem' } }, 'Existing snippets (' + list.length + ')'));
   if (!list.length) {
     card.appendChild(h('p', { class: 'muted' }, 'No KB documents yet. Add one above.'));
