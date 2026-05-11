@@ -312,10 +312,21 @@ async function api_leads_list(token, filters) {
   filters = filters || {};
   let rows = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
 
-  if (filters.status_id)   rows = rows.filter(l => Number(l.status_id) === Number(filters.status_id));
-  if (filters.source)      rows = rows.filter(l => l.source === filters.source);
-  if (filters.product_id)  rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
-  if (filters.assigned_to) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
+  // Status / source / assignee accept BOTH a single value (backward compat) and an
+  // array of values via the *_ids / *_list keys, so the frontend can offer
+  // multi-select dropdowns without breaking saved single-value filters,
+  // shortcut links, or any other caller that still sends scalars.
+  const _arr = (v) => (Array.isArray(v) ? v : (v == null || v === '' ? [] : String(v).split(',').map(s => s.trim()).filter(Boolean)));
+  const _statusIds   = _arr(filters.status_ids);
+  const _sources     = _arr(filters.sources);
+  const _assignedTos = _arr(filters.assigned_tos);
+  if (filters.status_id)     rows = rows.filter(l => Number(l.status_id) === Number(filters.status_id));
+  if (_statusIds.length)     rows = rows.filter(l => _statusIds.map(Number).includes(Number(l.status_id)));
+  if (filters.source)        rows = rows.filter(l => l.source === filters.source);
+  if (_sources.length)       rows = rows.filter(l => _sources.includes(String(l.source || '')));
+  if (filters.product_id)    rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
+  if (filters.assigned_to)   rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
+  if (_assignedTos.length)   rows = rows.filter(l => _assignedTos.map(Number).includes(Number(l.assigned_to)));
   // Qualified filter:
   //   '1' / 'only' → only leads marked qualified
   //   '0' / 'unqualified' → only leads NOT marked qualified
