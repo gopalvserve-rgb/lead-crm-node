@@ -109,14 +109,25 @@ async function _applyReportFilters(rows, filters, users) {
   filters = filters || {};
   if (filters.from) rows = rows.filter(l => _tzDate(l.created_at) >= filters.from);
   if (filters.to)   rows = rows.filter(l => _tzDate(l.created_at) <= filters.to);
+  // status_ids / sources / scope_user_ids (plural) accept arrays so the
+  // Reports + Report Builder UI can offer multi-select dropdowns. The
+  // singular keys still work for backward compat (saved filters, links,
+  // shortcut card URLs).
+  const _arr = (v) => (Array.isArray(v) ? v : (v == null || v === '' ? [] : String(v).split(',').map(s => s.trim()).filter(Boolean)));
+  const _scopeUserIds = _arr(filters.scope_user_ids);
+  const _statusIds    = _arr(filters.status_ids);
+  const _sources      = _arr(filters.sources);
   if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
+  if (_scopeUserIds.length)  rows = rows.filter(l => _scopeUserIds.map(Number).includes(Number(l.assigned_to)));
   if (filters.role) {
     const userIds = (users || []).filter(u => u.role === filters.role).map(u => Number(u.id));
     rows = rows.filter(l => userIds.includes(Number(l.assigned_to)));
   }
   if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
   if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
+  if (_sources.length)    rows = rows.filter(l => _sources.includes(String(l.source || '')));
   if (filters.status_id)  rows = rows.filter(l => Number(l.status_id) === Number(filters.status_id));
+  if (_statusIds.length)  rows = rows.filter(l => _statusIds.map(Number).includes(Number(l.status_id)));
   // Qualified filter — lead-level boolean. '1' = qualified only, '0' = not
   // qualified. Empty/undefined = no filter (so the default behaviour is the
   // same as before this filter existed).
