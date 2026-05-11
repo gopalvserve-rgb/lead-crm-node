@@ -1062,7 +1062,7 @@ VIEWS.leads = async (view) => {
   searchInput.addEventListener('keydown', ev => { if (ev.key === 'Enter') applyFilters(); });
   const toolbar = h('div', { class: 'toolbar' },
     searchInput,
-    wireFilter(selectOpts('f-status', [{ id: '', name: 'Any status' }, ...statuses], CRM.prefs.filters.status_id)),
+    wireFilter(multiSelectOpts('f-status', statuses, (Array.isArray(CRM.prefs.filters.status_ids) && CRM.prefs.filters.status_ids.length) ? CRM.prefs.filters.status_ids : (CRM.prefs.filters.status_id ? [CRM.prefs.filters.status_id] : []))),
     wireFilter(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source)),
     wireFilter(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to)),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
@@ -1330,7 +1330,7 @@ async function loadLeads(opts) {
   CRM._leadsPage = page;
   const filters = {
     q:           $('#f-q')?.value || undefined,
-    status_id:   $('#f-status')?.value || undefined,
+    status_ids:  multiSelectValues('#f-status'),
     source:      $('#f-source')?.value || undefined,
     assigned_to: $('#f-assigned')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
@@ -3046,6 +3046,33 @@ function selectOpts(id, items, value) {
   return h('select', { id },
     ...items.map(i => h('option', { value: i.id, selected: String(value) === String(i.id) ? 'selected' : null }, i.name))
   );
+}
+
+// Inline multi-select dropdown — renders as a native <select multiple>
+// styled like a small scrollable list. No popup, no custom component:
+// reps click each option (Ctrl/Cmd+click on desktop, tap on mobile) to
+// toggle it. Selected values are read back with multiSelectValues() and
+// shipped to the backend as an array, which routes/leads.js +
+// routes/reports.js both accept via the *_ids / *_arr keys.
+function multiSelectOpts(id, items, selected, opts) {
+  opts = opts || {};
+  const selectedSet = new Set((selected || []).map(String));
+  return h('select',
+    { id, multiple: 'multiple', size: String(opts.size || 4), title: opts.title || 'Hold Ctrl / Cmd to pick multiple. Click again to deselect.' },
+    ...items.map(i => h('option',
+      { value: i.id, selected: selectedSet.has(String(i.id)) ? 'selected' : null },
+      i.name
+    ))
+  );
+}
+
+// Read the selected values from a <select multiple> as an array of
+// strings. Accepts a CSS selector, an id, or the element itself.
+function multiSelectValues(elOrSel) {
+  let el = elOrSel;
+  if (typeof el === 'string') el = el.startsWith('#') || el.startsWith('.') ? document.querySelector(el) : document.getElementById(el);
+  if (!el) return [];
+  return Array.from(el.selectedOptions || []).map(o => o.value).filter(v => v !== '');
 }
 function parseFieldOptions(raw) {
   // Lenient parser: accept pipe-, comma-, or newline-separated lists.
