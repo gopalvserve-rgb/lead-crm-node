@@ -117,6 +117,7 @@ async function _applyReportFilters(rows, filters, users) {
   const _scopeUserIds = _arr(filters.scope_user_ids);
   const _statusIds    = _arr(filters.status_ids);
   const _sources      = _arr(filters.sources);
+  const _productIds   = _arr(filters.product_ids);
   if (filters.scope_user_id) rows = rows.filter(l => Number(l.assigned_to) === Number(filters.scope_user_id));
   if (_scopeUserIds.length)  rows = rows.filter(l => _scopeUserIds.map(Number).includes(Number(l.assigned_to)));
   if (filters.role) {
@@ -124,6 +125,7 @@ async function _applyReportFilters(rows, filters, users) {
     rows = rows.filter(l => userIds.includes(Number(l.assigned_to)));
   }
   if (filters.product_id) rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
+  if (_productIds.length) rows = rows.filter(l => _productIds.map(Number).includes(Number(l.product_id)));
   if (filters.source)     rows = rows.filter(l => (l.source || '') === filters.source);
   if (_sources.length)    rows = rows.filter(l => _sources.includes(String(l.source || '')));
   if (filters.status_id)  rows = rows.filter(l => Number(l.status_id) === Number(filters.status_id));

@@ -1081,10 +1081,30 @@ VIEWS.leads = async (view) => {
   const toolbar = h('div', { class: 'toolbar' },
     searchInput,
     dateRangeWrap,
-    wireFilter(multiSelectOpts('f-status', statuses, (Array.isArray(CRM.prefs.filters.status_ids) && CRM.prefs.filters.status_ids.length) ? CRM.prefs.filters.status_ids : (CRM.prefs.filters.status_id ? [CRM.prefs.filters.status_id] : []))),
-    wireFilter(multiSelectOpts('f-source', sources.map(s => ({ id: s.name, name: s.name })), (Array.isArray(CRM.prefs.filters.sources) && CRM.prefs.filters.sources.length) ? CRM.prefs.filters.sources : (CRM.prefs.filters.source ? [CRM.prefs.filters.source] : []), { title: 'Hold Ctrl/Cmd to pick multiple sources' })),
-    wireFilter(multiSelectOpts('f-assigned', users.map(u => ({ id: u.id, name: u.name })), (Array.isArray(CRM.prefs.filters.assigned_tos) && CRM.prefs.filters.assigned_tos.length) ? CRM.prefs.filters.assigned_tos : (CRM.prefs.filters.assigned_to ? [CRM.prefs.filters.assigned_to] : []), { title: 'Hold Ctrl/Cmd to pick multiple assignees' })),
-    wireFilter(multiSelectOpts('f-tags', _tagOpts, (CRM.prefs.filters.tags && CRM.prefs.filters.tags.length) ? CRM.prefs.filters.tags : [], { title: 'Hold Ctrl/Cmd to pick multiple tags' })),
+    multiSelectDropdown({
+      label: 'Status', allLabel: 'Any status',
+      options: statuses.map(s => ({ id: String(s.id), name: s.name })),
+      values: (Array.isArray(CRM.prefs.filters.status_ids) && CRM.prefs.filters.status_ids.length) ? CRM.prefs.filters.status_ids.map(String) : (CRM.prefs.filters.status_id ? [String(CRM.prefs.filters.status_id)] : []),
+      onApply: (v) => { CRM.prefs.filters.status_ids = v; CRM.prefs.filters.status_id = v.length === 1 ? v[0] : ''; applyFilters(); }
+    }),
+    multiSelectDropdown({
+      label: 'Source', allLabel: 'Any source',
+      options: sources.map(s => ({ id: s.name, name: s.name })),
+      values: (Array.isArray(CRM.prefs.filters.sources) && CRM.prefs.filters.sources.length) ? CRM.prefs.filters.sources : (CRM.prefs.filters.source ? [CRM.prefs.filters.source] : []),
+      onApply: (v) => { CRM.prefs.filters.sources = v; CRM.prefs.filters.source = v.length === 1 ? v[0] : ''; applyFilters(); }
+    }),
+    multiSelectDropdown({
+      label: 'Assigned', allLabel: 'Any assignee',
+      options: users.map(u => ({ id: String(u.id), name: u.name })),
+      values: (Array.isArray(CRM.prefs.filters.assigned_tos) && CRM.prefs.filters.assigned_tos.length) ? CRM.prefs.filters.assigned_tos.map(String) : (CRM.prefs.filters.assigned_to ? [String(CRM.prefs.filters.assigned_to)] : []),
+      onApply: (v) => { CRM.prefs.filters.assigned_tos = v; CRM.prefs.filters.assigned_to = v.length === 1 ? v[0] : ''; applyFilters(); }
+    }),
+    multiSelectDropdown({
+      label: 'Tag', allLabel: 'Any tag',
+      options: _tagOpts,
+      values: (CRM.prefs.filters.tags && CRM.prefs.filters.tags.length) ? CRM.prefs.filters.tags : [],
+      onApply: (v) => { CRM.prefs.filters.tags = v; applyFilters(); }
+    }),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
     wireFilter(selectOpts('f-qualified', [
       { id: '',  name: 'Any qualified' },
@@ -1348,13 +1368,12 @@ async function loadLeads(opts) {
   const pageSize = Number(localStorage.getItem('crm_page_size') || 25);
   const page = Number(opts.page || CRM._leadsPage || 1);
   CRM._leadsPage = page;
-  // Multi-select arrays for status/source/assignee/tags; legacy single
-  // status_id / source / assigned_to stay for back-compat with old saved
-  // filters that still send scalars.
-  const _statusIds = multiSelectValues('#f-status');
-  const _sources   = multiSelectValues('#f-source');
-  const _assigned  = multiSelectValues('#f-assigned');
-  const _tags      = multiSelectValues('#f-tags');
+  // Multi-select arrays now live in CRM.prefs.filters (set by the
+  // checkbox-dropdown onApply handlers above). No DOM read needed.
+  const _statusIds = (CRM.prefs.filters.status_ids || []).map(String);
+  const _sources   = (CRM.prefs.filters.sources    || []).map(String);
+  const _assigned  = (CRM.prefs.filters.assigned_tos || []).map(String);
+  const _tags      = (CRM.prefs.filters.tags       || []);
   const filters = {
     q:           $('#f-q')?.value || undefined,
     status_ids:  _statusIds.length ? _statusIds : undefined,
@@ -3101,6 +3120,158 @@ function multiSelectOpts(id, items, selected, opts) {
 
 // Read the selected values from a <select multiple> as an array of
 // strings. Accepts a CSS selector, an id, or the element itself.
+
+/**
+ * Checkbox-dropdown multi-select (Select All / Deselect All / Cancel / Apply).
+ * Ported from smartcrm-saas. Replaces the native <select multiple> in places
+ * where users need a real picker instead of Ctrl/Cmd-click trickery.
+ *
+ * Usage:
+ *   const dd = multiSelectDropdown({
+ *     label: 'Status',
+ *     allLabel: 'Any status',
+ *     options: [{id, name}, ...],
+ *     values: ['1', '2'],
+ *     onApply: (newValues) => { ... }
+ *   });
+ *   toolbar.appendChild(dd);
+ *   dd.getValues();   // → ['1', '2']
+ *   dd.setValues(v);  // programmatic update
+ */
+function multiSelectDropdown({ id, label, options, values, onApply, allLabel }) {
+  values = (values || []).map(String);
+  options = options || [];
+  const wrap = document.createElement('div');
+  wrap.className = 'ms-dropdown';
+  wrap.style.cssText = 'position: relative; display: inline-block;';
+  if (id) wrap.id = id;
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn ghost ms-dropdown-button';
+  btn.style.cssText = 'min-width: 9rem; max-width: 16rem; text-align: left; display: inline-flex; align-items: center; gap: .35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+  function renderBtn() {
+    btn.innerHTML = '';
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    if (!values.length) {
+      lbl.textContent = (label ? label + ': ' : '') + (allLabel || 'All');
+    } else if (values.length === 1) {
+      const m = options.find(o => String(o.id) === values[0]);
+      lbl.textContent = (label ? label + ': ' : '') + (m ? m.name : values[0]);
+    } else {
+      lbl.textContent = (label ? label + ': ' : '');
+      const cnt = document.createElement('span');
+      cnt.className = 'ms-count';
+      cnt.textContent = values.length;
+      btn.appendChild(lbl);
+      btn.appendChild(cnt);
+      const tail = document.createElement('span'); tail.textContent = ' selected'; tail.style.opacity = '.85'; tail.style.fontSize = '.78rem'; tail.style.marginLeft = '.25rem';
+      btn.appendChild(tail);
+      btn.appendChild(document.createTextNode(' \u25BE'));
+      return;
+    }
+    btn.appendChild(lbl);
+    btn.appendChild(document.createTextNode(' \u25BE'));
+  }
+  renderBtn();
+  wrap.appendChild(btn);
+
+  let panel = null;
+  function openPanel() {
+    if (panel) return;
+    panel = document.createElement('div');
+    panel.className = 'ms-dropdown-panel';
+    panel.style.cssText = 'position: absolute; top: 100%; left: 0; min-width: 260px; max-width: 340px; max-height: 380px; overflow-y: auto; background: #fff; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; box-shadow: 0 8px 24px rgba(15,23,42,.14); padding: .55rem; margin-top: .3rem; z-index: 1000;';
+
+    const search = document.createElement('input');
+    search.type = 'search';
+    search.className = 'ms-search';
+    search.placeholder = 'Search\u2026';
+    panel.appendChild(search);
+
+    const actionRow = document.createElement('div');
+    actionRow.className = 'ms-actions';
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button'; allBtn.textContent = 'Select All'; allBtn.className = 'btn small primary';
+    const noneBtn = document.createElement('button');
+    noneBtn.type = 'button'; noneBtn.textContent = 'Deselect All'; noneBtn.className = 'btn small ghost';
+    actionRow.appendChild(allBtn); actionRow.appendChild(noneBtn);
+    panel.appendChild(actionRow);
+
+    const list = document.createElement('div');
+    panel.appendChild(list);
+    function renderList() {
+      list.innerHTML = '';
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      options.forEach(o => {
+        if (q && !String(o.name).toLowerCase().includes(q)) return;
+        shown++;
+        const row = document.createElement('label');
+        row.className = 'ms-row' + (values.includes(String(o.id)) ? ' is-checked' : '');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = values.includes(String(o.id));
+        cb.onchange = () => {
+          const v = String(o.id);
+          if (cb.checked) {
+            if (!values.includes(v)) values.push(v);
+            row.classList.add('is-checked');
+          } else {
+            const i = values.indexOf(v); if (i >= 0) values.splice(i, 1);
+            row.classList.remove('is-checked');
+          }
+        };
+        row.appendChild(cb);
+        const tx = document.createElement('span');
+        tx.textContent = o.name;
+        row.appendChild(tx);
+        list.appendChild(row);
+      });
+      if (!shown) {
+        const empty = document.createElement('div');
+        empty.className = 'muted'; empty.style.padding = '.5rem'; empty.style.textAlign = 'center';
+        empty.textContent = 'No matches';
+        list.appendChild(empty);
+      }
+    }
+    renderList();
+    search.addEventListener('input', renderList);
+    allBtn.onclick = (e) => { e.preventDefault(); values = options.map(o => String(o.id)); renderList(); };
+    noneBtn.onclick = (e) => { e.preventDefault(); values = []; renderList(); };
+
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display: flex; gap: .35rem; margin-top: .4rem; padding-top: .4rem; border-top: 1px solid var(--border, #e5e7eb);';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button'; cancelBtn.textContent = 'Cancel'; cancelBtn.className = 'btn ghost small';
+    cancelBtn.style.cssText = 'flex: 1;';
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button'; applyBtn.textContent = 'Apply'; applyBtn.className = 'btn primary small';
+    applyBtn.style.cssText = 'flex: 1;';
+    footer.appendChild(cancelBtn); footer.appendChild(applyBtn);
+    panel.appendChild(footer);
+    cancelBtn.onclick = (e) => { e.preventDefault(); closePanel(); };
+    applyBtn.onclick = (e) => { e.preventDefault(); closePanel(); renderBtn(); if (typeof onApply === 'function') onApply(values.slice()); };
+
+    wrap.appendChild(panel);
+    setTimeout(() => document.addEventListener('mousedown', outsideClick), 0);
+  }
+  function closePanel() {
+    if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+    panel = null;
+    document.removeEventListener('mousedown', outsideClick);
+  }
+  function outsideClick(e) {
+    if (!wrap.contains(e.target)) closePanel();
+  }
+  btn.addEventListener('click', (e) => { e.preventDefault(); panel ? closePanel() : openPanel(); });
+
+  wrap.getValues = () => values.slice();
+  wrap.setValues = (v) => { values = (v || []).map(String); renderBtn(); };
+  return wrap;
+}
+
 function multiSelectValues(elOrSel) {
   let el = elOrSel;
   if (typeof el === 'string') el = el.startsWith('#') || el.startsWith('.') ? document.querySelector(el) : document.getElementById(el);
@@ -8506,7 +8677,12 @@ VIEWS.reports = async (view) => {
     h('input', { type: 'date', id: 'rep-from' }),
     h('span', {}, 'to'),
     h('input', { type: 'date', id: 'rep-to' }),
-    selectOpts('rep-user', [{ id: '', name: 'All users' }, ...users]),
+    multiSelectDropdown({
+      id: 'rep-user-dd', label: 'Users', allLabel: 'All users',
+      options: users.map(u => ({ id: String(u.id), name: u.name })),
+      values: (window._repPicked && window._repPicked.users) || [],
+      onApply: (v) => { window._repPicked = window._repPicked || {}; window._repPicked.users = v; }
+    }),
     h('select', { id: 'rep-role' },
       h('option', { value: '' }, 'Any role'),
       h('option', { value: 'admin' }, 'Admin'),
@@ -8515,15 +8691,24 @@ VIEWS.reports = async (view) => {
       h('option', { value: 'sales' }, 'Tele-caller / Sales')
     ),
     // ---- Lead-field filters ------------------------------------
-    h('select', { id: 'rep-status' },
-      h('option', { value: '' }, 'Any status'),
-      ...statuses.map(s => h('option', { value: s.id }, s.name))
-    ),
-    h('select', { id: 'rep-product' },
-      h('option', { value: '' }, 'Any product'),
-      ...products.map(p => h('option', { value: p.id }, p.name))
-    ),
-    selectOpts('rep-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))]),
+    multiSelectDropdown({
+      id: 'rep-status-dd', label: 'Status', allLabel: 'Any status',
+      options: statuses.map(s => ({ id: String(s.id), name: s.name })),
+      values: (window._repPicked && window._repPicked.statuses) || [],
+      onApply: (v) => { window._repPicked = window._repPicked || {}; window._repPicked.statuses = v; }
+    }),
+    multiSelectDropdown({
+      id: 'rep-product-dd', label: 'Product', allLabel: 'Any product',
+      options: products.map(p => ({ id: String(p.id), name: p.name })),
+      values: (window._repPicked && window._repPicked.products) || [],
+      onApply: (v) => { window._repPicked = window._repPicked || {}; window._repPicked.products = v; }
+    }),
+    multiSelectDropdown({
+      id: 'rep-source-dd', label: 'Source', allLabel: 'Any source',
+      options: sources.map(s => ({ id: s.name, name: s.name })),
+      values: (window._repPicked && window._repPicked.sources) || [],
+      onApply: (v) => { window._repPicked = window._repPicked || {}; window._repPicked.sources = v; }
+    }),
     h('select', { id: 'rep-qualified' },
       h('option', { value: '' }, 'Any qualified'),
       h('option', { value: '1' }, 'Qualified only'),
@@ -8563,14 +8748,26 @@ VIEWS.reports = async (view) => {
 function _currentReportFilters() {
   const from = $('#rep-from')?.value || undefined;
   const to   = $('#rep-to')?.value || undefined;
-  const user = $('#rep-user')?.value || undefined;
-  const role = $('#rep-role')?.value || undefined;
-  const status_id = $('#rep-status')?.value || undefined;
-  const product_id = $('#rep-product')?.value || undefined;
-  const source = $('#rep-source')?.value || undefined;
+  const _picked = window._repPicked || {};
+  const _userIds   = (_picked.users     || []).map(String);
+  const _statusIds = (_picked.statuses  || []).map(String);
+  const _prodIds   = (_picked.products  || []).map(String);
+  const _srcVals   = (_picked.sources   || []).map(String);
+  // Back-compat: when exactly one value is picked, also send the legacy
+  // singular key so older backend code that only checks .user / .status_id
+  // keeps working.
+  const user        = _userIds.length === 1 ? _userIds[0]    : undefined;
+  const user_ids    = _userIds.length ? _userIds : undefined;
+  const role        = $('#rep-role')?.value || undefined;
+  const status_id   = _statusIds.length === 1 ? _statusIds[0] : undefined;
+  const status_ids  = _statusIds.length ? _statusIds : undefined;
+  const product_id  = _prodIds.length === 1 ? _prodIds[0] : undefined;
+  const product_ids = _prodIds.length ? _prodIds : undefined;
+  const source      = _srcVals.length === 1 ? _srcVals[0] : undefined;
+  const sources     = _srcVals.length ? _srcVals : undefined;
   const qualified = $('#rep-qualified')?.value || undefined;
   const tag = $('#rep-tag')?.value || undefined;
-  return { from, to, scope_user_id: user, role, status_id, product_id, source, qualified, tag };
+  return { from, to, scope_user_id: user, scope_user_ids: user_ids, role, status_id, status_ids, product_id, product_ids, source, sources, qualified, tag };
 }
 
 async function loadReports() {
@@ -9141,16 +9338,30 @@ VIEWS.reportbuilder = async (view) => {
         h('input', { type: 'date', id: 'rb-from' }),
         h('span', { class: 'muted' }, 'to'),
         h('input', { type: 'date', id: 'rb-to' }),
-        selectOpts('rb-user', [{ id: '', name: 'All users' }, ...users]),
-        h('select', { id: 'rb-status' },
-          h('option', { value: '' }, 'Any status'),
-          ...statuses.map(s => h('option', { value: s.id }, s.name))
-        ),
-        h('select', { id: 'rb-product' },
-          h('option', { value: '' }, 'Any product'),
-          ...products.map(p => h('option', { value: p.id }, p.name))
-        ),
-        selectOpts('rb-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))]),
+        multiSelectDropdown({
+          id: 'rb-user-dd', label: 'Users', allLabel: 'All users',
+          options: users.map(u => ({ id: String(u.id), name: u.name })),
+          values: (window._rbPicked && window._rbPicked.users) || [],
+          onApply: (v) => { window._rbPicked = window._rbPicked || {}; window._rbPicked.users = v; }
+        }),
+        multiSelectDropdown({
+          id: 'rb-status-dd', label: 'Status', allLabel: 'Any status',
+          options: statuses.map(s => ({ id: String(s.id), name: s.name })),
+          values: (window._rbPicked && window._rbPicked.statuses) || [],
+          onApply: (v) => { window._rbPicked = window._rbPicked || {}; window._rbPicked.statuses = v; }
+        }),
+        multiSelectDropdown({
+          id: 'rb-product-dd', label: 'Product', allLabel: 'Any product',
+          options: products.map(p => ({ id: String(p.id), name: p.name })),
+          values: (window._rbPicked && window._rbPicked.products) || [],
+          onApply: (v) => { window._rbPicked = window._rbPicked || {}; window._rbPicked.products = v; }
+        }),
+        multiSelectDropdown({
+          id: 'rb-source-dd', label: 'Source', allLabel: 'Any source',
+          options: sources.map(s => ({ id: s.name, name: s.name })),
+          values: (window._rbPicked && window._rbPicked.sources) || [],
+          onApply: (v) => { window._rbPicked = window._rbPicked || {}; window._rbPicked.sources = v; }
+        }),
         h('select', { id: 'rb-qualified' },
           h('option', { value: '' }, 'Any qualified'),
           h('option', { value: '1' }, 'Qualified only'),
@@ -9182,14 +9393,23 @@ VIEWS.reportbuilder = async (view) => {
 };
 
 function _currentReportBuilderFilters() {
+  const p = window._rbPicked || {};
+  const userIds   = (p.users    || []).map(String);
+  const statusIds = (p.statuses || []).map(String);
+  const prodIds   = (p.products || []).map(String);
+  const srcVals   = (p.sources  || []).map(String);
   return {
-    from:        $('#rb-from')?.value || undefined,
-    to:          $('#rb-to')?.value   || undefined,
-    scope_user_id: $('#rb-user')?.value   || undefined,
-    status_id:   $('#rb-status')?.value   || undefined,
-    product_id:  $('#rb-product')?.value  || undefined,
-    source:      $('#rb-source')?.value   || undefined,
-    qualified:   $('#rb-qualified')?.value || undefined
+    from:           $('#rb-from')?.value || undefined,
+    to:             $('#rb-to')?.value   || undefined,
+    scope_user_id:  userIds.length === 1 ? userIds[0] : undefined,
+    scope_user_ids: userIds.length ? userIds : undefined,
+    status_id:      statusIds.length === 1 ? statusIds[0] : undefined,
+    status_ids:     statusIds.length ? statusIds : undefined,
+    product_id:     prodIds.length === 1 ? prodIds[0] : undefined,
+    product_ids:    prodIds.length ? prodIds : undefined,
+    source:         srcVals.length === 1 ? srcVals[0] : undefined,
+    sources:        srcVals.length ? srcVals : undefined,
+    qualified:      $('#rb-qualified')?.value || undefined
   };
 }
 
