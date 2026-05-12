@@ -15259,12 +15259,22 @@ async function _renderAiBotKb(host) {
     titleInp, txtInp,
     h('div', { style: { display: 'flex', gap: '.5rem', marginTop: '.4rem' } },
       h('button', { class: 'btn primary', onclick: async () => {
-        if (!titleInp.value.trim() || !txtInp.value.trim()) { addStatus.textContent = '⚠ Title + text required'; return; }
+        const _title = titleInp.value.trim();
+        const _text  = txtInp.value.trim();
+        if (!_title || !_text) { addStatus.textContent = '⚠ Title + text required'; return; }
+        console.log('[ai-bot-kb] save_text len=' + _text.length + ' title=' + _title);
+        addStatus.textContent = '⏳ Saving…';
         try {
-          await api('api_aibot_kb_save_text', { title: titleInp.value, text: txtInp.value });
+          // Send BOTH key names so backends old and new accept the body
+          const r = await api('api_aibot_kb_save_text', { title: _title, text: _text, raw_text: _text, body: _text });
+          console.log('[ai-bot-kb] save_text →', r);
           addStatus.textContent = '✅ Added'; titleInp.value = ''; txtInp.value = '';
           _renderAiBotKb(host); host.firstChild.remove();
-        } catch (e) { addStatus.textContent = '❌ ' + e.message; }
+        } catch (e) {
+          console.warn('[ai-bot-kb] save_text failed:', e);
+          addStatus.textContent = '❌ ' + (e && e.message ? e.message : String(e));
+          try { toast('KB save failed: ' + (e && e.message ? e.message : String(e)), 'err'); } catch (_) {}
+        }
       } }, '+ Add'),
       addStatus
     )
@@ -15281,13 +15291,19 @@ async function _renderAiBotKb(host) {
       h('button', { class: 'btn', onclick: async () => {
         const u = urlInp.value.trim();
         if (!u) { crawlStatus.textContent = '⚠ Paste a URL first'; return; }
+        console.log('[ai-bot-kb] crawl_url', u);
         crawlStatus.textContent = '⏳ Fetching… this can take 5-30 seconds';
         try {
           const r = await api('api_aibot_kb_crawl_url', { url: u });
+          console.log('[ai-bot-kb] crawl_url →', r);
           crawlStatus.textContent = '✅ Crawled — saved ' + (r && r.char_count ? r.char_count + ' chars' : 'document');
           urlInp.value = '';
           host.innerHTML = ''; _renderAiBotKb(host);
-        } catch (e) { crawlStatus.textContent = '❌ ' + e.message; }
+        } catch (e) {
+          console.warn('[ai-bot-kb] crawl_url failed:', e);
+          crawlStatus.textContent = '❌ ' + (e && e.message ? e.message : String(e));
+          try { toast('Crawl failed: ' + (e && e.message ? e.message : String(e)), 'err'); } catch (_) {}
+        }
       } }, '🌐 Crawl URL'),
       crawlStatus
     )
