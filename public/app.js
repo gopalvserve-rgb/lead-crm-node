@@ -826,25 +826,33 @@ VIEWS.dashboard = async (view) => {
   // doing on overdue + due-today + TAT violations. Sales/employee don't
   // (it's just their own numbers, already shown in the KPI cards above).
   const showTeam = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
-  const [summary, due, teamFu, teamTat] = await Promise.all([
+  const [summary, due, teamFu, teamTat, dashLayout] = await Promise.all([
     api('api_reports_summary', {}),
     api('api_notifications_mine'),
     showTeam ? api('api_reports_followupsByUser').catch(() => [])      : Promise.resolve([]),
-    showTeam ? api('api_reports_tatViolationsByUser').catch(() => [])  : Promise.resolve([])
+    showTeam ? api('api_reports_tatViolationsByUser').catch(() => [])  : Promise.resolve([]),
+    api('api_dashboard_get').catch(() => null)
   ]);
   view.innerHTML = '';
 
+  // Widget visibility — if the user has customised their layout (non-default),
+  // only render widgets they kept checked. is_default / empty / null = show
+  // everything (back-compat).
+  let _dashEnabled = null;
+  if (dashLayout && dashLayout.is_default !== true && Array.isArray(dashLayout.widgets) && dashLayout.widgets.length) {
+    _dashEnabled = new Set(dashLayout.widgets.map(w => w.type));
+  }
+  function widgetOn(type) { return !_dashEnabled || _dashEnabled.has(type); }
+
   // 5 KPI cards — added "New today" so users can see today's fresh leads
   // at a glance from the dashboard without having to filter the leads list.
-  view.append(
-    h('div', { class: 'cards' },
-      card('Total Leads',  summary.totals.total,      'accent', '🎯', '#/leads'),
-      card('New today',    due.counts.new_today || 0, 'accent', '✨', '#/leads?filter=new_today'),
-      card('Won',          summary.totals.won,        'ok',     '🏆', '#/leads?filter=won'),
-      card('Due today',    due.counts.due_today,      'warn',   '📅', '#/followups?tab=due'),
-      card('Overdue',      due.counts.overdue,        'err',    '⚠️', '#/followups?tab=overdue')
-    )
-  );
+  const _kpiRow = [];
+  if (widgetOn('kpi_total_leads')) _kpiRow.push(card('Total Leads', summary.totals.total,      'accent', '🎯', '#/leads'));
+  if (widgetOn('kpi_new_today'))   _kpiRow.push(card('New today',   due.counts.new_today || 0, 'accent', '✨', '#/leads?filter=new_today'));
+  if (widgetOn('kpi_won'))         _kpiRow.push(card('Won',         summary.totals.won,        'ok',     '🏆', '#/leads?filter=won'));
+  if (widgetOn('kpi_due_today'))   _kpiRow.push(card('Due today',   due.counts.due_today,      'warn',   '📅', '#/followups?tab=due'));
+  if (widgetOn('kpi_overdue'))     _kpiRow.push(card('Overdue',     due.counts.overdue,        'err',    '⚠️', '#/followups?tab=overdue'));
+  if (_kpiRow.length) view.append(h('div', { class: 'cards' }, ..._kpiRow));
 
   // Two-column: upcoming follow-ups + pie chart
   const grid = h('div', { class: 'dash-grid' });
@@ -853,6 +861,7 @@ VIEWS.dashboard = async (view) => {
   // Follow-ups card — three tabs in one box: Upcoming / Overdue / Due today.
   // Renders the same row markup for each list so the user has a consistent
   // glance at upcoming work no matter which tab they're on.
+  if (!widgetOn('followups_panel')) { /* skip — user unchecked it */ } else {
   const fuCard = h('div', { class: 'card fu-tabs-card' });
   const tabs = [
     { key: 'upcoming',  label: 'Upcoming',  rows: due.upcoming || [] },
@@ -898,17 +907,20 @@ VIEWS.dashboard = async (view) => {
   fuCard.appendChild(tabBody);
   renderFuTab('upcoming');
   grid.appendChild(fuCard);
+  }  // end widgetOn('followups_panel')
 
   // Pie chart — leads by status
-  const pieCard = h('div', { class: 'card' },
-    h('h3', {}, '🎯 Leads by status'),
-    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-pie' }))
-  );
-  grid.appendChild(pieCard);
+  if (widgetOn('chart_status')) {
+    const pieCard = h('div', { class: 'card' },
+      h('h3', {}, '🎯 Leads by status'),
+      h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-pie' }))
+    );
+    grid.appendChild(pieCard);
+  }
 
   // Team follow-ups by caller — managers see who's drowning in overdue.
   // Hidden for sales/employee since their own numbers are already in KPI tiles.
-  if (showTeam) {
+  if (showTeam && widgetOn('team_followups')) {
     const teamRows = teamFu || [];
     const teamCard = h('div', { class: 'card card-wide' },
       h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
@@ -942,7 +954,7 @@ VIEWS.dashboard = async (view) => {
     // Team TAT violations by caller — same intent: who's accumulating
     // escalations? Hidden if there are no open violations org-wide.
     const tatRows = teamTat || [];
-    if (tatRows.length) {
+    if (tatRows.length && widgetOn('tat_alerts')) {
       const tatCard = h('div', { class: 'card card-wide' },
         h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.5rem' } },
           h('h3', { style: { margin: 0 } }, '🚨 TAT violations by caller'),
@@ -971,19 +983,23 @@ VIEWS.dashboard = async (view) => {
   }
 
   // By source bar chart
-  const srcCard = h('div', { class: 'card card-wide' },
-    h('h3', {}, 'Leads by source'),
-    h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-src' }))
-  );
-  grid.appendChild(srcCard);
+  if (widgetOn('chart_source')) {
+    const srcCard = h('div', { class: 'card card-wide' },
+      h('h3', {}, 'Leads by source'),
+      h('div', { class: 'chart-wrap' }, h('canvas', { id: 'dash-src' }))
+    );
+    grid.appendChild(srcCard);
+  }
 
   setTimeout(() => {
-    const statusData = (summary.by_status || []).filter(x => x.c > 0);
-    // User asked for the dashboard "Leads by status" to be a bar chart with
-    // visible numbers (not a pie). Bar chart with status colors and datalabels.
-    makeChart('dash-pie', 'bar', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
-    const srcData = summary.by_source || [];
-    makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
+    if (widgetOn('chart_status') && document.getElementById('dash-pie')) {
+      const statusData = (summary.by_status || []).filter(x => x.c > 0);
+      makeChart('dash-pie', 'bar', statusData.map(x => x.status), statusData.map(x => x.c), statusData.map(x => x.color));
+    }
+    if (widgetOn('chart_source') && document.getElementById('dash-src')) {
+      const srcData = summary.by_source || [];
+      makeChart('dash-src', 'bar', srcData.map(x => x.source), srcData.map(x => x.c));
+    }
   }, 50);
 
   function card(label, val, klass, icon, href) {
@@ -15541,9 +15557,8 @@ function openDashboardWidgetPicker() {
     { type: 'followups_panel',   label: '🔔 Follow-ups list' },
     { type: 'chart_status',      label: '📊 Leads by status (chart)' },
     { type: 'chart_source',      label: '📥 Leads by source (chart)' },
-    { type: 'funnel_pipeline',   label: '📈 Pipeline funnel' },
-    { type: 'tat_alerts',        label: '⏱ TAT violations' },
-    { type: 'project_stages',    label: '🚚 Project stages' }
+    { type: 'team_followups',    label: '👥 Team follow-ups (admin/manager)' },
+    { type: 'tat_alerts',        label: '⏱ TAT violations (admin/manager)' }
   ];
 
   let saved = { widgets: [] };
