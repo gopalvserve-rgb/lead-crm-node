@@ -354,6 +354,19 @@ async function api_admin_webhookLog(token, limit) {
   return rows.rows || rows;
 }
 
+
+// ───────── Webhook event log (all /hook/* traffic) ─────────
+// The actual implementation lives in utils/webhookLogger.js so the
+// middleware and the admin APIs share schema constants. We expose
+// thin wrappers here so the unified API dispatcher picks them up.
+const _webhookLogger = require('../utils/webhookLogger');
+async function api_admin_webhookLogs_list(token, opts) {
+  return _webhookLogger.api_admin_webhookLogs_list(token, opts);
+}
+async function api_admin_webhookLogs_get(token, id) {
+  return _webhookLogger.api_admin_webhookLogs_get(token, id);
+}
+
 module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
@@ -365,5 +378,7 @@ module.exports = {
   api_admin_urls,
   api_admin_testMeta, api_admin_subscribeMetaLeadgen, api_admin_testWhatsApp,
   api_admin_wipeHrData,
-  api_admin_webhookLog
+  api_admin_webhookLog,
+  api_admin_webhookLogs_list,
+  api_admin_webhookLogs_get
 };

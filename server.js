@@ -253,6 +253,11 @@ app.get('/api/wa/attachment/:id', async (req, res) => {
 });
 
 // Webhooks
+// Mount the webhook event logger BEFORE any /hook/* handler so we capture
+// the request body + response payload for admin debugging. See
+// utils/webhookLogger.js for the schema; the table is created lazily on
+// first inbound webhook.
+app.use('/hook', require('./utils/webhookLogger').middleware());
 app.get('/hook/meta',      webhooks.metaVerify);
 app.post('/hook/meta',     webhooks.metaEvent);
 app.get('/hook/whatsapp',  webhooks.whatsappVerify);

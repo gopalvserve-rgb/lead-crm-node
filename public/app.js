@@ -9682,6 +9682,7 @@ VIEWS.admin = async (view) => {
     { id: 'menu',         label: '🧭 Menu visibility' },
     { id: 'projstages',   label: '🚚 Project stages' },
     { id: 'integrations', label: '🔌 Integrations' },
+    { id: 'whlogs',       label: '📡 Webhook logs' },
     { id: 'dangerzone',   label: '🛑 Danger zone' }
   ];
   const nav = h('div', { class: 'subtabs' },
@@ -9717,8 +9718,137 @@ async function showAdminTab(id) {
     if (id === 'menu')     body.replaceChildren(await adminMenuVisibility());
     if (id === 'projstages') body.replaceChildren(await adminProjectStages());
     if (id === 'integrations') body.replaceChildren(await adminIntegrations());
+    if (id === 'whlogs') body.replaceChildren(await adminWebhookLogs());
     if (id === 'dangerzone') body.replaceChildren(await adminDangerZone());
   } catch (e) { body.innerHTML = `<div class="error-box">${esc(e.message)}</div>`; }
+}
+
+
+/**
+ * Admin → 📡 Webhook logs tab — every external hit on /hook/*. Lets the
+ * admin see exactly what payload arrived from Meta / Pabbly / Make.com /
+ * Indiamart / website integrations and what response we returned, which
+ * is critical for debugging mapping problems without enabling server logs.
+ */
+async function adminWebhookLogs() {
+  const wrap = h('div', {});
+  const toolbar = h('div', { class: 'toolbar', style: { display: 'flex', gap: '.5rem', alignItems: 'center', flexWrap: 'wrap' } });
+  const pathFilter = h('input', { type: 'text', placeholder: 'Filter by path (e.g. /hook/website)', style: { minWidth: '260px' } });
+  const refreshBtn = h('button', { class: 'btn' }, '⟳ Refresh');
+  toolbar.appendChild(h('strong', {}, '📡 Webhook event log'));
+  toolbar.appendChild(pathFilter);
+  toolbar.appendChild(refreshBtn);
+  toolbar.appendChild(h('span', { class: 'muted', style: { fontSize: '.8rem' } },
+    'Last 2,000 inbound /hook/* requests. Auth headers redacted.'));
+  wrap.appendChild(toolbar);
+
+  const tableHost = h('div', {});
+  wrap.appendChild(tableHost);
+
+  async function load() {
+    tableHost.innerHTML = '<div class="loading">Loading…</div>';
+    let res;
+    try {
+      res = await api('api_admin_webhookLogs_list', { path: pathFilter.value.trim() || null, limit: 200 });
+    } catch (e) {
+      tableHost.innerHTML = '<div class="error-box">' + esc(e.message) + '</div>';
+      return;
+    }
+    const rows = (res && res.rows) || [];
+    if (!rows.length) {
+      tableHost.innerHTML = '';
+      tableHost.appendChild(h('div', { class: 'card muted' },
+        (res && res.note) || 'No webhook events captured yet. They’ll appear here the moment any external system POSTs to /hook/*.'));
+      return;
+    }
+    const tbl = h('table', { class: 'tbl' });
+    const head = h('thead', {}, h('tr', {},
+      h('th', {}, 'When'),
+      h('th', {}, 'Method'),
+      h('th', {}, 'Path'),
+      h('th', {}, 'Status'),
+      h('th', {}, 'Duration'),
+      h('th', {}, 'Source IP'),
+      h('th', {}, 'Body preview'),
+      h('th', {}, '')
+    ));
+    tbl.appendChild(head);
+    const body = h('tbody', {});
+    rows.forEach(r => {
+      const ok = (r.response_code >= 200 && r.response_code < 400);
+      const codeBadge = h('span', {
+        style: {
+          padding: '2px 6px', borderRadius: '4px', fontWeight: 600, fontSize: '.78rem',
+          background: ok ? '#dcfce7' : '#fee2e2', color: ok ? '#166534' : '#991b1b'
+        }
+      }, String(r.response_code || '–'));
+      body.appendChild(h('tr', {},
+        h('td', { class: 'muted', style: { whiteSpace: 'nowrap' } }, fmtDate(r.created_at, 'relative')),
+        h('td', {}, h('code', {}, r.method || '')),
+        h('td', { style: { fontFamily: 'monospace', fontSize: '.8rem' } }, r.path || ''),
+        h('td', {}, codeBadge),
+        h('td', { class: 'muted' }, (r.duration_ms != null ? r.duration_ms + ' ms' : '')),
+        h('td', { class: 'muted', style: { fontSize: '.78rem' } }, r.source_ip || ''),
+        h('td', { class: 'muted', style: { fontSize: '.74rem', maxWidth: '420px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (r.body_preview || '').slice(0, 200)),
+        h('td', {}, h('button', { class: 'btn sm', onclick: () => _openWebhookLogDetails(r) }, 'View'))
+      ));
+    });
+    tbl.appendChild(body);
+    tableHost.innerHTML = '';
+    tableHost.appendChild(tbl);
+  }
+
+  refreshBtn.onclick = load;
+  pathFilter.onkeydown = (e) => { if (e.key === 'Enter') load(); };
+  load();
+  return wrap;
+}
+
+function _openWebhookLogDetails(row) {
+  // Pull the full record (the list response only carries previews)
+  const overlay = h('div', { class: 'modal-overlay' });
+  const modal = h('div', { class: 'modal', style: { maxWidth: '920px', width: '92vw' } });
+  const close = () => overlay.remove();
+  modal.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '📡 ' + (row.method || '') + ' ' + (row.path || '')),
+    h('button', { class: 'btn sm', onclick: close }, '✕')
+  ));
+  const bodyEl = h('div', { class: 'modal-body' });
+  bodyEl.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginBottom: '.5rem' } },
+    fmtDate(row.created_at) + ' · status ' + (row.response_code || '–') + ' · ' + (row.duration_ms || 0) + ' ms · from ' + (row.source_ip || 'unknown')));
+  const loadingDiv = h('div', { class: 'loading' }, 'Loading…');
+  bodyEl.appendChild(loadingDiv);
+  modal.appendChild(bodyEl);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  api('api_admin_webhookLogs_get', row.id).then(full => {
+    if (!full) { loadingDiv.textContent = 'Not found'; return; }
+    loadingDiv.remove();
+    const section = (title, content, lang) => {
+      const wrap = h('div', { style: { marginTop: '1rem' } });
+      const head = h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        h('b', {}, title),
+        h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(content || ''); toast('Copied'); } }, 'Copy')
+      );
+      const pre = h('pre', { style: { background: '#0f172a', color: '#e2e8f0', padding: '.7rem', borderRadius: '6px', overflow: 'auto', maxHeight: '300px', fontSize: '.78rem' } }, content || '(empty)');
+      wrap.appendChild(head);
+      wrap.appendChild(pre);
+      return wrap;
+    };
+    const tryPretty = (txt) => {
+      if (!txt) return '';
+      try { return JSON.stringify(JSON.parse(txt), null, 2); } catch (_) { return String(txt); }
+    };
+    bodyEl.appendChild(section('Request body', tryPretty(full.body_text)));
+    bodyEl.appendChild(section('Response body', tryPretty(full.response_text)));
+    if (full.query_json && full.query_json !== '{}') {
+      bodyEl.appendChild(section('Query params', tryPretty(full.query_json)));
+    }
+    bodyEl.appendChild(section('Headers (auth redacted)', tryPretty(full.headers_json)));
+    bodyEl.appendChild(h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.74rem' } },
+      'User-Agent: ' + (full.user_agent || '')));
+  }).catch(e => { loadingDiv.textContent = 'Error: ' + e.message; });
 }
 
 /**
