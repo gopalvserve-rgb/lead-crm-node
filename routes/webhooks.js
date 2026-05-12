@@ -226,7 +226,7 @@ async function websiteHook(req, res) {
     try {
       const saved = await _sourceMapping.loadMapping('website');
       const overlay = saved ? _sourceMapping.applyMapping(req.body || {}, saved) : null;
-      if (overlay) req.body = Object.assign({}, overlay, req.body || {});
+      if (overlay) req.body = Object.assign({}, req.body || {}, overlay); // overlay wins so saved mapping overrides raw input
     } catch (_) {}
     const b = req.body || {};
     // Tags — accept either a comma-separated string or a JSON array

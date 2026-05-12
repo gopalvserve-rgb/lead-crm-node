@@ -9818,7 +9818,9 @@ async function openSourceMappingModal(sourceId) {
   ));
   const body = h('div', {});
   body.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: 0 } },
-    'Tell us which CRM field each incoming JSON key should populate. Your mapping is applied on every inbound /hook/* request for this source, taking priority over the built-in defaults.'));
+    "Tell us which CRM field each incoming JSON key should populate. Your mapping is applied on every inbound /hook/* request for this source, taking priority over the built-in defaults."));
+  body.appendChild(h("div", { class: "card", style: { background: "#fef3c7", color: "#92400e", padding: ".55rem .7rem", borderRadius: "6px", fontSize: ".82rem", margin: ".4rem 0" } },
+    "⚠️ Mapping applies to NEW inbound webhooks only. Leads that arrived before you saved this mapping are not retroactively re-mapped."));
   const loading = h('div', { class: 'muted' }, 'Loading saved mapping\u2026');
   body.appendChild(loading);
   modal.appendChild(body);
