@@ -15260,7 +15260,59 @@ async function _renderAiBotSettings(host) {
   host.appendChild(c1); host.appendChild(c2); host.appendChild(c3); host.appendChild(c4); host.appendChild(saveRow);
 }
 
+async function _aibotDiagnose() {
+  let result;
+  try { result = await api('api_aibot_diagnose', ''); }
+  catch (e) { toast('Diagnose failed: ' + e.message, 'err'); return; }
+  const modal = h('div', { class: 'modal-backdrop' });
+  const card = h('div', { class: 'modal', style: { maxWidth: '700px' } });
+  card.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🔍 AI Bot diagnosis'),
+    h('button', { class: 'btn icon', onclick: () => modal.remove() }, '✕')
+  ));
+  const body = h('div', { class: 'modal-body', style: { maxHeight: '70vh', overflowY: 'auto' } });
+  body.appendChild(h('p', { class: 'muted', style: { marginTop: 0 } },
+    'Why isn\'t my bot replying? Each check below is a gate the inbound-reply path passes through. A failed check is the most likely cause.'));
+  // Checks list
+  const list = h('ul', { style: { listStyle: 'none', padding: 0 } });
+  (result.checks || []).forEach(c => {
+    list.appendChild(h('li', { style: { padding: '.4rem .55rem', marginBottom: '.3rem', borderRadius: '6px', background: c.pass ? '#dcfce7' : '#fee2e2', borderLeft: '4px solid ' + (c.pass ? '#16a34a' : '#dc2626') } },
+      h('div', { style: { fontWeight: 600 } }, (c.pass ? '✅ ' : '❌ ') + c.name),
+      h('div', { class: 'muted', style: { fontSize: '.83rem', marginTop: '.2rem' } }, c.detail)
+    ));
+  });
+  body.appendChild(list);
+  if (result.recent_logs && result.recent_logs.length) {
+    body.appendChild(h('h4', { style: { marginTop: '1rem' } }, '📜 Last 10 reply attempts'));
+    const tbl = h('table', { class: 'mini-table', style: { fontSize: '.82rem' } },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'When'), h('th', {}, 'Phone'), h('th', {}, 'Status'), h('th', {}, 'Why')
+      )),
+      h('tbody', {}, ...result.recent_logs.map(r => h('tr', {},
+        h('td', { class: 'muted', style: { fontSize: '.75rem' } }, fmtDate(r.created_at, 'relative')),
+        h('td', {}, r.phone || '—'),
+        h('td', {}, h('span', { class: 'badge ' + (r.status === 'sent' ? 'ok' : r.status === 'failed' ? 'err' : 'warn') }, r.status)),
+        h('td', { class: 'muted' }, (r.reply_preview || r.error_text || r.suppressed_reason || '—').slice(0, 140))
+      )))
+    );
+    body.appendChild(h('div', { class: 'table-wrap' }, tbl));
+  } else if (result.recent_logs && result.recent_logs.length === 0) {
+    body.appendChild(h('p', { class: 'muted', style: { background: '#fef3c7', padding: '.6rem', borderRadius: '6px', borderLeft: '4px solid #f59e0b' } },
+      '⚠ No rows in ai_chat_log AT ALL. The inbound-reply path was never invoked. Most likely the WhatsApp webhook isn\'t firing for this number, OR maybeReplyToInbound is throwing before it can log. Check WhatsApp → Connect → webhook URL is set correctly in Meta App Dashboard.'));
+  }
+  card.appendChild(body);
+  modal.appendChild(card);
+  document.body.appendChild(modal);
+}
+
 async function _renderAiBotKb(host) {
+  // Diagnostic button — always visible so admins can self-check why
+  // the bot isn't replying without filing a support ticket.
+  if (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager')) {
+    host.appendChild(h('div', { style: { marginBottom: '.6rem', display: 'flex', justifyContent: 'flex-end' } },
+      h('button', { class: 'btn ghost sm', title: 'Run the bot self-diagnostic — shows why messages did or didn\'t get a reply', onclick: _aibotDiagnose }, '🔍 Why isn\'t my bot replying?')
+    ));
+  }
   const card = h('div', { class: 'card' });
   card.appendChild(h('h3', { style: { marginTop: 0 } }, '📚 Knowledge Base'));
   card.appendChild(h('p', { class: 'muted' },

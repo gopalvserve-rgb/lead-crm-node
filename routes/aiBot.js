@@ -1775,8 +1775,98 @@ async function api_aibot_heat_diagnostics(token, opts) {
   };
 }
 
+/**
+ * Self-diagnostic for "why isn't my AI bot replying?" — admins only.
+ * Walks the entire decision tree the inbound-reply path traverses and
+ * reports every gate's verdict + the last 10 ai_chat_log rows so the
+ * user can see exactly where the message was rejected.
+ */
+async function api_aibot_diagnose(token, phoneNumberId) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin/manager only');
+  await _ensureAiBotColumns();
+  const out = { ok: true, checks: [], recent_logs: [], settings: null };
+
+  // 1. Gemini API key
+  try {
+    const keyRow = await db.query(`SELECT value FROM config WHERE key = 'GEMINI_API_KEY' LIMIT 1`);
+    const envKey = (process.env.GEMINI_API_KEY || '').trim();
+    const dbKey  = (keyRow.rows[0] && String(keyRow.rows[0].value || '').trim()) || '';
+    out.checks.push({
+      name: 'Gemini API key',
+      pass: !!(dbKey || envKey),
+      detail: dbKey ? 'set in DB' : (envKey ? 'set in env' : 'MISSING — bot cannot generate replies. Set GEMINI_API_KEY in Settings → AI Bot.')
+    });
+  } catch (e) { out.checks.push({ name: 'Gemini API key', pass: false, detail: 'lookup failed: ' + e.message }); }
+
+  // 2. Bot settings exist + enabled
+  try {
+    let r;
+    if (phoneNumberId) {
+      r = await db.query(`SELECT * FROM ai_bot_settings WHERE phone_number_id = $1 LIMIT 1`, [String(phoneNumberId)]);
+      if (!r.rows.length) r = await db.query(`SELECT * FROM ai_bot_settings WHERE phone_number_id IS NULL ORDER BY id ASC LIMIT 1`);
+    } else {
+      r = await db.query(`SELECT * FROM ai_bot_settings WHERE phone_number_id IS NULL ORDER BY id ASC LIMIT 1`);
+    }
+    if (r.rows.length) {
+      const s = r.rows[0];
+      out.settings = {
+        id: s.id, phone_number_id: s.phone_number_id, bot_name: s.bot_name,
+        is_enabled: s.is_enabled, reply_modes: s.reply_modes,
+        active_phone_number_ids: s.active_phone_number_ids,
+        resume_after_idle_seconds: s.resume_after_idle_seconds,
+        use_kb: s.use_kb, kb_max_chars: s.kb_max_chars
+      };
+      out.checks.push({
+        name: 'Bot row exists',
+        pass: true,
+        detail: 'id=' + s.id + ', bot_name=' + (s.bot_name || '?') + ', phone_number_id=' + (s.phone_number_id || 'default')
+      });
+      out.checks.push({
+        name: 'Bot is enabled',
+        pass: Number(s.is_enabled) === 1,
+        detail: 'is_enabled=' + s.is_enabled + (Number(s.is_enabled) === 1 ? '' : ' — toggle ON in AI Bot → Settings')
+      });
+    } else {
+      out.checks.push({ name: 'Bot row exists', pass: false, detail: 'No row in ai_bot_settings. Open AI Bot → Settings → click Save once.' });
+    }
+  } catch (e) { out.checks.push({ name: 'Bot row exists', pass: false, detail: 'lookup failed: ' + e.message }); }
+
+  // 3. KB has documents
+  try {
+    const k = await db.query(`SELECT COUNT(*)::int AS c FROM ai_kb_documents WHERE is_active = 1`);
+    const n = (k.rows[0] && k.rows[0].c) || 0;
+    out.checks.push({
+      name: 'Knowledge base has content',
+      pass: n > 0,
+      detail: n + ' active doc' + (n === 1 ? '' : 's') + (n === 0 ? ' — bot will still reply but with no business context.' : '')
+    });
+  } catch (e) { out.checks.push({ name: 'Knowledge base', pass: false, detail: 'lookup failed: ' + e.message }); }
+
+  // 4. Recent ai_chat_log entries — the GROUND TRUTH for what happened.
+  try {
+    const r = await db.query(
+      `SELECT id, phone, status, suppressed_reason, error_text, model, created_at,
+              LEFT(reply_text, 200) AS reply_preview
+         FROM ai_chat_log
+         ORDER BY id DESC LIMIT 10`
+    );
+    out.recent_logs = r.rows;
+    out.checks.push({
+      name: 'Recent activity',
+      pass: r.rows.length > 0,
+      detail: r.rows.length === 0
+        ? 'No rows in ai_chat_log. The inbound webhook isn\'t firing the reply path at all — check WhatsApp webhook delivery.'
+        : 'Last 10 rows attached below. Look at "status" column: \'sent\' = bot replied, \'failed\' = check error_text, \'suppressed\' = check suppressed_reason, \'draft\' = manual mode is on.'
+    });
+  } catch (e) { out.checks.push({ name: 'Recent activity', pass: false, detail: 'ai_chat_log lookup failed: ' + e.message }); }
+
+  return out;
+}
+
 module.exports = {
   // Public tenant API (auto-exposed via tenantApi.js loader)
+  api_aibot_diagnose,
   api_aibot_settings_get, api_aibot_settings_save,
   api_aibot_settings_listAll, api_aibot_settings_delete,
   api_aibot_kb_list, api_aibot_kb_save_text, api_aibot_kb_delete, api_aibot_kb_toggle, api_aibot_kb_crawl_url, api_aibot_kb_set_phone, api_aibot_kb_assign_bulk,
