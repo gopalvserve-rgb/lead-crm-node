@@ -9805,33 +9805,34 @@ async function adminWebhookLogs() {
 }
 
 function _openWebhookLogDetails(row) {
-  // Pull the full record (the list response only carries previews)
-  const overlay = h('div', { class: 'modal-overlay' });
-  const modal = h('div', { class: 'modal', style: { maxWidth: '920px', width: '92vw' } });
-  const close = () => overlay.remove();
+  // Use the same modal-backdrop / modal pattern used everywhere else on
+  // this app (confirmDialog, recording details, bot flow modals etc.).
+  // Earlier this used a non-existent .modal-overlay class, which made the
+  // detail view invisible. Click on the dark backdrop closes the modal.
+  const backdrop = h('div', { class: 'modal-backdrop', onclick: (ev) => { if (ev.target === backdrop) backdrop.remove(); } });
+  const modal = h('div', { class: 'modal modal-lg' });
+  const closeBtn = h('button', { class: 'btn sm', onclick: () => backdrop.remove() }, '\u2715');
   modal.appendChild(h('div', { class: 'modal-head' },
-    h('h3', {}, '📡 ' + (row.method || '') + ' ' + (row.path || '')),
-    h('button', { class: 'btn sm', onclick: close }, '✕')
+    h('h3', {}, '\uD83D\uDCE1 ' + (row.method || '') + ' ' + (row.path || '')),
+    closeBtn
   ));
-  const bodyEl = h('div', { class: 'modal-body' });
-  bodyEl.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginBottom: '.5rem' } },
-    fmtDate(row.created_at) + ' · status ' + (row.response_code || '–') + ' · ' + (row.duration_ms || 0) + ' ms · from ' + (row.source_ip || 'unknown')));
-  const loadingDiv = h('div', { class: 'loading' }, 'Loading…');
-  bodyEl.appendChild(loadingDiv);
-  modal.appendChild(bodyEl);
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
+  modal.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginBottom: '.5rem' } },
+    fmtDate(row.created_at) + ' \u00B7 status ' + (row.response_code || '\u2013') + ' \u00B7 ' + (row.duration_ms || 0) + ' ms \u00B7 from ' + (row.source_ip || 'unknown')));
+  const loadingDiv = h('div', { class: 'loading' }, 'Loading\u2026');
+  modal.appendChild(loadingDiv);
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
 
   api('api_admin_webhookLogs_get', row.id).then(full => {
     if (!full) { loadingDiv.textContent = 'Not found'; return; }
     loadingDiv.remove();
-    const section = (title, content, lang) => {
+    const section = (title, content) => {
       const wrap = h('div', { style: { marginTop: '1rem' } });
       const head = h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
         h('b', {}, title),
         h('button', { class: 'btn sm', onclick: () => { navigator.clipboard.writeText(content || ''); toast('Copied'); } }, 'Copy')
       );
-      const pre = h('pre', { style: { background: '#0f172a', color: '#e2e8f0', padding: '.7rem', borderRadius: '6px', overflow: 'auto', maxHeight: '300px', fontSize: '.78rem' } }, content || '(empty)');
+      const pre = h('pre', { style: { background: '#0f172a', color: '#e2e8f0', padding: '.7rem', borderRadius: '6px', overflow: 'auto', maxHeight: '300px', fontSize: '.78rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, content || '(empty)');
       wrap.appendChild(head);
       wrap.appendChild(pre);
       return wrap;
@@ -9840,13 +9841,13 @@ function _openWebhookLogDetails(row) {
       if (!txt) return '';
       try { return JSON.stringify(JSON.parse(txt), null, 2); } catch (_) { return String(txt); }
     };
-    bodyEl.appendChild(section('Request body', tryPretty(full.body_text)));
-    bodyEl.appendChild(section('Response body', tryPretty(full.response_text)));
+    modal.appendChild(section('Request body', tryPretty(full.body_text)));
+    modal.appendChild(section('Response body', tryPretty(full.response_text)));
     if (full.query_json && full.query_json !== '{}') {
-      bodyEl.appendChild(section('Query params', tryPretty(full.query_json)));
+      modal.appendChild(section('Query params', tryPretty(full.query_json)));
     }
-    bodyEl.appendChild(section('Headers (auth redacted)', tryPretty(full.headers_json)));
-    bodyEl.appendChild(h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.74rem' } },
+    modal.appendChild(section('Headers (auth redacted)', tryPretty(full.headers_json)));
+    modal.appendChild(h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.74rem' } },
       'User-Agent: ' + (full.user_agent || '')));
   }).catch(e => { loadingDiv.textContent = 'Error: ' + e.message; });
 }
