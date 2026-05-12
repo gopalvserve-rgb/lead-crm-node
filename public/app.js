@@ -1019,6 +1019,10 @@ const LEAD_COLUMNS = [
 
 VIEWS.leads = async (view) => {
   if (!CRM.cache.statuses) await warmCache();
+  // Refresh distinct tag list on every leads-view render so newly-added
+  // tags show up in the filter dropdown without a hard refresh.
+  try { CRM.cache.tagFilterOpts = await api('api_leads_distinctTags'); }
+  catch (_) { CRM.cache.tagFilterOpts = CRM.cache.tagFilterOpts || []; }
   const { statuses, sources, users } = CRM.cache;
 
   view.innerHTML = '';
@@ -1060,11 +1064,27 @@ VIEWS.leads = async (view) => {
   const searchInput = h('input', { id: 'f-q', placeholder: 'Search name / phone / email…', class: 'flex', value: CRM.prefs.filters.q || '' });
   searchInput.addEventListener('input', debouncedSearch);
   searchInput.addEventListener('keydown', ev => { if (ev.key === 'Enter') applyFilters(); });
+  // Date-range filter — values feed into api_leads_list as filters.from/.to
+  // and are persisted in CRM.prefs.filters so they survive reload.
+  const fromInput = h('input', { id: 'f-from', type: 'date', value: CRM.prefs.filters.from || '', title: 'Created on or after this date', style: { width: '140px' } });
+  const toInput   = h('input', { id: 'f-to',   type: 'date', value: CRM.prefs.filters.to   || '', title: 'Created on or before this date', style: { width: '140px' } });
+  fromInput.addEventListener('change', applyFilters);
+  toInput.addEventListener('change', applyFilters);
+  const dateRangeWrap = h('div', { class: 'date-range', style: { display: 'inline-flex', alignItems: 'center', gap: '.25rem' } },
+    h('span', { class: 'muted', style: { fontSize: '.78rem' } }, '📅 From'),
+    fromInput,
+    h('span', { class: 'muted', style: { fontSize: '.78rem' } }, 'To'),
+    toInput
+  );
+  // Distinct tags — fetched once when the view loads, cached on CRM.cache.
+  const _tagOpts = Array.isArray(CRM.cache.tagFilterOpts) ? CRM.cache.tagFilterOpts : [];
   const toolbar = h('div', { class: 'toolbar' },
     searchInput,
+    dateRangeWrap,
     wireFilter(multiSelectOpts('f-status', statuses, (Array.isArray(CRM.prefs.filters.status_ids) && CRM.prefs.filters.status_ids.length) ? CRM.prefs.filters.status_ids : (CRM.prefs.filters.status_id ? [CRM.prefs.filters.status_id] : []))),
-    wireFilter(selectOpts('f-source', [{ id: '', name: 'Any source' }, ...sources.map(s => ({ id: s.name, name: s.name }))], CRM.prefs.filters.source)),
-    wireFilter(selectOpts('f-assigned', [{ id: '', name: 'Any assignee' }, ...users], CRM.prefs.filters.assigned_to)),
+    wireFilter(multiSelectOpts('f-source', sources.map(s => ({ id: s.name, name: s.name })), (Array.isArray(CRM.prefs.filters.sources) && CRM.prefs.filters.sources.length) ? CRM.prefs.filters.sources : (CRM.prefs.filters.source ? [CRM.prefs.filters.source] : []), { title: 'Hold Ctrl/Cmd to pick multiple sources' })),
+    wireFilter(multiSelectOpts('f-assigned', users.map(u => ({ id: u.id, name: u.name })), (Array.isArray(CRM.prefs.filters.assigned_tos) && CRM.prefs.filters.assigned_tos.length) ? CRM.prefs.filters.assigned_tos : (CRM.prefs.filters.assigned_to ? [CRM.prefs.filters.assigned_to] : []), { title: 'Hold Ctrl/Cmd to pick multiple assignees' })),
+    wireFilter(multiSelectOpts('f-tags', _tagOpts, (CRM.prefs.filters.tags && CRM.prefs.filters.tags.length) ? CRM.prefs.filters.tags : [], { title: 'Hold Ctrl/Cmd to pick multiple tags' })),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
     wireFilter(selectOpts('f-qualified', [
       { id: '',  name: 'Any qualified' },
@@ -1328,11 +1348,24 @@ async function loadLeads(opts) {
   const pageSize = Number(localStorage.getItem('crm_page_size') || 25);
   const page = Number(opts.page || CRM._leadsPage || 1);
   CRM._leadsPage = page;
+  // Multi-select arrays for status/source/assignee/tags; legacy single
+  // status_id / source / assigned_to stay for back-compat with old saved
+  // filters that still send scalars.
+  const _statusIds = multiSelectValues('#f-status');
+  const _sources   = multiSelectValues('#f-source');
+  const _assigned  = multiSelectValues('#f-assigned');
+  const _tags      = multiSelectValues('#f-tags');
   const filters = {
     q:           $('#f-q')?.value || undefined,
-    status_ids:  multiSelectValues('#f-status'),
-    source:      $('#f-source')?.value || undefined,
-    assigned_to: $('#f-assigned')?.value || undefined,
+    status_ids:  _statusIds.length ? _statusIds : undefined,
+    status_id:   (_statusIds.length === 1) ? _statusIds[0] : undefined,
+    sources:     _sources.length ? _sources : undefined,
+    source:      (_sources.length === 1) ? _sources[0] : undefined,
+    assigned_tos: _assigned.length ? _assigned : undefined,
+    assigned_to:  (_assigned.length === 1) ? _assigned[0] : undefined,
+    tags:        _tags.length ? _tags : undefined,
+    from:        $('#f-from')?.value || undefined,
+    to:          $('#f-to')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
     qualified:   $('#f-qualified')?.value || undefined,
     duplicate:   $('#f-duplicate')?.value || undefined,

@@ -327,6 +327,18 @@ async function api_leads_list(token, filters) {
   if (filters.product_id)    rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
   if (filters.assigned_to)   rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
   if (_assignedTos.length)   rows = rows.filter(l => _assignedTos.map(Number).includes(Number(l.assigned_to)));
+  // Tag filter — leads.tags is a free-form CSV string. Match if the
+  // lead's tags column case-insensitively contains ANY of the selected
+  // tags. Empty array = no filter.
+  const _tags = _arr(filters.tags);
+  if (_tags.length) {
+    const wanted = _tags.map(t => String(t || '').toLowerCase().trim()).filter(Boolean);
+    rows = rows.filter(l => {
+      const lt = String(l.tags || '').toLowerCase();
+      if (!lt) return false;
+      return wanted.some(w => lt.includes(w));
+    });
+  }
   // Qualified filter:
   //   '1' / 'only' → only leads marked qualified
   //   '0' / 'unqualified' → only leads NOT marked qualified
@@ -1618,8 +1630,31 @@ async function api_whatsapp_send(token, payload) {
   return { ok: true, status, wa_message_id: waId };
 }
 
+/**
+ * Returns the distinct list of tags used across all leads visible to
+ * the caller. leads.tags is a free-form CSV string; split on , ; |
+ * dedupe case-insensitively, sort ascending. Used by the Leads filter
+ * toolbar to populate the multi-select tag dropdown.
+ */
+async function api_leads_distinctTags(token) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const rows = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
+  const set = new Map(); // lowercase → display
+  for (const l of rows) {
+    const raw = String(l.tags || '');
+    if (!raw) continue;
+    for (const t of raw.split(/[,;|]/).map(s => s.trim()).filter(Boolean)) {
+      const k = t.toLowerCase();
+      if (!set.has(k)) set.set(k, t);
+    }
+  }
+  const out = [...set.values()].sort((a, b) => a.localeCompare(b));
+  return out.map(name => ({ id: name, name }));
+}
+
 module.exports = {
-  api_leads_list, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
+  api_leads_list, api_leads_distinctTags, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
   api_leads_addRemark, api_leads_pipeline, api_myFollowups, api_followup_done,
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
   api_leads_deleteAllDuplicates, api_leads_duplicateAndReassign,
