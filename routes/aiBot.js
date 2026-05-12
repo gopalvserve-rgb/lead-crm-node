@@ -24,7 +24,23 @@
 'use strict';
 
 const db = require('../db/pg');
-const control = require('../control/db');
+// Optional control DB — only exists in smartcrm-saas (multi-tenant). On
+// single-tenant deployments like Celeste / Stockbox the centralised AI
+// billing tables live in the tenant DB itself, so we no-op the control
+// helper when the module isn't present. This stops the whole server
+// from refusing to start on tenants that never had control/db.
+let control;
+try { control = require('../control/db'); }
+catch (_) {
+  control = {
+    query: async () => ({ rows: [] }),
+    setConfig: async () => null,
+    getConfig: async () => null,
+    insert: async () => null,
+    update: async () => null,
+    getAll: async () => []
+  };
+}
 const { authUser } = require('../utils/auth');
 const gemini = require('../utils/geminiClient');
 
