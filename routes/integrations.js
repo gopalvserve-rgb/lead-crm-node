@@ -18,6 +18,7 @@
 const crypto = require('crypto');
 const fetch = require('node-fetch');
 const db = require('../db/pg');
+const _sourceMapping = require('../utils/sourceMapping');
 const { authUser } = require('../utils/auth');
 
 // ============================================================
@@ -665,7 +666,19 @@ async function leadSourceWebhook(req, res) {
       await db.insert('webhook_log', { source, payload: body, processed: 0, error: '' });
     } catch (_) {}
 
-    const items = _adaptLeadSourcePayload(source, body);
+    // Save the raw payload so the admin can see exactly what arrived
+    // when configuring field mapping in Settings → Webhook logs → Map fields.
+    try { await _sourceMapping.saveLastPayload(source, body); } catch (_) {}
+    // If admin has saved a custom field mapping for this source, prepend
+    // the mapped object so it takes priority over the default adapter.
+    let items = _adaptLeadSourcePayload(source, body);
+    try {
+      const saved = await _sourceMapping.loadMapping(source);
+      const overlay = saved ? _sourceMapping.applyMapping(body, saved) : null;
+      if (overlay) {
+        items = [Object.assign({ source: source }, overlay)].concat(items || []);
+      }
+    } catch (_) {}
     const owner = await db.getAll('users').then(us => us.find(u => u.role === 'admin'));
     if (!owner) return res.status(500).json({ error: 'No admin user to own leads' });
 

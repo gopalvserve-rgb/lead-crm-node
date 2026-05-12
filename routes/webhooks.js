@@ -10,6 +10,7 @@
  *   POST /hook/other     — generic JSON lead ingest (requires x-api-key)
  */
 const fetch = require('node-fetch');
+const _sourceMapping = require('../utils/sourceMapping');
 const db = require('../db/pg');
 
 const GRAPH = 'https://graph.facebook.com/v19.0';
@@ -217,6 +218,16 @@ async function websiteHook(req, res) {
     return res.status(401).json({ error: 'Invalid API key' });
   }
   try {
+    // Save the raw payload so admin can see what arrived in
+    // Settings → Webhook logs → Map fields (then map vendor-specific keys
+    // to CRM fields). If a saved mapping exists, overlay the mapped
+    // values on top of the body so b.name/b.phone/etc. resolve correctly.
+    try { await _sourceMapping.saveLastPayload('website', req.body || {}); } catch (_) {}
+    try {
+      const saved = await _sourceMapping.loadMapping('website');
+      const overlay = saved ? _sourceMapping.applyMapping(req.body || {}, saved) : null;
+      if (overlay) req.body = Object.assign({}, overlay, req.body || {});
+    } catch (_) {}
     const b = req.body || {};
     // Tags — accept either a comma-separated string or a JSON array
     let tags = '';

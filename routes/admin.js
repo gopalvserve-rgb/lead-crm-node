@@ -367,6 +367,16 @@ async function api_admin_webhookLogs_get(token, id) {
   return _webhookLogger.api_admin_webhookLogs_get(token, id);
 }
 
+
+// ───── Per-source field mapping (used by Webhook logs → Map fields) ─────
+const _sourceMapping = require('../utils/sourceMapping');
+async function api_admin_sourceMapping_get(token, source) {
+  return _sourceMapping.api_admin_sourceMapping_get(token, source);
+}
+async function api_admin_sourceMapping_save(token, source, mapping) {
+  return _sourceMapping.api_admin_sourceMapping_save(token, source, mapping);
+}
+
 module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
@@ -380,5 +390,6 @@ module.exports = {
   api_admin_wipeHrData,
   api_admin_webhookLog,
   api_admin_webhookLogs_list,
-  api_admin_webhookLogs_get
+  api_admin_webhookLogs_get,
+  api_admin_sourceMapping_get, api_admin_sourceMapping_save
 };

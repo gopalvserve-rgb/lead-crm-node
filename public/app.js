@@ -9804,6 +9804,114 @@ async function adminWebhookLogs() {
   return wrap;
 }
 
+
+// 🗺 Source field-mapping modal — let admin map incoming JSON keys to
+// CRM fields. Reads last received payload + saved mapping, lets the
+// admin add/edit rows, saves to lead_source_mapping table.
+async function openSourceMappingModal(sourceId) {
+  const backdrop = h('div', { class: 'modal-backdrop', onclick: (ev) => { if (ev.target === backdrop) backdrop.remove(); } });
+  const modal = h('div', { class: 'modal modal-lg' });
+  const close = () => backdrop.remove();
+  modal.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '\uD83D\uDDFA Field mapping \u2014 ' + sourceId),
+    h('button', { class: 'btn sm', onclick: close }, '\u2715')
+  ));
+  const body = h('div', {});
+  body.appendChild(h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: 0 } },
+    'Tell us which CRM field each incoming JSON key should populate. Your mapping is applied on every inbound /hook/* request for this source, taking priority over the built-in defaults.'));
+  const loading = h('div', { class: 'muted' }, 'Loading saved mapping\u2026');
+  body.appendChild(loading);
+  modal.appendChild(body);
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  let data;
+  try { data = await api('api_admin_sourceMapping_get', sourceId); }
+  catch (e) { loading.textContent = '\u274C ' + e.message; return; }
+  loading.remove();
+
+  if (data.last_payload) {
+    const det = h('details', { style: { marginBottom: '.6rem' } });
+    det.appendChild(h('summary', { class: 'muted', style: { cursor: 'pointer', fontSize: '.85rem' } },
+      '\uD83D\uDCE5 Last received payload (' + (data.last_seen_at ? new Date(data.last_seen_at).toLocaleString() : 'unknown') + ')'));
+    det.appendChild(h('pre', { style: { background: '#0f172a', color: '#e2e8f0', padding: '.6rem', borderRadius: '6px', fontSize: '.78rem', maxHeight: '180px', overflow: 'auto', whiteSpace: 'pre-wrap' } },
+      JSON.stringify(data.last_payload, null, 2)));
+    body.appendChild(det);
+  }
+
+  // Build the union of known + last-payload keys + already-saved keys
+  const knownKeys = data.known_keys || [];
+  const saved = data.mapping || {};
+  const customFields = data.custom_fields || [];
+  const crmFields = data.crm_fields || ['name','phone','email','company','city','state','source','source_ref','notes','product','value','tags'];
+  const extraFromPayload = [];
+  if (data.last_payload && typeof data.last_payload === 'object') {
+    const top = Array.isArray(data.last_payload) ? (data.last_payload[0] || {}) : data.last_payload;
+    Object.keys(top || {}).forEach(k => {
+      if (!knownKeys.includes(k) && !extraFromPayload.includes(k) && typeof top[k] !== 'object') extraFromPayload.push(k);
+    });
+  }
+  const fromSaved = Object.keys(saved).filter(k => !knownKeys.includes(k) && !extraFromPayload.includes(k));
+  const allKeys = knownKeys.concat(extraFromPayload, fromSaved);
+  const selectByKey = {};
+
+  const tbl = h('table', { class: 'tbl', style: { width: '100%' } });
+  const head = h('thead', {}, h('tr', {},
+    h('th', { style: { width: '45%' } }, 'Incoming JSON key'),
+    h('th', { style: { width: '50%' } }, 'Maps to CRM field'),
+    h('th', {}, '')
+  ));
+  tbl.appendChild(head);
+  const tb = h('tbody', {});
+  tbl.appendChild(tb);
+
+  function renderRow(srcKey, crmField, isCustom) {
+    const tr = h('tr', {});
+    const keyInput = h('input', { type: 'text', value: srcKey || '', style: { width: '100%' }, placeholder: 'e.g. SENDER_NAME' });
+    const sel = h('select', { style: { width: '100%' } },
+      h('option', { value: '' }, '\u2014 ignore \u2014'),
+      h('optgroup', { label: 'Standard fields' },
+        ...crmFields.map(f => h('option', { value: f, selected: crmField === f ? 'selected' : null }, f))
+      )
+    );
+    if (customFields.length) {
+      const og = h('optgroup', { label: 'Custom fields' },
+        ...customFields.map(cf => h('option', { value: cf.key, selected: crmField === cf.key ? 'selected' : null }, cf.label + ' (' + cf.key + ')'))
+      );
+      sel.appendChild(og);
+    }
+    const delBtn = h('button', { class: 'btn sm danger', onclick: () => tr.remove() }, '\u2715');
+    tr.appendChild(h('td', {}, keyInput));
+    tr.appendChild(h('td', {}, sel));
+    tr.appendChild(h('td', {}, delBtn));
+    tb.appendChild(tr);
+    tr.__getKey = () => keyInput.value.trim();
+    tr.__getVal = () => sel.value;
+  }
+  allKeys.forEach(k => renderRow(k, saved[k] || ''));
+  if (allKeys.length === 0) renderRow('', '');
+
+  body.appendChild(tbl);
+
+  const addBtn = h('button', { class: 'btn sm', style: { marginTop: '.5rem' }, onclick: () => renderRow('', '') }, '+ Add row');
+  body.appendChild(addBtn);
+
+  const saveBtn = h('button', { class: 'btn primary', style: { marginTop: '1rem' }, onclick: async () => {
+    const mapping = {};
+    tb.querySelectorAll('tr').forEach(tr => {
+      const k = tr.__getKey && tr.__getKey();
+      const v = tr.__getVal && tr.__getVal();
+      if (k && v) mapping[k] = v;
+    });
+    try {
+      await api('api_admin_sourceMapping_save', sourceId, mapping);
+      toast('Mapping saved');
+      close();
+    } catch (e) { toast(e.message, 'err'); }
+  } }, '\uD83D\uDCBE Save mapping');
+  body.appendChild(saveBtn);
+}
+
 function _openWebhookLogDetails(row) {
   // Use the same modal-backdrop / modal pattern used everywhere else on
   // this app (confirmDialog, recording details, bot flow modals etc.).
@@ -9847,6 +9955,24 @@ function _openWebhookLogDetails(row) {
       modal.appendChild(section('Query params', tryPretty(full.query_json)));
     }
     modal.appendChild(section('Headers (auth redacted)', tryPretty(full.headers_json)));
+    // 🗺 Map fields button — derives the source name from the path
+    // (/hook/website -> "website", /hook/leadsource/indiamart/... -> "indiamart")
+    // and opens the mapping editor with the captured payload pre-filled.
+    (function () {
+      let src = '';
+      const p = String(row.path || '').toLowerCase();
+      const ls = p.match(/\/hook\/leadsource\/([^\/?]+)/);
+      if (ls) src = ls[1];
+      else if (p.indexOf('/hook/website') === 0) src = 'website';
+      else if (p.indexOf('/hook/sheet') === 0)   src = 'sheet';
+      if (src) {
+        const btnRow = h('div', { style: { marginTop: '1rem', display: 'flex', gap: '.5rem' } },
+          h('button', { class: 'btn primary', onclick: () => { backdrop.remove(); openSourceMappingModal(src); } },
+            '\uD83D\uDDFA Map fields for "' + src + '"')
+        );
+        modal.appendChild(btnRow);
+      }
+    })();
     modal.appendChild(h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.74rem' } },
       'User-Agent: ' + (full.user_agent || '')));
   }).catch(e => { loadingDiv.textContent = 'Error: ' + e.message; });
