@@ -1830,6 +1830,41 @@ async function _handleInbound(m, value) {
     text = m[m.type]?.caption || '';
     mediaId = m[m.type]?.id || null;
   }
+  // Extra message types Meta has added over time. We save a friendly
+  // body so the chat shows something useful instead of '[unsupported]'.
+  else if (m.type === 'sticker') {
+    text = '\uD83C\uDFAD Sticker';
+    mediaId = m.sticker?.id || null;
+  }
+  else if (m.type === 'reaction') {
+    const emoji = m.reaction?.emoji || '';
+    text = '\uD83D\uDC4D Reacted ' + (emoji ? ('\u201C' + emoji + '\u201D') : '');
+  }
+  else if (m.type === 'location') {
+    const lat = m.location?.latitude, lng = m.location?.longitude;
+    const name = m.location?.name || m.location?.address || '';
+    text = '\uD83D\uDCCD Location' + (name ? ': ' + name : '')
+         + (lat && lng ? ' (' + lat + ', ' + lng + ')' : '');
+  }
+  else if (m.type === 'contacts') {
+    const contacts = m.contacts || [];
+    const names = contacts.map(c => (c.name && (c.name.formatted_name || c.name.first_name)) || '?').filter(Boolean);
+    text = '\uD83D\uDCC7 Contact card' + (names.length ? ': ' + names.join(', ') : '');
+  }
+  else if (m.type === 'order') {
+    const itemCount = (m.order?.product_items || []).length;
+    text = '\uD83D\uDED2 Order' + (itemCount ? ' (' + itemCount + ' items)' : '');
+  }
+  else if (m.type === 'system') {
+    text = '\u2139\uFE0F ' + (m.system?.body || 'System message');
+  }
+  else if (m.type === 'unknown' || m.type === 'unsupported') {
+    const errMsg = (m.errors && m.errors[0] && (m.errors[0].title || m.errors[0].message)) || '';
+    text = '\uD83D\uDCAC Unsupported message type' + (errMsg ? ' (' + errMsg + ')' : '');
+  }
+  else if (m.type) {
+    text = '\uD83D\uDCAC ' + m.type.charAt(0).toUpperCase() + m.type.slice(1).replace(/_/g, ' ');
+  }
 
   // Look up or auto-create the lead.
   // Match on full digits (e.g. 917827878780) OR last-10 digits so a lead

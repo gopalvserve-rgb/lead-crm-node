@@ -1879,10 +1879,65 @@ async function api_aibot_diagnose(token, phoneNumberId) {
   return out;
 }
 
+
+/**
+ * Tenant-scoped Gemini API key management. The aiBot Settings UI
+ * exposes a masked paste field that calls these two endpoints.
+ */
+async function api_aibot_geminiKey_get(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin / manager only');
+  let dbKey = '';
+  try { dbKey = (await db.getConfig('GEMINI_API_KEY', '') || '').trim(); } catch (_) {}
+  const envKey = String(process.env.GEMINI_API_KEY || '').trim();
+  const source = dbKey ? 'config_db' : (envKey ? 'env' : null);
+  const present = !!(dbKey || envKey);
+  // Mask: show first 6 + last 4
+  const mask = (k) => {
+    if (!k) return '';
+    if (k.length <= 12) return '*'.repeat(k.length);
+    return k.slice(0, 6) + '...' + k.slice(-4);
+  };
+  return {
+    present, source,
+    masked: mask(dbKey || envKey),
+    is_db_set: !!dbKey,
+    is_env_set: !!envKey,
+    note: envKey && dbKey
+      ? 'Both DB and env key are set — DB key wins.'
+      : (envKey ? 'Currently using the Railway env GEMINI_API_KEY. Pasting here will override it.' : '')
+  };
+}
+
+async function api_aibot_geminiKey_save(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin' && me.role !== 'manager') throw new Error('Admin / manager only');
+  const key = String((payload && payload.key) || '').trim();
+  if (!key) throw new Error('Key is required (or use api_aibot_geminiKey_clear to remove)');
+  // Light sanity check — Gemini keys start with 'AIza' and are ~40 chars.
+  if (!/^AIza[\w-]{20,}$/.test(key) && key.length < 20) {
+    throw new Error('That does not look like a valid Gemini API key. Get one at aistudio.google.com/apikey');
+  }
+  await db.setConfig('GEMINI_API_KEY', key);
+  // Invalidate the in-process settings cache so the next reply uses the new key.
+  try { require('../utils/geminiClient').invalidateCache(); } catch (_) {}
+  return { ok: true };
+}
+
+async function api_aibot_geminiKey_clear(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  try { await db.setConfig('GEMINI_API_KEY', ''); } catch (_) {}
+  try { require('../utils/geminiClient').invalidateCache(); } catch (_) {}
+  return { ok: true };
+}
+
+
 module.exports = {
   // Public tenant API (auto-exposed via tenantApi.js loader)
   api_aibot_diagnose,
   api_aibot_settings_get, api_aibot_settings_save,
+  api_aibot_geminiKey_get, api_aibot_geminiKey_save, api_aibot_geminiKey_clear,
   api_aibot_settings_listAll, api_aibot_settings_delete,
   api_aibot_kb_list, api_aibot_kb_save_text, api_aibot_kb_delete, api_aibot_kb_toggle, api_aibot_kb_crawl_url, api_aibot_kb_set_phone, api_aibot_kb_assign_bulk,
   api_aibot_kb_save_attachment, api_aibot_kb_set_attachment_meta,
