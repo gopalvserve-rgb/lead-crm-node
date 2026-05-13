@@ -166,6 +166,30 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
   }
 });
 
+// POST /api/call_event_native
+// Native PhoneStateReceiver POSTs here every time the phone rings or a
+// call ends. Path independent of the WebView so call events register
+// even when the app is killed. Auth via stored JWT.
+app.post('/api/call_event_native', require('express').json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const token = _tokenFrom(req);
+    const recRoutes = require('./routes/recordings');
+    const result = await recRoutes.api_call_logEvent(token, {
+      phone:     req.body && req.body.phone,
+      direction: req.body && req.body.direction,
+      event:     req.body && req.body.event,
+      duration_s: req.body && req.body.duration_s,
+      missed:    req.body && req.body.missed
+    });
+    console.log('[/api/call_event_native] phone=', req.body && req.body.phone,
+                'event=', req.body && req.body.event, '→ lead_id=', result && result.lead_id);
+    res.json(result);
+  } catch (e) {
+    console.error('[/api/call_event_native]', e.message);
+    res.status(400).json({ error: e.message });
+  }
+});
+
 // GET /api/recordings/:id/audio  — streams audio bytes (token required)
 app.get('/api/recordings/:id/audio', async (req, res) => {
   try {

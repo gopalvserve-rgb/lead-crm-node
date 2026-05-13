@@ -15,6 +15,19 @@ const CRM = {
   }
 };
 
+// Save the auth token + API base into Android SharedPreferences so the
+// native PhoneStateReceiver can POST call events directly to
+// /api/call_event_native without depending on the WebView being alive.
+// Safe no-op on web.
+function _syncNativeCallEventCreds() {
+  try {
+    if (!window.LeadCRMNative || typeof LeadCRMNative.saveCallEventCreds !== 'function') return;
+    const tok = (typeof CRM !== 'undefined' && CRM.token) || localStorage.getItem('crm_token') || '';
+    const base = (typeof CRM !== 'undefined' && CRM.config && CRM.config.base_url) || location.origin;
+    LeadCRMNative.saveCallEventCreds(base, tok);
+  } catch (_) {}
+}
+
 /* ---------------- API helper ---------------- */
 // Global "in-flight" counter — drives the top loading bar.
 let _apiInFlight = 0;
@@ -305,6 +318,7 @@ function renderLogin() {
       }
       CRM.token = r.token; CRM.user = r.user;
       localStorage.setItem('crm_token', r.token);
+      try { _syncNativeCallEventCreds(); } catch(_){}
       location.reload();
     } catch (e) { $('#login-err').textContent = e.message; }
   });
@@ -498,6 +512,7 @@ function showOtpStep(challengeToken, who) {
       const r = await apiRaw('api_login_otp_verify', challengeToken, otp);
       CRM.token = r.token; CRM.user = r.user;
       localStorage.setItem('crm_token', r.token);
+      try { _syncNativeCallEventCreds(); } catch(_){}
       location.reload();
     } catch (e) { document.getElementById('login-err').textContent = e.message; }
   });
@@ -15954,3 +15969,11 @@ function openDashboardWidgetPicker() {
   }
   wrap();
 })();
+
+// Sync native call-event creds (auth token + apiBase) on app boot so
+// PhoneStateReceiver can POST events to /api/call_event_native even
+// when the WebView is paused/killed.
+document.addEventListener('DOMContentLoaded', () => {
+  try { _syncNativeCallEventCreds(); } catch (_) {}
+  setTimeout(() => { try { _syncNativeCallEventCreds(); } catch(_) {} }, 2500);
+});
