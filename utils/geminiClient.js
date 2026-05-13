@@ -140,9 +140,20 @@ async function _runViaProxy(args, opts) {
 async function generate(args) {
   // Central proxy path — if env vars are set, route through smartcrm-saas
   // instead of holding a local key. Usage lands in the central ai_usage_log
-  // automatically.
+  // automatically. If the proxy is unreachable or returns a transport
+  // error (network / 5xx / 401), fall back to the local Gemini path so
+  // the bot keeps working even if smartcrm-saas is down or the token
+  // is mis-configured. Only proxy-success and Gemini-level errors are
+  // returned to the caller directly.
   const proxyResult = await _runViaProxy(args, { call_kind: args.call_kind || 'reply', phone: args.phone, lead_id: args.lead_id });
-  if (proxyResult) return proxyResult;
+  if (proxyResult) {
+    const err = String(proxyResult.error || '');
+    const isTransport = !proxyResult.ok && (
+      /Proxy error|Bad token|HTTP 5\d\d|HTTP 401|HTTP 403|disabled/i.test(err)
+    );
+    if (!isTransport) return proxyResult;
+    console.warn('[gemini] proxy transport error, falling back to local:', err);
+  }
   const settings = await loadSettings();
   if (!settings) {
     return { ok: false, text: '', model: '', input_tokens: 0, output_tokens: 0,

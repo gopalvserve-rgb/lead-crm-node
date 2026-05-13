@@ -1787,6 +1787,21 @@ async function api_aibot_diagnose(token, phoneNumberId) {
   await _ensureAiBotColumns();
   const out = { ok: true, checks: [], recent_logs: [], settings: null };
 
+  // 0. AI proxy config (smartcrm-saas central proxy)
+  try {
+    const url   = String(process.env.AI_PROXY_URL || '').trim();
+    const token = String(process.env.AI_PROXY_TOKEN || '').trim();
+    const slug  = String(process.env.AI_PROXY_TENANT_SLUG || process.env.GEMINI_USAGE_REPORT_TENANT_SLUG || '').trim();
+    const allSet = !!(url && token && slug);
+    out.checks.push({
+      name: 'Central AI proxy (smartcrm-saas)',
+      pass: true,  // not a hard requirement — local key works too
+      detail: allSet
+        ? 'ENABLED — routes through ' + url + ' as tenant=' + slug
+        : 'not configured (' + [url ? '' : 'AI_PROXY_URL', token ? '' : 'AI_PROXY_TOKEN', slug ? '' : 'AI_PROXY_TENANT_SLUG'].filter(Boolean).join(', ') + ' missing). Falls back to local GEMINI_API_KEY.'
+    });
+  } catch (_) {}
+
   // 1. Gemini API key
   try {
     const keyRow = await db.query(`SELECT value FROM config WHERE key = 'GEMINI_API_KEY' LIMIT 1`);
