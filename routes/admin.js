@@ -366,6 +366,9 @@ async function api_admin_webhookLogs_list(token, opts) {
 async function api_admin_webhookLogs_get(token, id) {
   return _webhookLogger.api_admin_webhookLogs_get(token, id);
 }
+async function api_admin_webhookLogs_backfillSources(token, opts) {
+  return _webhookLogger.api_admin_webhookLogs_backfillSources(token, opts);
+}
 
 
 // ───── Per-source field mapping (used by Webhook logs → Map fields) ─────

@@ -9753,6 +9753,42 @@ async function adminWebhookLogs() {
   toolbar.appendChild(h('strong', {}, '📡 Webhook event log'));
   toolbar.appendChild(pathFilter);
   toolbar.appendChild(refreshBtn);
+  // Backfill button: walks recent logs and fixes leads whose source
+  // landed as 'Website' / 'manual' even though the payload had a real
+  // utm_source / lead_source / channel value.
+  const backfillBtn = h('button', { class: 'btn',
+    title: 'Re-apply the new source resolver to leads created in the last 30 days. Only updates leads whose current source is a generic default (Website/manual/empty).',
+    onclick: async () => {
+      // Run a dry run first to show the user what will change
+      backfillBtn.disabled = true;
+      backfillBtn.textContent = 'Scanning…';
+      try {
+        const dry = await api('api_admin_webhookLogs_backfillSources', { daysBack: 30, dryRun: true });
+        if (!dry || dry.proposed === 0) {
+          alert('No leads need updating in the last 30 days. ' + (dry ? '(' + dry.logs_scanned + ' logs scanned)' : ''));
+          return;
+        }
+        const sampleTxt = (dry.sample || []).slice(0, 10).map(s =>
+          '• ' + (s.name || s.phone) + '  →  source: "' + (s.old || '—') + '"  ⇒  "' + s.new + '"'
+        ).join('\n');
+        const ok = confirm(
+          'Found ' + dry.proposed + ' lead(s) to update (scanned ' + dry.logs_scanned + ' webhook logs).\n\n' +
+          'Sample:\n' + sampleTxt + '\n\n' +
+          'Proceed with the update?'
+        );
+        if (!ok) return;
+        backfillBtn.textContent = 'Updating…';
+        const live = await api('api_admin_webhookLogs_backfillSources', { daysBack: 30, dryRun: false });
+        alert('✅ Updated ' + live.leads_updated + ' lead(s).');
+      } catch (e) {
+        alert('Backfill failed: ' + e.message);
+      } finally {
+        backfillBtn.disabled = false;
+        backfillBtn.textContent = '🔁 Backfill source from logs';
+      }
+    }
+  }, '🔁 Backfill source from logs');
+  toolbar.appendChild(backfillBtn);
   toolbar.appendChild(h('span', { class: 'muted', style: { fontSize: '.8rem' } },
     'Last 2,000 inbound /hook/* requests. Auth headers redacted.'));
   wrap.appendChild(toolbar);
