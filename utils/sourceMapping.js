@@ -26,14 +26,14 @@ const KNOWN_KEYS_BY_SOURCE = {
   tradeindia:    ['GLUSR_USR_FNAME', 'GLUSR_USR_PHONE', 'GLUSR_USR_EMAIL', 'GLUSR_USR_COMPANY', 'GLUSR_USR_CITY', 'MESSAGE', 'QUERY_ID', 'GLUSR_USR_INTRESTED_PRODUCTS'],
   '99acres':     ['name', 'mobile', 'email', 'city', 'message', 'lead_id', 'projectName', 'budget'],
   housing:       ['name', 'phone', 'email', 'city', 'message', 'project', 'budget', 'lead_id'],
-  website:       ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'message', 'source', 'source_ref', 'product', 'value', 'tags', 'campaign_name_new'],
-  pabbly:        ['name', 'phone', 'email', 'company', 'city', 'message', 'source'],
-  zapier:        ['name', 'phone', 'email', 'company', 'city', 'message', 'source'],
-  make:          ['name', 'full_name', 'contact_name', 'phone', 'mobile', 'email', 'company', 'organization', 'city', 'message', 'enquiry', 'source', 'source_ref'],
-  generic:       ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'message', 'source', 'source_ref', 'product', 'value']
+  website:       ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'message', 'source', 'source_ref', 'product', 'value', 'tags', 'campaign_name_new', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'gad_campaignid'],
+  pabbly:        ['name', 'phone', 'email', 'company', 'city', 'message', 'source', 'utm_source', 'utm_medium', 'utm_campaign', 'gclid'],
+  zapier:        ['name', 'phone', 'email', 'company', 'city', 'message', 'source', 'utm_source', 'utm_medium', 'utm_campaign', 'gclid'],
+  make:          ['name', 'full_name', 'contact_name', 'phone', 'mobile', 'email', 'company', 'organization', 'city', 'message', 'enquiry', 'source', 'source_ref', 'utm_source', 'utm_medium', 'utm_campaign', 'gclid'],
+  generic:       ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'message', 'source', 'source_ref', 'product', 'value', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'gad_campaignid']
 };
 
-const CRM_FIELDS = ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'source', 'source_ref', 'notes', 'product', 'value', 'tags'];
+const CRM_FIELDS = ['name', 'phone', 'email', 'company', 'city', 'state', 'address', 'source', 'source_ref', 'notes', 'product', 'value', 'tags', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'gad_campaignid'];
 
 async function _ensureTable() {
   try {
