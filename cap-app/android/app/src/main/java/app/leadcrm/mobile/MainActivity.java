@@ -58,17 +58,12 @@ public class MainActivity extends BridgeActivity {
         getBridge().getWebView().addJavascriptInterface(new LeadCRMBridge(), "LeadCRMNative");
         handleSharedIntent(getIntent());
 
-        // Allow the WebView to use navigator.geolocation. Without this,
-        // getCurrentPosition() inside the SPA returns silently and
+        // Allow WebView to use navigator.geolocation. Without this the SPA's
+        // getCurrentPosition() in checkInOut() is silently denied and
         // attendance check-in saves with no lat/lng.
         try {
             WebView wv = getBridge().getWebView();
             wv.getSettings().setGeolocationEnabled(true);
-            // Wrap whatever WebChromeClient Capacitor installed so we can
-            // intercept the geolocation prompt and grant it (we already
-            // have the runtime ACCESS_FINE_LOCATION permission via
-            // requestPermissions above).
-            final WebChromeClient existing = new WebChromeClient();
             wv.setWebChromeClient(new WebChromeClient() {
                 @Override
                 public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
