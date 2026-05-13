@@ -82,6 +82,11 @@ const _DEFAULT_SETTINGS = {
   heat_keywords: [],
   heat_notify_levels: 'hot,very_hot,on_fire',
   heat_notify_recipients: 'assigned,admins',
+  pause_after_human_handoff: 0,
+  quick_reply_buttons: [],
+  quick_reply_trigger: 'always',
+  quick_reply_keywords: '',
+  quick_reply_filter_tapped: 1,
 };
 
 function _coerceSettings(row) {
@@ -90,7 +95,7 @@ function _coerceSettings(row) {
   Object.keys(out).forEach(k => { if (row[k] !== undefined && row[k] !== null) out[k] = row[k]; });
   // JSONB coercions — pg returns these as objects, but if a row was
   // saved by a path that stringified them, parse defensively.
-  for (const key of ['reply_modes', 'business_hours', 'active_phone_number_ids', 'heat_keywords']) {
+  for (const key of ['reply_modes', 'business_hours', 'active_phone_number_ids', 'heat_keywords', 'quick_reply_buttons']) {
     if (typeof out[key] === 'string') {
       try { out[key] = JSON.parse(out[key]); } catch (_) { out[key] = _DEFAULT_SETTINGS[key]; }
     }
@@ -201,6 +206,11 @@ async function _ensureAiBotColumns() {
     await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS heat_notify_levels TEXT NOT NULL DEFAULT 'hot,very_hot,on_fire'`);
     await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS heat_notify_recipients TEXT NOT NULL DEFAULT 'assigned,admins'`);
     await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS heat_enabled INTEGER NOT NULL DEFAULT 1`);
+    await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS pause_after_human_handoff INTEGER NOT NULL DEFAULT 0`);
+    await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS quick_reply_buttons JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS quick_reply_trigger TEXT NOT NULL DEFAULT 'always'`);
+    await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS quick_reply_keywords TEXT NOT NULL DEFAULT ''`);
+    await db.query(`ALTER TABLE ai_bot_settings ADD COLUMN IF NOT EXISTS quick_reply_filter_tapped INTEGER NOT NULL DEFAULT 1`)
     await db.query(`CREATE TABLE IF NOT EXISTS ai_reengage_log (
       id SERIAL PRIMARY KEY,
       phone TEXT NOT NULL,
@@ -283,6 +293,22 @@ async function api_aibot_settings_save(token, payload) {
   if (p.reengage_max_attempts     != null) addCol('reengage_max_attempts',     '$$',          Math.max(1, Math.min(5, Number(p.reengage_max_attempts))));
   if (p.heat_enabled              != null) addCol('heat_enabled',              '$$',          p.heat_enabled ? 1 : 0);
   if (p.heat_keywords             != null) addCol('heat_keywords',             '$$::jsonb',   JSON.stringify(Array.isArray(p.heat_keywords) ? p.heat_keywords : []));
+  if (p.pause_after_human_handoff != null) addCol('pause_after_human_handoff','$$',          p.pause_after_human_handoff ? 1 : 0);
+  if (p.quick_reply_buttons       != null) {
+    const arr = Array.isArray(p.quick_reply_buttons) ? p.quick_reply_buttons : [];
+    const sanitised = arr.slice(0, 3).map((b, idx) => ({
+      id:    String((b && (b.id || b.title)) || ('btn_' + (idx + 1))).slice(0, 256),
+      title: String((b && b.title) || '').slice(0, 20).trim()
+    })).filter(b => b.title);
+    addCol('quick_reply_buttons', '$$::jsonb', JSON.stringify(sanitised));
+  }
+  if (p.quick_reply_trigger       != null) {
+    const allowed = ['always', 'first_only', 'keywords'];
+    const t = String(p.quick_reply_trigger || 'always').toLowerCase();
+    addCol('quick_reply_trigger', '$$', allowed.includes(t) ? t : 'always');
+  }
+  if (p.quick_reply_keywords      != null) addCol('quick_reply_keywords', '$$', String(p.quick_reply_keywords || '').slice(0, 500));
+  if (p.quick_reply_filter_tapped != null) addCol('quick_reply_filter_tapped', '$$', p.quick_reply_filter_tapped ? 1 : 0);
   if (p.heat_notify_levels        != null) addCol('heat_notify_levels',        '$$',          String(p.heat_notify_levels).slice(0, 200));
   if (p.heat_notify_recipients    != null) addCol('heat_notify_recipients',    '$$',          String(p.heat_notify_recipients).slice(0, 500));
 
@@ -1048,7 +1074,56 @@ async function maybeReplyToInbound({ phone, leadId, inboundText, inboundPhoneId,
   try {
     const wb = _wb();
     const cfg = inboundPhoneId ? await wb._cfgForPhone(inboundPhoneId).catch(() => wb._cfg()) : await wb._cfg();
-    const send = await wb._sendText({ to: phone, text: replyText, leadId: leadId || null, userId: null }, cfg);
+    let buttons = [];
+    try {
+      const raw = settings.quick_reply_buttons;
+      buttons = typeof raw === 'string' ? JSON.parse(raw || '[]') : (Array.isArray(raw) ? raw : []);
+    } catch (_) { buttons = []; }
+
+    // Filter out buttons the customer has already tapped in this thread
+    if (Array.isArray(buttons) && buttons.length && Number(settings.quick_reply_filter_tapped || 0) === 1) {
+      try {
+        const titles = buttons.map(b => String((b && b.title) || '').trim().toLowerCase()).filter(t => t);
+        if (titles.length) {
+          const pr = await db.query(
+            `SELECT DISTINCT LOWER(TRIM(body)) AS t FROM whatsapp_messages
+             WHERE from_number = $1 AND direction = 'in' AND body IS NOT NULL`,
+            [phone]
+          );
+          const taps = new Set(pr.rows.map(r => r.t));
+          buttons = buttons.filter(b => !taps.has(String((b && b.title) || '').trim().toLowerCase()));
+        }
+      } catch (_) {}
+    }
+
+    let attachButtons = Array.isArray(buttons) && buttons.length > 0;
+    if (attachButtons) {
+      const trigger = String(settings.quick_reply_trigger || 'always').toLowerCase();
+      if (trigger === 'first_only') {
+        try {
+          const prior = await db.query(
+            `SELECT 1 FROM whatsapp_messages WHERE to_number = $1 AND direction = 'out' LIMIT 1`,
+            [phone]
+          );
+          if (prior.rows.length > 0) attachButtons = false;
+        } catch (_) {}
+      } else if (trigger === 'keywords') {
+        const kwRaw = String(settings.quick_reply_keywords || '');
+        const kws = kwRaw.split(/[,\n]/).map(k => k.trim().toLowerCase()).filter(k => k);
+        const inboundLower = String(inboundText || '').toLowerCase();
+        if (!kws.length || !kws.some(k => inboundLower.includes(k))) attachButtons = false;
+      }
+    }
+
+    let send;
+    if (attachButtons && replyText && replyText.length <= 1024) {
+      send = await wb._sendInteractiveButtons({
+        to: phone, text: replyText, buttons,
+        leadId: leadId || null, userId: null
+      }, cfg);
+    } else {
+      send = await wb._sendText({ to: phone, text: replyText, leadId: leadId || null, userId: null }, cfg);
+    }
     const outboundId = send.wa_message_id || null;
     await db.query(
       `INSERT INTO ai_chat_log (phone, lead_id, inbound_msg_id, reply_text, model, mode_used, status, input_tokens, output_tokens, cost_inr_billed, phone_number_id)

@@ -696,6 +696,58 @@ async function _sendText({ to, text, replyTo, leadId, userId }, cfg) {
   return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
 }
 
+async function _sendInteractiveButtons({ to, text, buttons, replyTo, leadId, userId }, cfg) {
+  const c = cfg || await _cfg();
+  // Sanitise: cap at 3 buttons, 20-char titles, ids must be unique
+  const btns = (Array.isArray(buttons) ? buttons : []).slice(0, 3).map((b, i) => ({
+    id:    String((b && (b.id || b.title)) || ('btn_' + (i + 1))).slice(0, 256),
+    title: String((b && b.title) || '').slice(0, 20).trim()
+  })).filter(b => b.title);
+  if (!btns.length) {
+    // Fall back to plain text if no valid buttons (caller already checked but be safe)
+    return _sendText({ to, text, replyTo, leadId, userId }, c);
+  }
+  const body = {
+    messaging_product: 'whatsapp',
+    to: _normalizePhone(to, c.defaultCC),
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: String(text || '').slice(0, 1024) },
+      action: {
+        buttons: btns.map(b => ({ type: 'reply', reply: { id: b.id, title: b.title } }))
+      }
+    }
+  };
+  if (replyTo) body.context = { message_id: replyTo };
+  const r = await _graphPost(`${c.phoneId}/messages`, body, c);
+  const waMsgId = r.body?.messages?.[0]?.id || null;
+  const errorText = r.body?.error?.message || null;
+  // Persist as message_type='interactive_buttons'. Body holds the prompt
+  // text + a JSON tail with the button options so the chat view can
+  // render them visually if it wants.
+  const dbBody = String(text || '') + '\n\n[buttons:' + btns.map(b => b.title).join(' | ') + ']';
+  try {
+    await db.query(
+      `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, reply_to, error_text, phone_number_id)
+       VALUES ($1, $2, 'out', $3, $4, $5, $6, $7, 'interactive_buttons', $8, $9, $10)`,
+      [leadId || null, userId || null, c.phoneId, body.to, dbBody, waMsgId,
+       r.body?.error ? 'failed' : 'sent', replyTo || null, errorText, c.phoneId || null]
+    );
+    if (leadId) {
+      try {
+        require('./tat').logAction(leadId, 'whatsapp_out', userId || null, {
+          preview: String(text || '').slice(0, 200),
+          error: errorText || null,
+          type: 'interactive_buttons',
+          buttons: btns.map(b => b.title)
+        });
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return { status: r.status, body: r.body, wa_message_id: waMsgId, error: errorText };
+}
+
 async function _sendMedia({ to, mediaType, mediaUrl, caption, leadId, userId }, cfg) {
   const c = cfg || await _cfg();
   const body = {

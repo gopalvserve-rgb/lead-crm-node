@@ -6,7 +6,7 @@
  * use move to S3/R2.
  */
 const db = require('../db/pg');
-const { authUser } = require('../utils/auth');
+const { authUser, getVisibleUserIds } = require('../utils/auth');
 
 /** Find a lead by matching the last 10 digits of the phone. */
 async function _findLeadByPhone(phone) {
@@ -603,15 +603,191 @@ async function api_recording_clearAllAi(token) {
   return { ok: true, cleared: rowCount };
 }
 
+async function api_call_events_pending(token, opts) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const ids = (visible && visible.length) ? visible : [me.id];
+  const placeholders = ids.map((_, i) => '$' + (i + 1)).join(',');
+  const limit = Math.max(1, Math.min(500, Number((opts && opts.limit) || 100)));
+  const days  = Math.max(1, Math.min(90, Number((opts && opts.days)  || 30)));
+  const params = [...ids, days, limit];
+  const { rows } = await db.query(
+    `SELECT ce.id, ce.user_id, ce.phone, ce.direction, ce.event,
+            ce.duration_s, ce.created_at,
+            u.name AS rep_name
+       FROM call_events ce
+       LEFT JOIN users u ON u.id = ce.user_id
+      WHERE ce.lead_id IS NULL
+        AND ce.user_id IN (${placeholders})
+        AND ce.created_at >= NOW() - ($${ids.length + 1}::int || ' days')::interval
+        AND COALESCE(ce.phone, '') <> ''
+      ORDER BY ce.created_at DESC
+      LIMIT $${ids.length + 2}`,
+    params
+  );
+  return rows;
+}
+
+async function api_call_events_convertToLeads(token, callEventIds) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const idsArr = Array.isArray(callEventIds) ? callEventIds.map(Number).filter(Boolean) : [];
+  if (!idsArr.length) return { ok: false, error: 'no ids supplied' };
+
+  // Pull the events the user has visibility on.
+  const allowedUserIds = (visible && visible.length) ? visible : [me.id];
+  const userPlaceholders = allowedUserIds.map((_, i) => '$' + (i + 2)).join(',');
+  const { rows: events } = await db.query(
+    `SELECT id, user_id, phone, direction, duration_s, created_at
+       FROM call_events
+      WHERE id = ANY($1::int[])
+        AND user_id IN (${userPlaceholders})
+        AND lead_id IS NULL
+        AND COALESCE(phone, '') <> ''`,
+    [idsArr, ...allowedUserIds]
+  );
+
+  // Resolve default new-lead status once.
+  const cfgStId = Number(await db.getConfig('CALLS_AUTOLEAD_STATUS_ID', '0')) || 0;
+  let defaultStatusId = null;
+  if (cfgStId) {
+    try { const f = await db.findById('statuses', cfgStId); if (f) defaultStatusId = f.id; } catch (_) {}
+  }
+  if (!defaultStatusId) {
+    const newSt = await db.findOneBy('statuses', 'name', 'New');
+    defaultStatusId = newSt ? newSt.id : null;
+  }
+
+  // Group events by phone so we create ONE lead per unique number.
+  const byPhone = new Map();
+  for (const e of events) {
+    const tail = String(e.phone || '').replace(/\D/g, '').slice(-10);
+    if (!tail) continue;
+    if (!byPhone.has(tail)) byPhone.set(tail, []);
+    byPhone.get(tail).push(e);
+  }
+
+  const created = [];
+  const skipped = [];
+  for (const [tail, group] of byPhone.entries()) {
+    // Skip if a lead already exists for that phone (race-safe).
+    const existing = await _findLeadByPhone(tail);
+    if (existing) {
+      // Link the events to the existing lead so they don't show as
+      // pending anymore.
+      const ids = group.map(g => g.id);
+      try {
+        await db.query('UPDATE call_events SET lead_id = $1 WHERE id = ANY($2::int[])', [existing.id, ids]);
+      } catch (_) {}
+      skipped.push({ phone: group[0].phone, reason: 'already a lead', existing_lead_id: existing.id, events: ids });
+      continue;
+    }
+    try {
+      const first = group[0];
+      const phoneClean = String(first.phone).replace(/^'/, '').trim();
+      const dir = first.direction || 'in';
+      const sourceLabel = (dir === 'missed') ? 'Missed Call'
+                       : (dir === 'in')     ? 'Inbound Call'
+                       : 'Outbound Call';
+      const newLeadId = await db.insert('leads', {
+        name:        phoneClean,
+        phone:       phoneClean,
+        whatsapp:    phoneClean,
+        source:      sourceLabel,
+        source_ref:  'auto-created from manual call-event convert',
+        status_id:   defaultStatusId,
+        assigned_to: first.user_id || me.id,
+        notes:       'Auto-created from ' + group.length + ' call event(s) on ' +
+                     new Date(first.created_at).toLocaleString('en-IN'),
+        created_by:  me.id,
+        created_at:  db.nowIso(),
+        updated_at:  db.nowIso(),
+        last_status_change_at: db.nowIso()
+      });
+      try {
+        await db.insert('remarks', {
+          lead_id: newLeadId, user_id: me.id,
+          remark: '\uD83D\uDCDE Bulk-converted ' + group.length + ' \u00D7 ' + sourceLabel.toLowerCase(),
+          status_id: defaultStatusId
+        });
+      } catch (_) {}
+      // Link all events in the group to the new lead.
+      const evIds = group.map(g => g.id);
+      try {
+        await db.query('UPDATE call_events SET lead_id = $1 WHERE id = ANY($2::int[])', [newLeadId, evIds]);
+      } catch (_) {}
+      created.push({ phone: phoneClean, lead_id: newLeadId, events: evIds, source: sourceLabel });
+    } catch (e) {
+      skipped.push({ phone: group[0].phone, reason: e.message, events: group.map(g => g.id) });
+    }
+  }
+
+  return {
+    ok: true,
+    requested: idsArr.length,
+    matched_events: events.length,
+    leads_created: created.length,
+    skipped: skipped.length,
+    created,
+    skipped_detail: skipped
+  };
+}
+
+async function api_recordings_resetAll(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  // Wipe recording rows AND call_event rows that referenced them. Without
+  // this second DELETE, the Call History tab still shows entries with
+  // broken/404 audio players (the call_event still has recording_id).
+  const r = await db.query('DELETE FROM lead_recordings');
+  // Also kill the call_events that pointed at recordings — keep the
+  // pure-event rows (calls that never had a recording) untouched.
+  let events = 0;
+  try {
+    const e = await db.query("DELETE FROM call_events WHERE event = 'recording_saved' OR recording_id IS NOT NULL");
+    events = (e && e.rowCount) || 0;
+  } catch (_) { /* table shape varies — best effort */ }
+  let diag = 0;
+  try {
+    const d = await db.query('DELETE FROM recording_diag_log');
+    diag = (d && d.rowCount) || 0;
+  } catch (_) { /* table may not exist */ }
+  return {
+    ok: true,
+    deleted: (r && r.rowCount) || 0,
+    call_events_cleared: events,
+    diag_cleared: diag
+  };
+}
+
+async function api_recordings_relinkOrphans(token) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin/manager only');
+  const orphans = await db.query(
+    'SELECT id, phone FROM lead_recordings WHERE (lead_id IS NULL OR lead_id = 0) AND phone IS NOT NULL AND phone != \'\''
+  );
+  let linked = 0;
+  for (const r of orphans.rows) {
+    try {
+      const lead = await _findLeadByPhone(r.phone);
+      if (lead && lead.id) {
+        await db.query('UPDATE lead_recordings SET lead_id = $1 WHERE id = $2', [lead.id, r.id]);
+        linked++;
+      }
+    } catch (_) {}
+  }
+  return { ok: true, scanned: orphans.rows.length, linked };
+}
+
 module.exports = {
-  api_call_logEvent,
+  api_call_logEvent, api_call_events_pending, api_call_events_convertToLeads,
   api_call_hasRecentEvent,
   api_call_lookup,
   api_call_handleEnded,
   api_leads_recordings,
   api_call_history,
   api_my_recordings,
-  api_recordings_delete,
+  api_recordings_delete, api_recordings_resetAll, api_recordings_relinkOrphans,
   api_recording_aiSummary,
   api_recording_aiReprocess,
   api_recording_applySuggestion,
