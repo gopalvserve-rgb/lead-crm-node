@@ -91,7 +91,58 @@ function computeCost(inTok, outTok, settings) {
  * args: { system, history, prompt, model, temperature, maxOutputTokens }
  * Returns { ok, text, model, input_tokens, output_tokens, cost_*, error }
  */
+
+/**
+ * If AI_PROXY_URL + AI_PROXY_TOKEN env vars are set, route the Gemini
+ * call through smartcrm-saas instead of calling Google directly. The
+ * proxy uses smartcrm-saas's own GEMINI_API_KEY and logs the usage
+ * centrally in the control-plane ai_usage_log (so super-admin AI
+ * Costing shows tenant-by-tenant cost). Returns the same shape as
+ * generate() does on success/error.
+ */
+async function _runViaProxy(args, opts) {
+  const url   = String(process.env.AI_PROXY_URL   || '').trim();
+  const token = String(process.env.AI_PROXY_TOKEN || '').trim();
+  const slug  = String(process.env.AI_PROXY_TENANT_SLUG || process.env.GEMINI_USAGE_REPORT_TENANT_SLUG || '').trim();
+  if (!url || !token || !slug) return null;  // proxy not configured
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tenant_slug: slug,
+        call_kind:   (opts && opts.call_kind) || 'reply',
+        system:      args.system || '',
+        history:     args.history || [],
+        prompt:      args.prompt || '',
+        model:       args.model,
+        maxOutputTokens: args.maxOutputTokens,
+        temperature: args.temperature,
+        phone:       opts && opts.phone,
+        lead_id:     opts && opts.lead_id,
+      })
+    });
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      return { ok: false, text: '', model: j.model || '', input_tokens: 0, output_tokens: 0,
+               cost_usd: 0, cost_inr_real: 0, cost_inr_billed: 0,
+               error: j.error || ('HTTP ' + resp.status), via_proxy: true };
+    }
+    j.via_proxy = true;
+    return j;
+  } catch (e) {
+    return { ok: false, text: '', model: '', input_tokens: 0, output_tokens: 0,
+             cost_usd: 0, cost_inr_real: 0, cost_inr_billed: 0,
+             error: 'Proxy error: ' + e.message, via_proxy: true };
+  }
+}
+
 async function generate(args) {
+  // Central proxy path — if env vars are set, route through smartcrm-saas
+  // instead of holding a local key. Usage lands in the central ai_usage_log
+  // automatically.
+  const proxyResult = await _runViaProxy(args, { call_kind: args.call_kind || 'reply', phone: args.phone, lead_id: args.lead_id });
+  if (proxyResult) return proxyResult;
   const settings = await loadSettings();
   if (!settings) {
     return { ok: false, text: '', model: '', input_tokens: 0, output_tokens: 0,
