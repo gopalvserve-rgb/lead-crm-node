@@ -394,5 +394,6 @@ module.exports = {
   api_admin_webhookLog,
   api_admin_webhookLogs_list,
   api_admin_webhookLogs_get,
+  api_admin_webhookLogs_backfillSources,
   api_admin_sourceMapping_get, api_admin_sourceMapping_save
 };
