@@ -15814,6 +15814,105 @@ function _renderCopilotDrawer() {
     const q = document.getElementById('copilot-quota');
     if (q) q.textContent = (r.today || 0) + ' / ' + (r.daily_limit || 50) + ' questions used today';
   }).catch(() => {});
+  // ---- Preset chips + per-user custom shortcuts ----
+  const PRESETS = [
+    { emoji: '\u2B50', label: 'Today\'s highlights',     q: 'Give me today\'s important highlights \u2014 new leads, hot leads, deals closed, missed calls, and anything that needs my attention right now.' },
+    { emoji: '\u23F0', label: 'Today\'s due follow-ups', q: 'Which follow-ups are due today (including any overdue ones)? Sort by oldest first and show the assigned employee.' },
+    { emoji: '\u260E\uFE0F', label: 'Missed calls',     q: 'Show today\'s missed calls with the lead name and the rep they\'re assigned to.' },
+    { emoji: '\uD83D\uDC65', label: 'Team performance', q: 'Team performance this month \u2014 leads handled, calls made, conversions, and revenue per employee. Rank from best to worst.' },
+    { emoji: '\uD83D\uDCCA', label: 'Employee \u00D7 status', q: 'Show me lead status breakdown for each employee \u2014 how many leads each sales rep has in New, In Progress, Won, Lost and every other status.' },
+    { emoji: '\u26A0\uFE0F', label: 'TAT violators',    q: 'Which employees have TAT violations? Show the count of breached leads per rep and the worst offenders.' },
+    { emoji: '\u2728', label: 'New leads today',         q: 'How many new leads came in today? Show me the list.' },
+    { emoji: '\uD83D\uDD25', label: 'Hot leads',        q: 'Show me all hot leads (AI heat score) sorted by most recent.' },
+    { emoji: '\uD83D\uDCC5', label: 'Today\'s calls',  q: 'List today\'s calls \u2014 incoming, outgoing, missed.' },
+    { emoji: '\uD83D\uDCDE', label: 'Unattended chats', q: 'Show WhatsApp chats with unread messages waiting on us.' },
+    { emoji: '\uD83C\uDFAF', label: 'My pipeline',      q: 'Show my pipeline by status with lead counts and total value.' },
+    { emoji: '\uD83D\uDCB0', label: 'This month\'s revenue', q: 'How much revenue have we closed this month? Break it down by sales rep.' },
+    { emoji: '\uD83D\uDCC8', label: 'Conversion rate', q: 'What\'s my conversion rate this month vs last month?' },
+    { emoji: '\uD83C\uDFC6', label: 'Top performer',   q: 'Who\'s the top sales rep this month by closed deals?' },
+    { emoji: '\u26A0\uFE0F', label: 'Stuck deals',     q: 'Which deals have been in the same status for more than 7 days?' },
+    { emoji: '\uD83D\uDD0D', label: 'No activity 7d',  q: 'Show leads with no remark, call, or message in the last 7 days.' }
+  ];
+  const presetsRow = h('div', {
+    id: 'copilot-presets',
+    style: {
+      padding: '.5rem .55rem .4rem', borderTop: '1px solid #e2e8f0',
+      background: '#fafafa',
+      display: 'flex', flexWrap: 'wrap', gap: '.35rem',
+      maxHeight: '120px', overflowY: 'auto'
+    }
+  });
+  const ckey = '_copilotCustomShortcuts_' + ((CRM && CRM.user && CRM.user.id) ? CRM.user.id : 'anon');
+  function _loadCustomShortcuts() {
+    try { return JSON.parse(localStorage.getItem(ckey) || '[]'); } catch (_) { return []; }
+  }
+  function _saveCustomShortcuts(arr) {
+    try { localStorage.setItem(ckey, JSON.stringify(arr.slice(0, 30))); } catch (_) {}
+  }
+  function _addCustomShortcutPrompt() {
+    const list = _loadCustomShortcuts();
+    const label = prompt('Shortcut label (e.g. "My hot leads"):');
+    if (!label || !label.trim()) return;
+    const emoji = prompt('Pick an emoji or 1-2 chars (e.g. \u26A1):', '\u2728') || '\u2728';
+    const q = prompt('What should Copilot do when you tap it? (full prompt)');
+    if (!q || !q.trim()) return;
+    list.push({ emoji: emoji.trim().slice(0, 4), label: label.trim().slice(0, 40), q: q.trim(), custom: true });
+    _saveCustomShortcuts(list);
+    _renderAllChips();
+  }
+  function _removeCustomShortcut(idx) {
+    const list = _loadCustomShortcuts();
+    list.splice(idx, 1);
+    _saveCustomShortcuts(list);
+    _renderAllChips();
+  }
+  function _renderAllChips() {
+    presetsRow.innerHTML = '';
+    const mkChip = (p, opts) => {
+      const wrap = h('span', { style: { position: 'relative', display: 'inline-flex' } });
+      const btn = h('button', {
+        title: p.q,
+        style: {
+          background: opts && opts.custom ? '#fef3c7' : '#fff',
+          border: '1px solid ' + (opts && opts.custom ? '#facc15' : '#e2e8f0'),
+          borderRadius: '20px',
+          padding: '.3rem ' + (opts && opts.custom ? '1.5rem .3rem .65rem' : '.65rem'),
+          fontSize: '.75rem', cursor: 'pointer',
+          color: '#475569', whiteSpace: 'nowrap', lineHeight: '1.2'
+        },
+        onclick: () => { inp.value = p.q; if (typeof send === 'function') send(); }
+      }, p.emoji + ' ' + p.label);
+      wrap.appendChild(btn);
+      if (opts && opts.custom) {
+        const x = h('button', {
+          title: 'Remove shortcut',
+          style: {
+            position: 'absolute', top: '2px', right: '4px',
+            background: 'transparent', border: 'none', cursor: 'pointer',
+            color: '#92400e', fontSize: '.85rem', lineHeight: 1, padding: 0
+          },
+          onclick: (ev) => { ev.stopPropagation(); if (confirm('Remove shortcut "' + p.label + '"?')) _removeCustomShortcut(opts.idx); }
+        }, '\u00D7');
+        wrap.appendChild(x);
+      }
+      presetsRow.appendChild(wrap);
+    };
+    PRESETS.forEach(p => mkChip(p, { custom: false }));
+    const customs = _loadCustomShortcuts();
+    customs.forEach((p, idx) => mkChip(p, { custom: true, idx }));
+    const add = h('button', {
+      style: {
+        background: '#eef2ff', border: '1px dashed #6366f1', borderRadius: '20px',
+        padding: '.3rem .65rem', fontSize: '.75rem', cursor: 'pointer',
+        color: '#4338ca', whiteSpace: 'nowrap', lineHeight: '1.2', fontWeight: 600
+      },
+      onclick: _addCustomShortcutPrompt
+    }, '+ Add shortcut');
+    presetsRow.appendChild(add);
+  }
+  _renderAllChips();
+  d.appendChild(presetsRow);
+
   const inputRow = h('div', { style: { display: 'flex', gap: '.4rem', padding: '.5rem .5rem .65rem', borderTop: '1px solid #e2e8f0', background: '#fff' } });
   const inp = h('textarea', {
     rows: 1, placeholder: 'Type your question… (Enter to send, Shift+Enter for newline)',
