@@ -15348,7 +15348,14 @@ async function _renderAiBotSettings(host) {
     host.appendChild(h('div', { style: { padding: '.6rem .8rem', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '6px', marginBottom: '.75rem', fontSize: '.85rem' } },
       '⚠ Gemini API key is not configured. Add ',
       h('code', {}, 'GEMINI_API_KEY'),
-      ' to your env or paste it in Settings.'
+      ' to your env, paste it in Settings, or set up the Central AI proxy (smartcrm-saas). '
+    ));
+  }
+  // Diagnose button — runs the bot self-check + shows the AI proxy status
+  if (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager')) {
+    host.appendChild(h('div', { style: { marginBottom: '.6rem', display: 'flex', justifyContent: 'flex-end' } },
+      h('button', { class: 'btn ghost sm', onclick: _aibotDiagnose },
+        "\uD83D\uDD0D Why isn't my bot replying?")
     ));
   }
 
