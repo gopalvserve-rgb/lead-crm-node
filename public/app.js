@@ -3,6 +3,33 @@
  * Full-featured SPA over POST /api.
  */
 
+
+  // Friendly-label helper for legacy whatsapp_messages rows that were
+  // saved with body='[unsupported]' before the backend parser was fixed.
+  // Maps the raw '[type]' placeholder to a useful glyph + label.
+  function _waFriendlyBody(body, mtype) {
+    const b = String(body || '');
+    if (!b) return b;
+    if (!/^\[[a-z_]+\]$/i.test(b)) return b;  // not a legacy placeholder — pass through
+    const t = (mtype || b.replace(/^\[|\]$/g, '')).toLowerCase();
+    const map = {
+      sticker:     '🎭 Sticker',
+      reaction:    '👍 Reacted',
+      location:    '📍 Location',
+      contacts:    '📇 Contact card',
+      order:       '🛒 Order',
+      system:      'ℹ️ System message',
+      unknown:     '💬 Unsupported message type',
+      unsupported: '💬 Unsupported message type',
+      image:       '🖼️ Image',
+      audio:       '🎵 Audio',
+      video:       '🎥 Video',
+      document:    '📄 Document'
+    };
+    return map[t] || b;
+  }
+
+
 const CRM = {
   token: localStorage.getItem('crm_token') || null,
   user: null,
@@ -5338,7 +5365,7 @@ VIEWS.teamchat = async (view) => {
     msgs.forEach(m => {
       log.appendChild(h('div', { class: 'wb-msg ' + (m.is_mine ? 'out' : 'in') },
         h('div', { class: 'wb-msg-meta muted' }, m.user_name + ' · ' + fmtDate(m.created_at, 'relative')),
-        h('div', { class: 'wb-msg-body' }, m.body || '')
+        h('div', { class: 'wb-msg-body' }, _waFriendlyBody(m.body, m.message_type) || '')
       ));
     });
     if (wasNearBottom) setTimeout(() => { log.scrollTop = log.scrollHeight; }, 50);
@@ -7455,7 +7482,7 @@ async function wbChat() {
       const mediaNode = renderWaMessageMedia(msg);
       log.appendChild(h('div', { class: 'wb-msg ' + (msg.direction === 'in' ? 'in' : 'out') + (isFailed ? ' failed' : '') },
         mediaNode,
-        h('div', { class: 'wb-msg-body' }, msg.body || (mediaNode ? '' : '[' + (msg.message_type || '') + ']')),
+        h('div', { class: 'wb-msg-body' }, _waFriendlyBody(msg.body, msg.message_type) || (mediaNode ? '' : '[' + (msg.message_type || '') + ']')),
         isFailed
           ? h('div', { class: 'wb-msg-error', title: msg.error_text || 'Send failed' },
               waFriendlyError(msg.error_text))
