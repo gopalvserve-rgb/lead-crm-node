@@ -12,15 +12,27 @@ const { authUser, getVisibleUserIds } = require('../utils/auth');
 async function _findLeadByPhone(phone) {
   const digits = String(phone || '').replace(/\D/g, '');
   if (!digits) return null;
-  const tail = digits.slice(-10);
-  const { rows } = await db.query(
-    `SELECT * FROM leads WHERE regexp_replace(phone, '[^0-9]', '', 'g') LIKE $1
-       OR regexp_replace(whatsapp, '[^0-9]', '', 'g') LIKE $1
-       OR regexp_replace(alt_phone, '[^0-9]', '', 'g') LIKE $1
-     LIMIT 1`,
-    ['%' + tail]
-  );
-  return rows[0] || null;
+  // Try tails of decreasing length so we find a match for short test numbers
+  // (8 / 9 digits) without losing precision on real ones.
+  const candidates = [];
+  if (digits.length >= 10) candidates.push(digits.slice(-10));
+  if (digits.length >= 9)  candidates.push(digits.slice(-9));
+  if (digits.length >= 8)  candidates.push(digits.slice(-8));
+  if (!candidates.length)  candidates.push(digits);
+  for (const tail of candidates) {
+    const { rows } = await db.query(
+      `SELECT * FROM leads
+        WHERE regexp_replace(COALESCE(phone, ''),     '[^0-9]', '', 'g') LIKE $1
+           OR regexp_replace(COALESCE(whatsapp, ''),  '[^0-9]', '', 'g') LIKE $1
+           OR regexp_replace(COALESCE(alt_phone, ''), '[^0-9]', '', 'g') LIKE $1
+        ORDER BY (regexp_replace(COALESCE(phone, ''), '[^0-9]', '', 'g') LIKE $1) DESC,
+                 id DESC
+        LIMIT 1`,
+      ['%' + tail]
+    );
+    if (rows[0]) return rows[0];
+  }
+  return null;
 }
 
 /**

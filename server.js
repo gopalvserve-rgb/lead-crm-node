@@ -129,11 +129,104 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
     const me = await authUser(token);
     if (!req.file) return res.status(400).json({ error: 'audio file required' });
 
-    const phone = (req.body.phone || '').toString();
+    // Guard against the empty/partial recording race: OEM dialers (Samsung
+    // especially) create the .m4a at call-start and write audio bytes
+    // incrementally. If sync fires before the dialer flushes the buffer
+    // we get a zero / sub-1KB file. Saving that produces an unplayable row.
+    const _gotBytes = req.file.size || (req.file.buffer && req.file.buffer.length) || 0;
+    if (_gotBytes < 4096) {
+      return res.status(400).json({
+        error: 'recording still being written by dialer (' + _gotBytes + ' bytes) - retry after a few seconds',
+        still_writing: true
+      });
+    }
+
+    let phone = String(req.body.phone || '').trim();
+    const direction = String(req.body.direction || 'out').toLowerCase();
+    const filename = String(req.body.filename || (req.file && req.file.originalname) || '');
+    const startedAt = req.body.started_at ? new Date(req.body.started_at) : new Date();
+    const lastFourHint = String(req.body.lastfour_hint || '').slice(0, 6);
     let leadId = Number(req.body.lead_id) || null;
-    if (!leadId) {
+    let autoCreated = false;
+
+    // Filename phone-number fallback: dig digits out of the filename when the
+    // mobile uploader couldn't supply a phone (Samsung "Contact 12345.m4a", etc).
+    if (!phone && filename) {
+      const m = filename.match(/(?:91|\+91|091)?[6-9]\d{9}/) || filename.match(/\d{10,15}/);
+      if (m) phone = m[0];
+    }
+
+    // Timestamp + last-4 fallback: when phone is still unknown, find a recent
+    // call_event (within +/- 5 min of started_at) for this user. lastfour_hint
+    // matches the tail of phone if filename only had contact-name + last-4.
+    if (!phone || !leadId) {
+      try {
+        const ev = await db.query(
+          `SELECT id, phone, lead_id, created_at FROM call_events
+             WHERE user_id = $1
+               AND created_at BETWEEN $2 AND $3
+             ORDER BY created_at DESC LIMIT 20`,
+          [me.id, new Date(startedAt.getTime() - 5*60*1000), new Date(startedAt.getTime() + 5*60*1000)]
+        );
+        let pick = null;
+        if (lastFourHint && /^\d{3,5}$/.test(lastFourHint)) {
+          pick = ev.rows.find(r => String(r.phone || '').endsWith(lastFourHint));
+        }
+        if (!pick) pick = ev.rows[0];
+        if (pick) {
+          if (!phone) phone = pick.phone || '';
+          if (!leadId && pick.lead_id) leadId = pick.lead_id;
+        }
+      } catch (e) { console.warn('[/api/recordings] call_event lookup failed:', e.message); }
+    }
+
+    if (!leadId && phone) {
       const lead = await _findLeadByPhone(phone);
       if (lead) leadId = lead.id;
+    }
+
+    // Auto-create lead policy: when phone is known but no matching lead, create
+    // one (controlled by CALLS_AUTOLEAD_INBOUND / _OUTBOUND / _STATUS_ID configs).
+    if (!leadId && phone) {
+      try {
+        const cfgIn   = await db.getConfig('CALLS_AUTOLEAD_INBOUND', '1');
+        const cfgOut  = await db.getConfig('CALLS_AUTOLEAD_OUTBOUND', '0');
+        const cfgStId = Number(await db.getConfig('CALLS_AUTOLEAD_STATUS_ID', '0')) || 0;
+        const isIn  = direction === 'in' || direction === 'missed';
+        const isOut = direction === 'out' || direction === 'outgoing';
+        const allow = (isIn && String(cfgIn) === '1') || (isOut && String(cfgOut) === '1');
+        if (allow) {
+          let statusId = null;
+          if (cfgStId) {
+            try { const found = await db.findById('statuses', cfgStId); if (found) statusId = found.id; } catch (_) {}
+          }
+          if (!statusId) {
+            const newSt = await db.findOneBy('statuses', 'name', 'New');
+            statusId = newSt ? newSt.id : null;
+          }
+          const sourceLabel = isIn ? (direction === 'missed' ? 'Missed Call' : 'Inbound Call') : 'Outbound Call';
+          leadId = await db.insert('leads', {
+            name: phone, phone: phone, whatsapp: phone,
+            source: sourceLabel,
+            source_ref: 'auto-created from call recording sync',
+            status_id: statusId,
+            assigned_to: me.id,
+            notes: 'Auto-created from ' + sourceLabel.toLowerCase() + ' recording',
+            created_by: me.id,
+            created_at: db.nowIso(),
+            updated_at: db.nowIso(),
+            last_status_change_at: db.nowIso()
+          });
+          autoCreated = true;
+          try {
+            await db.insert('remarks', {
+              lead_id: leadId, user_id: me.id,
+              remark: 'Recording arrived from ' + sourceLabel.toLowerCase() + ' - auto-created lead',
+              status_id: statusId
+            });
+          } catch (_) {}
+        }
+      } catch (e) { console.warn('[recordings] auto-create lead failed:', e.message); }
     }
     // upload-side transcode: if the dialer wrote a 3GP/AMR container
     // (common on Samsung / MIUI / Realme), convert to M4A/AAC now so
@@ -172,31 +265,43 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       console.warn('[/api/recordings] upload-side transcode skipped:', e.message);
     }
 
+    // Robust MIME sniff — different phones write different containers.
+    const _tx0 = require('./utils/audioTranscode');
+    const _detectedMime = _tx0.guessAudioMime(
+      req.file.originalname || req.body.device_path || '',
+      _audioBuf
+    );
+    const _finalMime = (_detectedMime && _detectedMime !== 'application/octet-stream')
+      ? _detectedMime
+      : (_audioMime || 'audio/mp4');
+
     const id = await db.insert('lead_recordings', {
       lead_id: leadId,
       user_id: me.id,
       phone,
-      direction: req.body.direction || 'out',
+      direction,
       duration_s: Number(req.body.duration_s) || 0,
       device_path: (req.body.device_path || '').toString(),
-      mime_type: _audioMime,
+      mime_type: _finalMime,
       size_bytes: _audioSize,
       audio_bytes: _audioBuf,
       started_at: req.body.started_at || db.nowIso(),
       created_at: db.nowIso()
     });
     // Link into the call_events timeline
-    await db.insert('call_events', {
-      lead_id: leadId,
-      user_id: me.id,
-      phone,
-      direction: req.body.direction || 'out',
-      event: 'recording_saved',
-      duration_s: Number(req.body.duration_s) || 0,
-      recording_id: id,
-      created_at: db.nowIso()
-    });
-    res.json({ ok: true, id, lead_id: leadId });
+    try {
+      await db.insert('call_events', {
+        lead_id: leadId,
+        user_id: me.id,
+        phone,
+        direction,
+        event: 'recording_saved',
+        duration_s: Number(req.body.duration_s) || 0,
+        recording_id: id,
+        created_at: db.nowIso()
+      });
+    } catch (_) {}
+    res.json({ ok: true, id, lead_id: leadId, auto_created: autoCreated });
   } catch (e) {
     console.error('[/api/recordings]', e.message);
     res.status(400).json({ error: e.message });
