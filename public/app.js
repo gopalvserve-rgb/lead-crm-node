@@ -2201,11 +2201,72 @@ async function deleteAllDuplicates() {
 function exportCSV() {
   const rows = CRM.cache.lastLeads || [];
   if (!rows.length) return toast('No leads to export', 'warn');
-  const headers = ['id', 'name', 'phone', 'email', 'whatsapp', 'source', 'product_name', 'status_name', 'assigned_name', 'tags', 'city', 'next_followup_at', 'last_status_change_at', 'notes', 'created_at'];
-  const csv = [headers.join(',')].concat(rows.map(r => headers.map(k => {
-    const v = r[k] == null ? '' : String(r[k]).replace(/"/g, '""');
-    return /[",\n]/.test(v) ? `"${v}"` : v;
-  }).join(','))).join('\n');
+
+  // Resolve assignee email if we have the users cache (fallback to name)
+  const usersById = {};
+  (CRM.cache.users || []).forEach(u => { usersById[Number(u.id)] = u; });
+  function assigneeEmail(r) {
+    const u = usersById[Number(r.assigned_to)];
+    return (u && (u.email || u.name)) || r.assigned_name || '';
+  }
+
+  // Fixed columns — exact order matches the canonical lead-crm-sample.csv
+  const fixedCols = [
+    'name','phone','alt_phone','whatsapp','email','status','source','source_ref',
+    'product','assigned_to','address','city','state','pincode','country','company',
+    'value','currency','qualified','tags','next_followup_at','notes','created_at',
+    'last_status_change_at','gclid','gad_campaignid','utm_source','utm_medium',
+    'utm_campaign','utm_term','utm_content'
+  ];
+
+  // Collect every custom-field key across all rows (extra_json or extra) so each
+  // becomes its own cf_<key> column. Preserves insertion order across rows.
+  const cfKeys = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    let ex = r.extra;
+    if (!ex && r.extra_json) { try { ex = JSON.parse(r.extra_json); } catch (_) { ex = {}; } }
+    if (ex && typeof ex === 'object') {
+      Object.keys(ex).forEach(k => {
+        if (!seen.has(k)) { seen.add(k); cfKeys.push(k); }
+      });
+    }
+  });
+
+  const headers = fixedCols.concat(cfKeys.map(k => 'cf_' + k));
+
+  function getCell(r, col) {
+    // Field-level resolution rules
+    if (col === 'status')      return r.status_name || '';
+    if (col === 'product')     return r.product_name || '';
+    if (col === 'assigned_to') return assigneeEmail(r);
+    if (col === 'qualified')   return Number(r.qualified) ? 1 : 0;
+    if (col === 'value')       return r.value == null ? '' : r.value;
+    if (col === 'currency')    return r.currency || '';
+    return r[col] == null ? '' : r[col];
+  }
+  function getCustom(r, key) {
+    let ex = r.extra;
+    if (!ex && r.extra_json) { try { ex = JSON.parse(r.extra_json); } catch (_) { ex = {}; } }
+    if (!ex || typeof ex !== 'object') return '';
+    const v = ex[key];
+    if (v == null) return '';
+    if (typeof v === 'object') return JSON.stringify(v);
+    return v;
+  }
+  function quote(v) {
+    const s = v == null ? '' : String(v).replace(/"/g, '""');
+    return /[",\n]/.test(s) ? `"${s}"` : s;
+  }
+
+  const csv = [headers.join(',')].concat(
+    rows.map(r => {
+      const fixed = fixedCols.map(c => quote(getCell(r, c)));
+      const cf = cfKeys.map(k => quote(getCustom(r, k)));
+      return fixed.concat(cf).join(',');
+    })
+  ).join('\n');
+
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
