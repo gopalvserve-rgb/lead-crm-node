@@ -4139,6 +4139,7 @@ function renderDialerSettings() {
           h('div', { class: 'actions' },
             h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
             h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
+            h('button', { class: 'btn', onclick: () => openRecordingSyncDebug() }, '🐞 Debug sync'),
             h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
             h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
           ),
@@ -13976,28 +13977,82 @@ function _fbDoLogin() {
  *   "20240115_143022_+919876543210_out.m4a"
  */
 function parseRecordingFilename(name, fallbackTimestamp) {
-  const lower = name.toLowerCase();
-  // Phone — first run of 7-15 digits (optionally + prefix), preferring + form
-  let phone = '';
-  const plusMatch = name.match(/\+\d{8,15}/);
-  if (plusMatch) phone = plusMatch[0];
-  else {
-    const m = name.match(/(\d{7,15})/);
-    if (m) phone = m[1];
-  }
-  // Direction
-  let direction = 'out';
-  if (/(incoming|received|\bin[_\-\s]|inbound)/.test(lower)) direction = 'in';
-  else if (/(outgoing|outbound|\bout[_\-\s]|dialed|made)/.test(lower)) direction = 'out';
-  // Date — try YYYY-MM-DD HH:MM:SS or YYYYMMDD_HHMMSS variants
+  const lower = String(name || '').toLowerCase();
   let startedAt = fallbackTimestamp || Date.now();
-  const dt1 = name.match(/(\d{4})[\-_]?(\d{2})[\-_]?(\d{2})[\-_\sT]+(\d{2})[\-_:]?(\d{2})[\-_:]?(\d{2})/);
+
+  // ---- Date / time extraction (must run first so we can SCRUB date digits before phone)
+  const dt1 = name.match(/(?:^|[^0-9])(\d{4})(\d{2})(\d{2})[_\-\sT](\d{2})(\d{2})(\d{2})(?=$|[^0-9])/);
+  const dt2 = name.match(/(?:^|[^0-9])(\d{2})(\d{2})(\d{2})[_\-\s](\d{2})(\d{2})(\d{2})(?=$|[^0-9])/);
+  const dt3 = name.match(/(?:^|[^0-9])(\d{4})-(\d{2})-(\d{2})[\s_T]+(\d{2})[-:]?(\d{2})[-:]?(\d{2})(?=$|[^0-9])/);
   if (dt1) {
     const [, y, mo, d, h, mi, s] = dt1;
     const ts = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`).getTime();
     if (!isNaN(ts)) startedAt = ts;
+  } else if (dt3) {
+    const [, y, mo, d, h, mi, s] = dt3;
+    const ts = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`).getTime();
+    if (!isNaN(ts)) startedAt = ts;
+  } else if (dt2) {
+    const [, yy, mo, d, h, mi, s] = dt2;
+    const y = (Number(yy) <= 79 ? '20' : '19') + yy;
+    const ts = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}`).getTime();
+    if (!isNaN(ts)) startedAt = ts;
   }
-  return { phone, direction, startedAt };
+
+  // Strip date digits before phone parsing (Samsung 'phone_YYMMDD_HHMMSS' bleed)
+  let scrubbed = String(name)
+    .replace(/(^|[^\d])(\d{6})[_\-\s](\d{6})(?=$|[^\d])/g, '$1 ')
+    .replace(/(^|[^\d])(\d{8})[_\-\sT](\d{6})(?=$|[^\d])/g, '$1 ')
+    .replace(/\b\d{4}-\d{2}-\d{2}[_\sT]+\d{2}[-:]\d{2}[-:]\d{2}\b/g, ' ')
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\b\d{8}\b/g, ' ')
+    .replace(/\b\d{2}[-_/]\d{2}[-_/]\d{2,4}\b/g, ' ')
+    .replace(/\b\d{2}[-:_]\d{2}[-:_]\d{2}\b/g, ' ');
+
+  // ---- Phone — preference order: +intl > Indian 10-digit > any 10-15-digit run > 8-9-digit fallback
+  let phone = '';
+  let plus = scrubbed.match(/\+\d[\d\s\-]{7,17}/);
+  if (plus) phone = plus[0].replace(/[\s\-]/g, '');
+  if (!phone) {
+    const indian = scrubbed.match(/(?:91|091|\+91)?[6-9]\d{9}/);
+    if (indian) phone = indian[0];
+  }
+  if (!phone) {
+    const m = scrubbed.match(/\d{10,15}/);
+    if (m) phone = m[0];
+  }
+  if (!phone) {
+    const m = scrubbed.match(/\d{8,9}/);
+    if (m) phone = m[0];
+  }
+
+  // ---- Contact name + last-4 hint extraction (Samsung 'John Doe -1234.m4a')
+  let contact = '', lastFour = '';
+  let stripped = name
+    .replace(/\.[a-z0-9]{2,5}$/i, '')
+    .replace(/^call[\s_-]*recording[\s_-]*/i, '')
+    .replace(/^voice[\s_-]*call[\s_-]*/i, '')
+    .replace(/[_\-\s]\d{6}[_\-\s]\d{6}(?=$|[^\d])/g, '')
+    .replace(/[_\-\s]\d{8}[_\-\sT]\d{6}(?=$|[^\d])/g, '')
+    .replace(/[_\-\s]\d{4}-\d{2}-\d{2}[_\sT]+\d{2}[-:]\d{2}[-:]\d{2}(?=$|[^\d])/g, '')
+    .replace(/[_\-\s]\d{2}[-/]\d{2}[-/]\d{2,4}(?=$|[^\d])/g, '')
+    .replace(/[_\-\s]\d{8,15}(?=$|[^\d])/g, '')
+    .trim();
+  const lastFourMatch = stripped.match(/-\s*(\d{3,5})\b/);
+  if (lastFourMatch) {
+    lastFour = lastFourMatch[1].slice(-4);
+    stripped = stripped.replace(lastFourMatch[0], '').trim();
+  }
+  if (/[a-z]/i.test(stripped)) {
+    contact = stripped.replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Direction
+  let direction = 'out';
+  if (/(incoming|received|inbound|in_call|\bin[_\-\s])/.test(lower)) direction = 'in';
+  else if (/(outgoing|outbound|out_call|dialed|made|\bout[_\-\s])/.test(lower)) direction = 'out';
+
+  return { phone, contact, lastFour, direction, startedAt };
 }
 
 /**
@@ -14043,70 +14098,137 @@ async function syncRecordings(opts) {
     } catch (_) {}
   }
 
-  // Build a set of "last 7 digits" for every phone we know across leads —
-  // used to filter out personal/family calls.
-  const knownTails = new Set();
+  // Build lookup indices across ALL known leads (not just the current
+  // user's filtered list — admins receiving calls about another rep's
+  // lead would otherwise skip).
+  function _norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+  const knownTails  = new Set();   // last-10 digits
+  const knownTails7 = new Set();   // last-7 digits (area-code-stripped fallback)
+  const tailToLead  = new Map();   // last-10 → lead id
+  const last4ToLead = new Map();   // last-4 → [lead ids]   (Samsung contact files)
+  const nameToLead  = new Map();   // normalized name → [lead ids]
   for (const l of CRM.cache.lastLeads || []) {
     for (const fld of ['phone', 'whatsapp', 'alt_phone']) {
       const d = String(l[fld] || '').replace(/\D/g, '');
-      if (d.length >= 7) knownTails.add(d.slice(-7));
+      if (d.length >= 7) {
+        const t10 = d.slice(-10);
+        knownTails.add(t10);
+        knownTails7.add(d.slice(-7));
+        tailToLead.set(t10, l.id);
+        const t4 = d.slice(-4);
+        if (t4) {
+          const arr = last4ToLead.get(t4) || [];
+          arr.push(l.id);
+          last4ToLead.set(t4, arr);
+        }
+      }
+    }
+    if (l.name) {
+      const k = _norm(l.name);
+      if (k) {
+        const arr = nameToLead.get(k) || [];
+        arr.push(l.id);
+        nameToLead.set(k, arr);
+      }
     }
   }
   const includeUnmatched = !!opts.includeUnmatched
     || localStorage.getItem('rec_include_unmatched') === '1';
 
   const uploaded = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
-  let success = 0, failed = 0, skipped = 0, skippedNoMatch = 0;
+  let success = 0, failed = 0, skipped = 0, skippedNoMatch = 0, skippedEmpty = 0;
+  window._recSkipDiag = [];
+  window._recFailDetails = [];
+  window._recDebugRows = [];   // populated for every file when ?debug=1
 
-  // Show progress in dialer view if visible
   const progress = $('#sync-progress');
   if (progress) progress.textContent = `0 / ${files.length}`;
 
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
     if (uploaded[f.uri]) { skipped++; continue; }
-    const meta = parseRecordingFilename(f.name, f.modified);
-    const digits = String(meta.phone || '').replace(/\D/g, '');
-    const tail = digits.slice(-7);
-    // SKIP files whose phone number doesn't match a lead in your CRM
-    // (personal calls, family, courier, OTPs, etc.)
-    if (!includeUnmatched && (!tail || !knownTails.has(tail))) {
-      skippedNoMatch++;
+    // Guard: unflushed/partial dialer files (Samsung writes them at call-start
+    // and fills in audio bytes progressively). < 4 KB = essentially empty M4A.
+    if ((Number(f.size) || 0) < 4096) {
+      skippedEmpty++;
+      console.warn('[leadcrm] skip — still being written:', f.name, 'size=', f.size);
       continue;
     }
-    // Match the recording's phone number against every lead's
-    // phone/whatsapp/alt_phone — last 10 digits comparison so country-code
-    // variations (+91, 91, none) don't break the join.
+    const meta = parseRecordingFilename(f.name, f.modified);
+    const digits = String(meta.phone || '').replace(/\D/g, '');
     const tail10 = digits.slice(-10);
-    const lead = digits ? (CRM.cache.lastLeads || []).find(l => {
-      for (const fld of ['phone', 'whatsapp', 'alt_phone']) {
-        const d = String(l[fld] || '').replace(/\D/g, '');
-        if (d && d.endsWith(tail10)) return true;
-      }
-      return false;
-    }) : null;
-    const leadId = lead ? String(lead.id) : '';
+    const tail7  = digits.slice(-7);
 
-    // If the filename's phone number maps to a lead, that's all the
-    // evidence we need — the recording belongs to that lead, period.
-    // Earlier we also required a recent call_event from the CRM, which
-    // dropped recordings for any call made directly from the phone
-    // (without auto-dial / dial-from-CRM). For real-world reps this
-    // hid 80%+ of recordings. Now: lead-match wins.
-    //
-    // The call_event check is only used as a fallback when the phone
-    // doesn't match any lead but DOES match a knownTail (alt-format
-    // shorthand). Helps catch typos / saved-without-country-code cases.
-    if (!includeUnmatched && !lead && digits) {
-      try {
-        const hr = await api('api_call_hasRecentEvent', meta.phone, 30);
-        if (!hr || !hr.matched) {
-          skippedNoMatch++;
-          continue;
-        }
-      } catch (_) { /* on API error fall through to upload — better
-                       too-permissive than silently dropping */ }
+    // Match in order of confidence:
+    let matchedLeadId = null;
+    let matchReason = '';
+    if (digits && knownTails.has(tail10)) {
+      matchedLeadId = tailToLead.get(tail10) || null;
+      matchReason = 'tail10';
+    } else if (digits && knownTails7.has(tail7)) {
+      for (const [t, lid] of tailToLead.entries()) {
+        if (t.slice(-7) === tail7) { matchedLeadId = lid; matchReason = 'tail7'; break; }
+      }
     }
+    // Contact-name fallback (Samsung 'Akash Sharma -1234.m4a')
+    if (!matchedLeadId && meta.contact) {
+      const k = _norm(meta.contact);
+      let candidates = nameToLead.get(k) || [];
+      if (!candidates.length && k.length >= 3) {
+        for (const [nameKey, ids] of nameToLead.entries()) {
+          if (nameKey.length >= 3 && (nameKey.includes(k) || k.includes(nameKey))) {
+            candidates = candidates.concat(ids);
+          }
+        }
+      }
+      if (!candidates.length) {
+        const words = String(meta.contact).toLowerCase().split(/\s+/).filter(w => w.length >= 2);
+        if (words.length) {
+          for (const [nameKey, ids] of nameToLead.entries()) {
+            if (words.every(w => nameKey.includes(_norm(w)))) candidates = candidates.concat(ids);
+          }
+        }
+      }
+      candidates = [...new Set(candidates)];
+      if (candidates.length === 1) {
+        matchedLeadId = candidates[0]; matchReason = 'contact-name';
+      } else if (candidates.length > 1 && meta.lastFour) {
+        const last4Set = new Set(last4ToLead.get(meta.lastFour) || []);
+        for (const cand of candidates) {
+          if (last4Set.has(cand)) { matchedLeadId = cand; matchReason = 'contact+last4'; break; }
+        }
+        if (!matchedLeadId) { matchedLeadId = candidates[0]; matchReason = 'contact-name-first'; }
+      }
+    }
+    // Last-4-only when filename has no phone, no contact name
+    if (!matchedLeadId && !meta.contact && meta.lastFour) {
+      const ids = last4ToLead.get(meta.lastFour) || [];
+      if (ids.length === 1) { matchedLeadId = ids[0]; matchReason = 'last4-unique'; }
+    }
+
+    // Debug row (always recorded so debug button can show full picture)
+    window._recDebugRows.push({
+      name: f.name, size: f.size,
+      parsed_phone: meta.phone || '', contact: meta.contact || '', last4: meta.lastFour || '',
+      tail10, lead_id: matchedLeadId, match_reason: matchReason || (matchedLeadId ? '' : 'no-match')
+    });
+
+    if (!includeUnmatched && !matchedLeadId) {
+      console.warn('[leadcrm] skip recording — no lead match:', f.name,
+        'phone=' + (digits || '-'), 'contact=' + (meta.contact || '-'), 'last4=' + (meta.lastFour || '-'));
+      skippedNoMatch++;
+      if (window._recSkipDiag.length < 3) {
+        window._recSkipDiag.push((digits || meta.contact || '?') + (meta.lastFour ? ('/-' + meta.lastFour) : ''));
+      }
+      continue;
+    }
+    const leadId = matchedLeadId ? String(matchedLeadId) : '';
+
+    // Phone+contact+last4 matching above already decided. If we made it here we
+    // either matched a lead OR includeUnmatched is on — let the server's recovery
+    // paths (filename phone re-parse, call_event timestamp lookup, auto-create
+    // lead) take over from here.
+
     // Rough duration: ~12 KB/sec for AAC m4a, ~8 KB/sec for amr, ~16 KB/sec for mp3
     const bytesPerSec = /\.(mp3|wav)$/i.test(f.name) ? 16000 : /\.(amr|3gp)$/i.test(f.name) ? 8000 : 12000;
     const durationGuess = Math.max(0, Math.round((Number(f.size) || 0) / bytesPerSec));
@@ -14143,13 +14265,181 @@ async function syncRecordings(opts) {
   localStorage.setItem('rec_uploaded', JSON.stringify(uploaded));
   localStorage.setItem('rec_last_sync', String(Date.now()));
   const parts = [];
+  parts.push(`📂 ${files.length} found`);
   parts.push(`✅ ${success} synced`);
-  if (skipped) parts.push(`${skipped} already uploaded`);
-  if (skippedNoMatch) parts.push(`${skippedNoMatch} skipped (not in CRM)`);
-  if (failed) parts.push(`${failed} failed`);
-  toast(parts.join(' · '));
+  if (skipped) parts.push(`⏭ ${skipped} already done`);
+  if (skippedEmpty) parts.push(`⏳ ${skippedEmpty} still recording — will retry`);
+  if (skippedNoMatch) {
+    let msg = `❓ ${skippedNoMatch} not matched`;
+    if (window._recSkipDiag && window._recSkipDiag.length) {
+      msg += ' (e.g. ' + window._recSkipDiag.slice(0, 3).join(', ') + ')';
+    }
+    parts.push(msg);
+  }
+  if (failed) {
+    let msg = `⚠ ${failed} failed`;
+    if (window._recFailDetails && window._recFailDetails.length) {
+      msg += ' — ' + window._recFailDetails.slice(0, 1).join('; ');
+    }
+    parts.push(msg);
+  }
+  toast(parts.join(' · '), success > 0 ? 'ok' : 'warn');
+  console.log('[leadcrm] sync complete', {
+    found: files.length, success, skipped, skippedEmpty, skippedNoMatch, failed,
+    skipExamples: window._recSkipDiag,
+    debugRows: window._recDebugRows
+  });
   if (typeof refreshDialerHistory === 'function') refreshDialerHistory();
 }
+
+// ──────────────────────────────────────────────────────────────────
+// Debug helper: opens a modal showing every file the sync saw and
+// exactly why it matched / didn't match. Available from the
+// Recordings tab via the new "🐞 Debug Sync" button.
+// ──────────────────────────────────────────────────────────────────
+async function openRecordingSyncDebug() {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') {
+    toast('Debug only works in the Android app', 'warn');
+    return;
+  }
+  let folderName = '';
+  try { folderName = LeadCRMNative.getRecordingFolder() || ''; } catch (e) {}
+  if (!folderName) { toast('Pick a folder first', 'warn'); return; }
+
+  // Force a full scan + record debug rows without uploading.
+  // Cheat: call syncRecordings with full+includeUnmatched=true but intercept
+  // the upload native call so nothing is sent. Simpler: we just run the
+  // matching loop ourselves over the file list.
+  const filesJson = LeadCRMNative.listRecordings(0);
+  let files = [];
+  try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
+
+  // Refresh leads cache so the indices are accurate.
+  try {
+    const r = await api('api_leads_list', {});
+    CRM.cache.lastLeads = (r.leads || r);
+  } catch (_) {}
+
+  function _norm(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+  const knownTails = new Set(), knownTails7 = new Set(), tailToLead = new Map();
+  const last4ToLead = new Map(), nameToLead = new Map();
+  for (const l of CRM.cache.lastLeads || []) {
+    for (const fld of ['phone', 'whatsapp', 'alt_phone']) {
+      const d = String(l[fld] || '').replace(/\D/g, '');
+      if (d.length >= 7) {
+        const t10 = d.slice(-10);
+        knownTails.add(t10); knownTails7.add(d.slice(-7)); tailToLead.set(t10, l.id);
+        const t4 = d.slice(-4);
+        if (t4) { const a = last4ToLead.get(t4) || []; a.push(l.id); last4ToLead.set(t4, a); }
+      }
+    }
+    if (l.name) {
+      const k = _norm(l.name);
+      if (k) { const a = nameToLead.get(k) || []; a.push(l.id); nameToLead.set(k, a); }
+    }
+  }
+
+  const uploaded = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
+  const rows = [];
+  for (const f of files) {
+    const meta = parseRecordingFilename(f.name, f.modified);
+    const digits = String(meta.phone || '').replace(/\D/g, '');
+    const tail10 = digits.slice(-10);
+    const tail7  = digits.slice(-7);
+    let leadId = null, reason = 'no-match';
+    if (uploaded[f.uri]) { reason = 'already-uploaded'; leadId = '—'; }
+    else if ((Number(f.size) || 0) < 4096) reason = 'too-small (' + (f.size || 0) + 'B)';
+    else if (digits && knownTails.has(tail10))      { leadId = tailToLead.get(tail10); reason = 'tail10 ✓'; }
+    else if (digits && knownTails7.has(tail7))      {
+      for (const [t, lid] of tailToLead.entries()) {
+        if (t.slice(-7) === tail7) { leadId = lid; reason = 'tail7 ✓'; break; }
+      }
+    }
+    else if (meta.contact) {
+      const k = _norm(meta.contact);
+      const cand = nameToLead.get(k) || [];
+      if (cand.length === 1) { leadId = cand[0]; reason = 'contact-name ✓'; }
+      else if (cand.length > 1) { leadId = cand[0]; reason = 'contact-name (ambiguous '+cand.length+')'; }
+    }
+    else if (meta.lastFour) {
+      const ids = last4ToLead.get(meta.lastFour) || [];
+      if (ids.length === 1) { leadId = ids[0]; reason = 'last4 ✓'; }
+    }
+    rows.push({ f, meta, digits, leadId, reason });
+  }
+
+  // Render modal
+  const m = h('div', { class: 'modal-backdrop',
+    onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const modal = h('div', { class: 'modal modal-lg' });
+  modal.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🐞 Recording sync debug — ' + files.length + ' file' + (files.length === 1 ? '' : 's')),
+    h('button', { class: 'btn ghost', onclick: () => m.remove() }, '✕')
+  ));
+  const body = h('div', { style: { padding: '.5rem', maxHeight: '70vh', overflow: 'auto' } });
+  if (!files.length) {
+    body.appendChild(h('p', {}, 'No files in the folder. Make sure your dialer actually saves recordings to the picked path.'));
+  } else {
+    const tbl = h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'File'),
+        h('th', {}, 'Size'),
+        h('th', {}, 'Parsed phone'),
+        h('th', {}, 'Contact'),
+        h('th', {}, 'Last4'),
+        h('th', {}, 'Lead'),
+        h('th', {}, 'Match reason'),
+        h('th', {}, '')
+      )),
+      h('tbody', {},
+        rows.map(r => h('tr', {},
+          h('td', { style: { fontSize: '.78rem', wordBreak: 'break-all' } }, r.f.name),
+          h('td', {}, String(r.f.size || 0)),
+          h('td', {}, r.meta.phone || '—'),
+          h('td', {}, r.meta.contact || '—'),
+          h('td', {}, r.meta.lastFour || '—'),
+          h('td', {}, r.leadId ? String(r.leadId) : '—'),
+          h('td', { style: { fontWeight: r.leadId && r.leadId !== '—' ? '600' : 'normal', color: r.leadId && r.leadId !== '—' ? '#16a34a' : '#dc2626' } }, r.reason),
+          h('td', {},
+            h('button', { class: 'btn sm', onclick: async () => {
+              // Force-upload this one file, ignoring all client-side filters
+              if (!confirm('Force-upload this file to the server (skip all client filters)?\n\n' + r.f.name)) return;
+              const bytesPerSec = /\.(mp3|wav)$/i.test(r.f.name) ? 16000 : /\.(amr|3gp)$/i.test(r.f.name) ? 8000 : 12000;
+              const durationGuess = Math.max(0, Math.round((Number(r.f.size) || 0) / bytesPerSec));
+              const ok = await new Promise(resolve => {
+                const cbName = '__recCB_' + Math.random().toString(36).slice(2, 10);
+                window[cbName] = (success, detail) => { delete window[cbName]; resolve({ success, detail }); };
+                try {
+                  LeadCRMNative.uploadRecordingByUri(
+                    r.f.uri, location.origin, CRM.token || '',
+                    r.meta.phone || '', r.meta.direction || 'out',
+                    durationGuess, r.leadId && r.leadId !== '—' ? String(r.leadId) : '',
+                    new Date(r.meta.startedAt).toISOString(), r.f.name, cbName
+                  );
+                } catch (e) { delete window[cbName]; resolve({ success: false, detail: e.message }); }
+              });
+              if (ok.success) {
+                toast('Force-uploaded ' + r.f.name, 'ok');
+                const u = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
+                u[r.f.uri] = Date.now(); localStorage.setItem('rec_uploaded', JSON.stringify(u));
+              } else {
+                toast('Force-upload failed: ' + (ok.detail || 'unknown'), 'err');
+              }
+            } }, '⬆ Force upload')
+          )
+        ))
+      )
+    );
+    body.appendChild(tbl);
+    body.appendChild(h('p', { class: 'muted', style: { marginTop: '.75rem', fontSize: '.82rem' } },
+      'Green match-reason = file would upload on Sync now. Red = file would be skipped client-side. Use "⬆ Force upload" to bypass all client checks and let the server\'s recovery paths (filename re-parse, call-event lookup, auto-create lead) decide.'
+    ));
+  }
+  modal.appendChild(body);
+  m.appendChild(modal);
+  document.body.appendChild(m);
+}
+try { window.openRecordingSyncDebug = openRecordingSyncDebug; } catch (_) {}
 
 /**
  * First-run onboarding — when a user first signs in on the APK, prompt them
