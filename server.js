@@ -135,6 +135,43 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       const lead = await _findLeadByPhone(phone);
       if (lead) leadId = lead.id;
     }
+    // upload-side transcode: if the dialer wrote a 3GP/AMR container
+    // (common on Samsung / MIUI / Realme), convert to M4A/AAC now so
+    // browsers can play it immediately. If transcode fails, store the
+    // original bytes — the lazy-on-play path will retry later.
+    let _audioBuf = req.file.buffer;
+    let _audioMime = req.file.mimetype || 'audio/m4a';
+    let _audioSize = req.file.size || 0;
+    try {
+      const tx = require('./utils/audioTranscode');
+      if (tx.needsTranscode(_audioBuf)) {
+        const diag = require('./utils/recordingDiag');
+        const t0 = Date.now();
+        let mp3 = null;
+        try { mp3 = await tx.transcodeToMp3(_audioBuf); }
+        catch (txErr) {
+          diag.log({
+            recording_id: null, action: 'upload_transcode', result: 'fail',
+            bytes_in: _audioSize,
+            error_message: 'ffmpeg threw: ' + txErr.message,
+            duration_ms: Date.now() - t0
+          });
+        }
+        if (mp3 && mp3.length > 0) {
+          _audioBuf = mp3;
+          _audioMime = 'audio/mp4';
+          _audioSize = mp3.length;
+          diag.log({
+            recording_id: null, action: 'upload_transcode', result: 'ok',
+            bytes_in: req.file.size, bytes_out: mp3.length,
+            mime_out: 'audio/mp4', duration_ms: Date.now() - t0
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[/api/recordings] upload-side transcode skipped:', e.message);
+    }
+
     const id = await db.insert('lead_recordings', {
       lead_id: leadId,
       user_id: me.id,
@@ -142,9 +179,9 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       direction: req.body.direction || 'out',
       duration_s: Number(req.body.duration_s) || 0,
       device_path: (req.body.device_path || '').toString(),
-      mime_type: req.file.mimetype || 'audio/m4a',
-      size_bytes: req.file.size || 0,
-      audio_bytes: req.file.buffer,
+      mime_type: _audioMime,
+      size_bytes: _audioSize,
+      audio_bytes: _audioBuf,
       started_at: req.body.started_at || db.nowIso(),
       created_at: db.nowIso()
     });
@@ -190,25 +227,117 @@ app.post('/api/call_event_native', require('express').json({ limit: '64kb' }), a
   }
 });
 
-// GET /api/recordings/:id/audio  — streams audio bytes (token required)
+// GET /api/recordings/:id/audio — streams audio bytes (token required)
+// Enhanced playback: container sniffing, lazy-transcode of AMR/3GP rows,
+// range/seek support, and per-recording diagnostic logging so playback
+// works for every dialer brand (Samsung, MIUI, Realme, Vivo, Pixel).
+//
+// ?force=1 bypasses the needsTranscode gate so admin can re-transcode
+// a row whose cached output is corrupt.
 app.get('/api/recordings/:id/audio', async (req, res) => {
   try {
     const token = _tokenFrom(req);
     await authUser(token);
     const id = Number(req.params.id);
-    const { rows } = await db.query(
+    const r = await db.query(
       'SELECT mime_type, audio_bytes, size_bytes FROM lead_recordings WHERE id = $1',
       [id]
     );
-    if (!rows[0] || !rows[0].audio_bytes) return res.status(404).end();
-    res.setHeader('Content-Type', rows[0].mime_type || 'audio/m4a');
-    res.setHeader('Content-Length', rows[0].audio_bytes.length);
+    const row = r.rows[0];
+    if (!row) return res.status(404).json({ error: 'recording not found', requested_id: id });
+    let buf = row.audio_bytes;
+    if (!buf) return res.status(410).json({ error: 'recording has no audio bytes (zero-byte upload — re-sync after the dialer finishes writing)' });
+    if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
+    const total = buf.length;
+    if (total === 0) return res.status(410).json({ error: 'recording has zero bytes' });
+
+    // Lazy transcode for rows uploaded before the upload-side
+    // transcoder shipped. If we sniff a 3GP/AMR container, transcode now,
+    // write the M4A back into the row so subsequent plays are instant,
+    // and stream the M4A in this response.
+    try {
+      const tx = require('./utils/audioTranscode');
+      const force = String(req.query.force || '') === '1';
+      if (force || tx.needsTranscode(buf)) {
+        console.log('[/audio] lazy transcoding row ' + id + ' (' + total + ' bytes)');
+        const diag = require('./utils/recordingDiag');
+        const t0 = Date.now();
+        let mp3 = null;
+        try { mp3 = await tx.transcodeToMp3(buf); }
+        catch (txErr) {
+          diag.log({
+            recording_id: id, action: 'lazy_on_play', result: 'fail',
+            bytes_in: total,
+            error_message: 'ffmpeg threw: ' + txErr.message + (txErr._stderr ? ' | stderr: ' + txErr._stderr.slice(-500) : ''),
+            duration_ms: Date.now() - t0
+          });
+          mp3 = null;
+        }
+        if (mp3 && mp3.length > 0) {
+          buf = mp3;
+          try {
+            await db.query(
+              'UPDATE lead_recordings SET audio_bytes = $1, size_bytes = $2, mime_type = $3 WHERE id = $4',
+              [mp3, mp3.length, 'audio/mp4', id]
+            );
+          } catch (e) { console.warn('[/audio] cache write failed:', e.message); }
+          row.mime_type = 'audio/mp4';
+          console.log('[/audio] lazy transcode OK row ' + id + ' → ' + mp3.length + ' bytes');
+          diag.log({
+            recording_id: id, action: 'lazy_on_play', result: 'ok',
+            bytes_in: total, bytes_out: mp3.length,
+            mime_in: 'audio/3gpp', mime_out: 'audio/mp4',
+            duration_ms: Date.now() - t0
+          });
+        } else {
+          diag.log({
+            recording_id: id, action: 'lazy_on_play', result: 'fail',
+            bytes_in: total, mime_in: 'audio/3gpp',
+            error_message: 'transcode returned null/empty (ffmpeg binary missing or threw)',
+            duration_ms: Date.now() - t0
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[/audio] lazy transcode skipped:', e.message);
+    }
+
+    // Sniff true MIME — covers .mp3 .wav .ogg .flac .m4a .amr .3gpp .opus
+    const tx2 = require('./utils/audioTranscode');
+    let mime = tx2.guessAudioMime(null, buf);
+    if (mime === 'application/octet-stream') mime = row.mime_type || 'audio/mp4';
+    const codecPlayable = tx2.isBrowserPlayable(mime);
+    res.setHeader('X-Audio-Browser-Playable', codecPlayable ? '1' : '0');
+    res.setHeader('X-Audio-Detected-Mime', mime);
+
+    const finalTotal = buf.length;
+    const range = req.headers.range;
+    if (range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (m) {
+        let start = m[1] ? Number(m[1]) : 0;
+        let end   = m[2] ? Number(m[2]) : finalTotal - 1;
+        if (Number.isNaN(start) || start < 0) start = 0;
+        if (Number.isNaN(end) || end >= finalTotal) end = finalTotal - 1;
+        if (start > end) { res.status(416).setHeader('Content-Range', 'bytes */' + finalTotal); return res.end(); }
+        const chunk = buf.slice(start, end + 1);
+        res.status(206);
+        res.setHeader('Content-Type', mime);
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Content-Length', chunk.length);
+        res.setHeader('Content-Range', 'bytes ' + start + '-' + end + '/' + finalTotal);
+        res.setHeader('Cache-Control', 'private, max-age=60');
+        return res.end(chunk);
+      }
+    }
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Length', finalTotal);
     res.setHeader('Cache-Control', 'private, max-age=60');
-    res.setHeader('Accept-Ranges', 'none');
-    res.end(rows[0].audio_bytes);
+    return res.end(buf);
   } catch (e) {
-    console.error('[/api/recordings/:id/audio]', e.message);
-    res.status(400).json({ error: e.message });
+    console.error('[/api/recordings/:id/audio]', e && e.stack || e);
+    res.status(500).json({ error: e && e.message ? e.message : String(e) });
   }
 });
 
