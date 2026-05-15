@@ -130,6 +130,7 @@ async function apiRaw(fn, ...args) {
       }
       navigateTo(parseHashView() || 'dashboard');
       startFollowupPolling();
+      try { startRecordingAutoSync(); } catch (_) {}
       refreshNotifs();
       // Load + render any active announcement banners. Polls every 60s so a
       // freshly-posted admin announcement appears for already-logged-in users
@@ -4161,6 +4162,9 @@ VIEWS.dialer = async (view) => {
 };
 
 function renderDialerSettings() {
+  // Auto-kick a silent recording sync when the user opens this view.
+  try { if (typeof _kickRecordingSyncSoon === 'function') _kickRecordingSyncSoon(2000); } catch (_) {}
+
   const wrap = h('div', { class: 'dialer-settings' });
   const isApp = !!(window.LeadCRMNative && typeof LeadCRMNative.getRecordingFolder === 'function');
   let folder = '';
@@ -14109,6 +14113,50 @@ function parseRecordingFilename(name, fallbackTimestamp) {
  *
  * Skips files we've already uploaded (tracked in localStorage by file URI).
  */
+/* ---------------- Recording auto-sync (background) ---------------- */
+let _recAutoSyncTimer = null;
+let _recKickPending = null;
+async function _silentSyncRecordings(opts) {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
+  if (typeof syncRecordings !== 'function') return;
+  try {
+    const realToast = window.toast;
+    let suppressed = 0;
+    window.toast = function (msg, kind) {
+      if (kind === 'warn' || kind === 'err') return realToast(msg, kind);
+      if (typeof msg === 'string' && /✅\s*[1-9]/.test(msg)) suppressed++;
+    };
+    try { await syncRecordings(opts || {}); }
+    finally { window.toast = realToast; }
+    if (suppressed) {
+      console.log('[leadcrm] silent sync: ' + suppressed + ' new');
+      if (typeof toast === 'function') toast('🎙 Recording linked');
+    }
+  } catch (e) { console.warn('[leadcrm] silent sync error', e); }
+}
+function _kickRecordingSyncSoon(delayMs) {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
+  if (_recKickPending) return;
+  _recKickPending = setTimeout(() => {
+    _recKickPending = null;
+    _silentSyncRecordings({});
+  }, Math.max(0, delayMs || 6000));
+}
+function startRecordingAutoSync() {
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
+  if (_recAutoSyncTimer) clearInterval(_recAutoSyncTimer);
+  setTimeout(() => _silentSyncRecordings({}), 8000);
+  _recAutoSyncTimer = setInterval(() => _silentSyncRecordings({}), 90_000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') setTimeout(() => _silentSyncRecordings({}), 1500);
+  });
+}
+try {
+  window._kickRecordingSyncSoon = _kickRecordingSyncSoon;
+  window.startRecordingAutoSync = startRecordingAutoSync;
+  window._silentSyncRecordings = _silentSyncRecordings;
+} catch (_) {}
+
 async function syncRecordings(opts) {
   opts = opts || {};
   if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') {
@@ -14439,26 +14487,50 @@ async function openRecordingSyncDebug() {
   if (!files.length) {
     body.appendChild(h('p', {}, 'No files in the folder. Make sure your dialer actually saves recordings to the picked path.'));
   } else {
+    // Build id→name map so the table shows the actual lead name we
+    // matched, not just the numeric id or filename digits.
+    const _leadNameById = new Map();
+    (CRM.cache.lastLeads || []).forEach(l => { if (l && l.id) _leadNameById.set(Number(l.id), l.name || ('#' + l.id)); });
     const tbl = h('table', { class: 'mini-table' },
       h('thead', {}, h('tr', {},
         h('th', {}, 'File'),
         h('th', {}, 'Size'),
-        h('th', {}, 'Parsed phone'),
-        h('th', {}, 'Contact'),
-        h('th', {}, 'Last4'),
-        h('th', {}, 'Lead'),
+        h('th', {}, 'Lead match'),
+        h('th', {}, 'Phone / Contact'),
         h('th', {}, 'Match reason'),
         h('th', {}, '')
       )),
       h('tbody', {},
-        rows.map(r => h('tr', {},
+        rows.map(r => {
+          const linkedName = (r.leadId && r.leadId !== '—' && _leadNameById.get(Number(r.leadId))) || '';
+          const matched = !!(r.leadId && r.leadId !== '—' && linkedName);
+          // Lead match cell — show the actual lead name when we have one,
+          // otherwise an obvious red "Not in CRM" so the user knows the
+          // file would land via server-side timestamp lookup / auto-create.
+          const leadCell = matched
+            ? h('td', { style: { fontWeight: '600', color: '#16a34a' } }, '✓ ' + linkedName)
+            : h('td', { style: { fontWeight: '600', color: '#dc2626' } }, 'Not in CRM');
+          // Phone / Contact — prefer the matched lead's phone, fall back to
+          // filename digits, then contact name. Never show raw digits when a
+          // lead name exists (client asked: 'show contact name like Vaibhav,
+          // not parsed phone').
+          let phoneCellText = '—';
+          if (matched) {
+            const _l = (CRM.cache.lastLeads || []).find(x => Number(x.id) === Number(r.leadId));
+            phoneCellText = (_l && (_l.phone || _l.whatsapp)) || r.meta.phone || r.meta.contact || '—';
+          } else if (r.meta.phone) {
+            phoneCellText = r.meta.phone;
+          } else if (r.meta.contact) {
+            phoneCellText = r.meta.contact + (r.meta.lastFour ? (' -' + r.meta.lastFour) : '');
+          } else {
+            phoneCellText = 'Phone number not found';
+          }
+          return h('tr', {},
           h('td', { style: { fontSize: '.78rem', wordBreak: 'break-all' } }, r.f.name),
           h('td', {}, String(r.f.size || 0)),
-          h('td', {}, r.meta.phone || '—'),
-          h('td', {}, r.meta.contact || '—'),
-          h('td', {}, r.meta.lastFour || '—'),
-          h('td', {}, r.leadId ? String(r.leadId) : '—'),
-          h('td', { style: { fontWeight: r.leadId && r.leadId !== '—' ? '600' : 'normal', color: r.leadId && r.leadId !== '—' ? '#16a34a' : '#dc2626' } }, r.reason),
+          leadCell,
+          h('td', { style: { fontSize: '.85rem' } }, phoneCellText),
+          h('td', { style: { fontWeight: matched ? '600' : 'normal', color: matched ? '#16a34a' : '#dc2626', fontSize: '.78rem' } }, r.reason),
           h('td', {},
             h('button', { class: 'btn sm', onclick: async () => {
               // Force-upload this one file, ignoring all client-side filters
@@ -14486,7 +14558,8 @@ async function openRecordingSyncDebug() {
               }
             } }, '⬆ Force upload')
           )
-        ))
+        );
+        })
       )
     );
     body.appendChild(tbl);
