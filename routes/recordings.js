@@ -31,6 +31,23 @@ async function _findLeadByPhone(phone) {
       ['%' + tail]
     );
     if (rows[0]) return rows[0];
+    // Fallback — extra_phones JSON array stored in extra_json.
+    try {
+      const r2 = await db.query(
+        `SELECT * FROM leads
+           WHERE extra_json IS NOT NULL
+             AND extra_json::text ~ '"extra_phones"'
+             AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements_text(
+                 COALESCE((extra_json::jsonb)->'extra_phones', '[]'::jsonb)
+               ) AS ep
+               WHERE regexp_replace(ep, '[^0-9]', '', 'g') LIKE $1
+             )
+           ORDER BY id DESC LIMIT 1`,
+        ['%' + tail]
+      );
+      if (r2.rows && r2.rows[0]) return r2.rows[0];
+    } catch (_) { /* best-effort */ }
   }
   return null;
 }
