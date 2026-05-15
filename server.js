@@ -59,6 +59,7 @@ const routes = {
   projectStages: require('./routes/projectStages'),
   personalWa:    require('./routes/personalWaTemplates'),
   integrations:  require('./routes/integrations'),
+  nurture:       require('./routes/nurture'),
   aiUsage:       require('./utils/aiUsage'),
     roles:         require('./routes/roles'),
 };
@@ -1217,7 +1218,16 @@ document.querySelectorAll('.tab').forEach(b => b.addEventListener('click', () =>
     setTimeout(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] initial run failed:', e.message)), 60_000);
     setInterval(() => integrations.runDueSheetSyncs().catch(e => console.error('[sheetSync] tick failed:', e.message)), 60_000);
   } catch (e) { console.error('[boot] sheet sync poller failed to start:', e.message); }
-  app.listen(PORT, HOST, () => {
+  
+// ---- Lead Nurture worker — wakes every 5 min, runs due step_runs ----
+try {
+  const _nurture = require('./utils/nurtureWorker');
+  if (_nurture && typeof _nurture.start === 'function') _nurture.start();
+} catch (e) {
+  console.warn('[nurture] worker failed to start:', e.message);
+}
+
+app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);
     console.log('API dispatcher methods:', Object.keys(API).length);
