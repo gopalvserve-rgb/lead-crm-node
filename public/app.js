@@ -14114,11 +14114,57 @@ function parseRecordingFilename(name, fallbackTimestamp) {
  * Skips files we've already uploaded (tracked in localStorage by file URI).
  */
 /* ---------------- Recording auto-sync (background) ---------------- */
+// Persistent diagnostic log — survives page reloads, capped at 200 rows.
+// Format: { t: epoch_ms, reason: string, result: string, found, success, skipped, skippedNoMatch, failed, error? }
+function _recDiagLog(row) {
+  try {
+    const k = 'crm_recsync_diag_v1';
+    const arr = JSON.parse(localStorage.getItem(k) || '[]');
+    arr.push(Object.assign({ t: Date.now() }, row || {}));
+    if (arr.length > 200) arr.splice(0, arr.length - 200);
+    localStorage.setItem(k, JSON.stringify(arr));
+  } catch (_) {}
+  try { console.log('[recsync]', row.reason, row); } catch (_) {}
+}
+function _recDiagReadLog() {
+  try { return JSON.parse(localStorage.getItem('crm_recsync_diag_v1') || '[]'); } catch (_) { return []; }
+}
+function _recDiagClear() {
+  try { localStorage.removeItem('crm_recsync_diag_v1'); } catch (_) {}
+}
+try {
+  window._recDiagLog = _recDiagLog;
+  window._recDiagReadLog = _recDiagReadLog;
+  window._recDiagClear = _recDiagClear;
+} catch (_) {}
+
 let _recAutoSyncTimer = null;
 let _recKickPending = null;
+
+// Wrap syncRecordings so EVERY auto-trigger logs its attempt + outcome.
 async function _silentSyncRecordings(opts) {
-  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
-  if (typeof syncRecordings !== 'function') return;
+  const reason = (opts && opts._reason) || 'unknown';
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') {
+    _recDiagLog({ reason, result: 'skip', note: 'no-native-bridge (browser mode?)' });
+    return;
+  }
+  if (typeof syncRecordings !== 'function') {
+    _recDiagLog({ reason, result: 'skip', note: 'syncRecordings not loaded yet' });
+    return;
+  }
+  // Sanity: do we have a folder picked + a token?
+  let folder = '';
+  try { folder = LeadCRMNative.getRecordingFolder() || ''; } catch (_) {}
+  if (!folder) {
+    _recDiagLog({ reason, result: 'skip', note: 'no recordings folder picked' });
+    return;
+  }
+  if (!CRM.token) {
+    _recDiagLog({ reason, result: 'skip', note: 'no auth token (not logged in)' });
+    return;
+  }
+
+  const t0 = Date.now();
   try {
     const realToast = window.toast;
     let suppressed = 0;
@@ -14126,36 +14172,186 @@ async function _silentSyncRecordings(opts) {
       if (kind === 'warn' || kind === 'err') return realToast(msg, kind);
       if (typeof msg === 'string' && /✅\s*[1-9]/.test(msg)) suppressed++;
     };
-    try { await syncRecordings(opts || {}); }
+    try { await syncRecordings(Object.assign({}, opts || {})); }
     finally { window.toast = realToast; }
-    if (suppressed) {
-      console.log('[leadcrm] silent sync: ' + suppressed + ' new');
-      if (typeof toast === 'function') toast('🎙 Recording linked');
-    }
-  } catch (e) { console.warn('[leadcrm] silent sync error', e); }
+    _recDiagLog({
+      reason, result: 'ok',
+      duration_ms: Date.now() - t0,
+      suppressed_success_toasts: suppressed,
+      // Pull last-sync counters that syncRecordings stashes on window
+      found:           window._recLastFound          || 0,
+      success:         window._recLastSuccess        || 0,
+      skipped:         window._recLastSkipped        || 0,
+      skippedNoMatch:  window._recLastSkippedNoMatch || 0,
+      skippedEmpty:    window._recLastSkippedEmpty   || 0,
+      failed:          window._recLastFailed         || 0
+    });
+    if (suppressed && typeof toast === 'function') toast('🎙 Recording linked');
+  } catch (e) {
+    _recDiagLog({ reason, result: 'error', error: String(e && e.message || e), duration_ms: Date.now() - t0 });
+    console.warn('[leadcrm] silent sync error', e);
+  }
 }
-function _kickRecordingSyncSoon(delayMs) {
+function _kickRecordingSyncSoon(delayMs, reason) {
   if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
-  if (_recKickPending) return;
+  if (_recKickPending) {
+    _recDiagLog({ reason: reason || 'kick', result: 'skip', note: 'already-pending' });
+    return;
+  }
+  _recDiagLog({ reason: reason || 'kick', result: 'scheduled', delay_ms: Math.max(0, delayMs || 6000) });
   _recKickPending = setTimeout(() => {
     _recKickPending = null;
-    _silentSyncRecordings({});
+    _silentSyncRecordings({ _reason: reason || 'kick' });
   }, Math.max(0, delayMs || 6000));
 }
 function startRecordingAutoSync() {
-  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') return;
+  if (!window.LeadCRMNative || typeof LeadCRMNative.listRecordings !== 'function') {
+    _recDiagLog({ reason: 'startup', result: 'skip', note: 'browser mode (no LeadCRMNative bridge)' });
+    return;
+  }
+  _recDiagLog({ reason: 'startup', result: 'ok', note: 'auto-sync timers armed (boot 8s, tick 90s, visibilitychange)' });
   if (_recAutoSyncTimer) clearInterval(_recAutoSyncTimer);
-  setTimeout(() => _silentSyncRecordings({}), 8000);
-  _recAutoSyncTimer = setInterval(() => _silentSyncRecordings({}), 90_000);
+  setTimeout(() => _silentSyncRecordings({ _reason: 'boot' }), 8000);
+  _recAutoSyncTimer = setInterval(() => _silentSyncRecordings({ _reason: 'tick90s' }), 90_000);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') setTimeout(() => _silentSyncRecordings({}), 1500);
+    if (document.visibilityState === 'visible') setTimeout(() => _silentSyncRecordings({ _reason: 'visibility' }), 1500);
   });
+
+  // ALSO: when the cap-app native bridge fires 'recordingAvailable'
+  // (FileObserver detected a new audio file), kick a sweep.
+  if (window.LeadCRMNative && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CallerId) {
+    try {
+      window.Capacitor.Plugins.CallerId.addListener('recordingAvailable', (p) => {
+        _recDiagLog({ reason: 'native-event', result: 'received', note: 'recordingAvailable: ' + (p && p.name || '?') });
+        _kickRecordingSyncSoon(3000, 'native-event');
+      });
+      _recDiagLog({ reason: 'startup', result: 'ok', note: 'recordingAvailable listener attached' });
+    } catch (e) {
+      _recDiagLog({ reason: 'startup', result: 'warn', note: 'recordingAvailable listener failed: ' + e.message });
+    }
+  }
 }
 try {
   window._kickRecordingSyncSoon = _kickRecordingSyncSoon;
   window.startRecordingAutoSync = startRecordingAutoSync;
   window._silentSyncRecordings = _silentSyncRecordings;
 } catch (_) {}
+
+// ── Diagnostics modal — exposed via "🩺 Sync diagnostics" button ──
+async function openRecordingSyncDiagnostics() {
+  const log = _recDiagReadLog().slice().reverse(); // newest first
+  let native = !!window.LeadCRMNative;
+  let nativeListMethod = native && typeof LeadCRMNative.listRecordings === 'function';
+  let folder = '';
+  try { folder = native ? (LeadCRMNative.getRecordingFolder() || '') : ''; } catch (_) {}
+  const hasToken = !!CRM.token;
+  const tHumanAgo = (ms) => {
+    const s = Math.round((Date.now() - ms) / 1000);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.round(s/60) + 'm ago';
+    return Math.round(s/3600) + 'h ago';
+  };
+  const lastSync = Number(localStorage.getItem('rec_last_sync') || 0);
+  const uploadedCount = (() => { try { return Object.keys(JSON.parse(localStorage.getItem('rec_uploaded') || '{}')).length; } catch (_) { return 0; } })();
+
+  const m = h('div', { class: 'modal-backdrop',
+    onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) m.remove(); } });
+  const modal = h('div', { class: 'modal modal-lg' });
+  modal.appendChild(h('div', { class: 'modal-head' },
+    h('h3', {}, '🩺 Recording sync diagnostics'),
+    h('button', { class: 'btn ghost', onclick: () => m.remove() }, '✕')
+  ));
+  const body = h('div', { style: { padding: '.5rem', maxHeight: '74vh', overflow: 'auto' } });
+
+  // State summary
+  body.appendChild(h('div', { class: 'card', style: { padding: '.75rem', marginBottom: '.6rem' } },
+    h('h4', { style: { margin: '0 0 .4rem' } }, '📋 Current state'),
+    h('div', { style: { fontSize: '.85rem', lineHeight: '1.7' } },
+      h('div', {}, native ? '✅ Native bridge loaded (LeadCRMNative)' : '❌ Native bridge NOT loaded — this is a regular browser, auto-sync only works in the APK.'),
+      h('div', {}, nativeListMethod ? '✅ listRecordings() available' : '❌ listRecordings() missing on bridge'),
+      h('div', {}, folder ? '✅ Recordings folder picked: ' + folder : '❌ NO folder picked — Settings → Recordings → Change folder'),
+      h('div', {}, hasToken ? '✅ Logged in (auth token present)' : '❌ NOT logged in — auto-sync requires a session'),
+      h('div', {}, _recAutoSyncTimer ? '✅ 90s auto-sync timer is ARMED' : '⚠️ 90s timer NOT armed — call startRecordingAutoSync()'),
+      h('div', {}, lastSync ? '🕓 Last sync attempt: ' + tHumanAgo(lastSync) : '🕓 No sync attempts yet')
+    )
+  ));
+
+  // Action buttons
+  body.appendChild(h('div', { style: { display: 'flex', gap: '.4rem', flexWrap: 'wrap', marginBottom: '.6rem' } },
+    h('button', { class: 'btn primary', onclick: async () => {
+      await _silentSyncRecordings({ _reason: 'manual-from-diag' });
+      m.remove(); setTimeout(() => openRecordingSyncDiagnostics(), 200);
+    } }, '▶ Trigger sync now (silent)'),
+    h('button', { class: 'btn', onclick: async () => {
+      try { startRecordingAutoSync(); toast('Auto-sync re-armed', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+      m.remove(); setTimeout(() => openRecordingSyncDiagnostics(), 200);
+    } }, '🔄 Re-arm auto-sync'),
+    h('button', { class: 'btn ghost', onclick: () => {
+      if (!confirm('Clear the diagnostic log?')) return;
+      _recDiagClear(); m.remove(); openRecordingSyncDiagnostics();
+    } }, '🧹 Clear log'),
+    h('button', { class: 'btn ghost', onclick: () => {
+      // Copy log JSON to clipboard for support
+      try {
+        navigator.clipboard.writeText(JSON.stringify(_recDiagReadLog(), null, 2));
+        toast('Log JSON copied — paste into support chat', 'ok');
+      } catch (_) {
+        prompt('Copy this JSON:', JSON.stringify(_recDiagReadLog()));
+      }
+    } }, '📋 Copy log'),
+    h('button', { class: 'btn ghost', onclick: () => {
+      if (!confirm('Reset all uploaded-recording markers? Next sync will re-attempt every file. (Server-side rec_last_sync stays.)')) return;
+      try { localStorage.removeItem('rec_uploaded'); toast('Reset — next sync will reconsider all files', 'ok'); }
+      catch (e) { toast(e.message, 'err'); }
+    } }, '♻ Reset upload markers (' + uploadedCount + ')')
+  ));
+
+  // Log table
+  if (!log.length) {
+    body.appendChild(h('div', { class: 'muted', style: { textAlign: 'center', padding: '1rem' } },
+      'No sync attempts logged yet. Tap "Trigger sync now" above to test.'));
+  } else {
+    const tbl = h('table', { class: 'mini-table' },
+      h('thead', {}, h('tr', {},
+        h('th', {}, 'When'),
+        h('th', {}, 'Trigger'),
+        h('th', {}, 'Result'),
+        h('th', {}, 'Stats / Note')
+      )),
+      h('tbody', {},
+        log.map(r => h('tr', {},
+          h('td', { style: { whiteSpace: 'nowrap', fontSize: '.78rem' } },
+            tHumanAgo(r.t) + ' (' + new Date(r.t).toLocaleTimeString() + ')'),
+          h('td', { style: { fontSize: '.82rem' } }, r.reason || '?'),
+          h('td', { style: {
+            color: r.result === 'ok' ? '#16a34a' : r.result === 'error' ? '#dc2626' : '#64748b',
+            fontWeight: '600'
+          } }, r.result || '?'),
+          h('td', { style: { fontSize: '.78rem' } }, (() => {
+            if (r.error) return '❌ ' + r.error;
+            if (r.note)  return r.note;
+            const bits = [];
+            if (r.found != null)     bits.push('found ' + r.found);
+            if (r.success)           bits.push('✅ ' + r.success);
+            if (r.skipped)           bits.push('⏭ ' + r.skipped);
+            if (r.skippedNoMatch)    bits.push('❓ ' + r.skippedNoMatch);
+            if (r.skippedEmpty)      bits.push('⏳ ' + r.skippedEmpty);
+            if (r.failed)            bits.push('⚠ ' + r.failed);
+            if (r.duration_ms)       bits.push(r.duration_ms + 'ms');
+            return bits.join(' · ');
+          })())
+        ))
+      )
+    );
+    body.appendChild(tbl);
+  }
+
+  modal.appendChild(body);
+  m.appendChild(modal);
+  document.body.appendChild(m);
+}
+try { window.openRecordingSyncDiagnostics = openRecordingSyncDiagnostics; } catch (_) {}
 
 async function syncRecordings(opts) {
   opts = opts || {};
@@ -14371,6 +14567,15 @@ async function syncRecordings(opts) {
 
   localStorage.setItem('rec_uploaded', JSON.stringify(uploaded));
   localStorage.setItem('rec_last_sync', String(Date.now()));
+  // Stash counters so _silentSyncRecordings can log them.
+  try {
+    window._recLastFound          = files.length;
+    window._recLastSuccess        = success;
+    window._recLastSkipped        = skipped;
+    window._recLastSkippedNoMatch = skippedNoMatch;
+    window._recLastSkippedEmpty   = skippedEmpty;
+    window._recLastFailed         = failed;
+  } catch (_) {}
   const parts = [];
   parts.push(`📂 ${files.length} found`);
   parts.push(`✅ ${success} synced`);
