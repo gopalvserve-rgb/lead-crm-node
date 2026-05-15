@@ -157,29 +157,58 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       if (m) phone = m[0];
     }
 
-    // Timestamp + last-4 fallback: when phone is still unknown, find a recent
-    // call_event (within +/- 5 min of started_at) for this user. lastfour_hint
-    // matches the tail of phone if filename only had contact-name + last-4.
-    if (!phone || !leadId) {
-      try {
-        const ev = await db.query(
-          `SELECT id, phone, lead_id, created_at FROM call_events
-             WHERE user_id = $1
-               AND created_at BETWEEN $2 AND $3
-             ORDER BY created_at DESC LIMIT 20`,
-          [me.id, new Date(startedAt.getTime() - 5*60*1000), new Date(startedAt.getTime() + 5*60*1000)]
-        );
-        let pick = null;
-        if (lastFourHint && /^\d{3,5}$/.test(lastFourHint)) {
-          pick = ev.rows.find(r => String(r.phone || '').endsWith(lastFourHint));
-        }
-        if (!pick) pick = ev.rows[0];
-        if (pick) {
+    // AUTHORITATIVE call_event override.
+    //
+    // Always probe call_events around started_at — even when the client
+    // supplied a phone or leadId. Why: OEM dialers sometimes save files
+    // with filenames that look like a phone number but are actually a
+    // sequence ID, a wrong contact match, or a stale number from a
+    // previous call. The OS phone-state hook (PhoneStateReceiver) records
+    // the actual dialed/incoming number in call_events at the time of the
+    // call, so a call_event within +/- 60s of started_at is the most
+    // reliable signal of which lead this recording belongs to.
+    //
+    // Match priority:
+    //   1. Exact call within ±60s with last-4 matching the filename hint.
+    //   2. Closest call within ±60s.
+    //   3. Closest call within ±5min (legacy fallback).
+    let callEventOverride = null;
+    try {
+      const ev = await db.query(
+        `SELECT id, phone, lead_id, created_at FROM call_events
+           WHERE user_id = $1
+             AND created_at BETWEEN $2 AND $3
+           ORDER BY ABS(EXTRACT(EPOCH FROM (created_at - $4::timestamptz))) ASC LIMIT 20`,
+        [me.id,
+         new Date(startedAt.getTime() - 5*60*1000),
+         new Date(startedAt.getTime() + 5*60*1000),
+         new Date(startedAt).toISOString()]
+      );
+      const nearestWithin60s = (ev.rows || []).find(r => {
+        const diff = Math.abs(new Date(r.created_at).getTime() - startedAt.getTime());
+        return diff <= 60_000;
+      });
+      let pick = null;
+      if (lastFourHint && /^\d{3,5}$/.test(lastFourHint)) {
+        pick = (ev.rows || []).find(r => String(r.phone || '').endsWith(lastFourHint));
+      }
+      if (!pick) pick = nearestWithin60s;
+      if (!pick) pick = (ev.rows || [])[0];
+      if (pick) {
+        callEventOverride = pick;
+        // Within 60s = authoritative. Override client-supplied leadId
+        // (which may have come from a weak client-side fuzzy match).
+        if (nearestWithin60s) {
+          if (pick.phone) phone = pick.phone;
+          if (pick.lead_id) leadId = pick.lead_id;
+          console.log('[/api/recordings] call_event override (within 60s): phone=' + phone + ' lead=' + leadId);
+        } else if (!phone || !leadId) {
+          // Legacy fallback — only fill if we're missing data.
           if (!phone) phone = pick.phone || '';
           if (!leadId && pick.lead_id) leadId = pick.lead_id;
         }
-      } catch (e) { console.warn('[/api/recordings] call_event lookup failed:', e.message); }
-    }
+      }
+    } catch (e) { console.warn('[/api/recordings] call_event lookup failed:', e.message); }
 
     if (!leadId && phone) {
       const lead = await _findLeadByPhone(phone);

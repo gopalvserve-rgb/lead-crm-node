@@ -14270,12 +14270,23 @@ async function syncRecordings(opts) {
       }
       continue;
     }
-    const leadId = matchedLeadId ? String(matchedLeadId) : '';
-
+    // Only pass leadId to server when the match is STRONG (high confidence).
+    // Weak matches (contact-name alone, last4-only) are too easy to confuse —
+    // multiple leads can share a first name or last-4 digits. For weak matches
+    // we send leadId='' so the server's authoritative timestamp+call_event
+    // lookup picks the right lead based on which call happened around the
+    // recording's started_at. Prevents the 'recording stuck on wrong lead'
+    // bug a client reported.
+    const STRONG_MATCH = ['tail10', 'tail7', 'contact+last4'];
+    const isStrong = STRONG_MATCH.includes(matchReason);
+    const leadId = (matchedLeadId && isStrong) ? String(matchedLeadId) : '';
+    if (matchedLeadId && !isStrong) {
+      console.log('[leadcrm] weak match (' + matchReason + ') — deferring lead pick to server timestamp lookup:', f.name);
+    }
     // Phone+contact+last4 matching above already decided. If we made it here we
-    // either matched a lead OR includeUnmatched is on — let the server's recovery
-    // paths (filename phone re-parse, call_event timestamp lookup, auto-create
-    // lead) take over from here.
+    // either matched a lead OR includeUnmatched is on — for weak matches the
+    // server's recovery paths (filename phone re-parse, call_event timestamp
+    // lookup, auto-create lead) take over from here.
 
     // Rough duration: ~12 KB/sec for AAC m4a, ~8 KB/sec for amr, ~16 KB/sec for mp3
     const bytesPerSec = /\.(mp3|wav)$/i.test(f.name) ? 16000 : /\.(amr|3gp)$/i.test(f.name) ? 8000 : 12000;
