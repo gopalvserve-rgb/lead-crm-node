@@ -132,6 +132,34 @@ async function _internalCreateLead(payload, asUserId) {
   const _phone = String(payload.phone || payload.mobile || '').replace(/^'/, '').trim();
   const _phoneDigits = _phone.replace(/\D/g, '');
   if (!_phoneDigits) throw new Error('No phone');
+
+  // ---- Harvest custom-field values + UTM attribution ---------------
+  // Mirrors routes/webhooks.js so /hook/leadsource and /hook/website
+  // both honour the per-source field mapping saved in Settings -> Webhook
+  // logs -> Map fields. Without this loop, an admin who mapped
+  // utm_campaign -> cf_campaign_id would see the cf_campaign_id value
+  // silently dropped because _internalCreateLead only picked standard
+  // top-level columns.
+  let extraJson = {};
+  try {
+    const customFields = (await db.getAll('custom_fields'))
+      .filter(f => Number(f.is_active) !== 0);
+    for (const f of customFields) {
+      const k = String(f.key || '').trim();
+      if (!k) continue;
+      let v = payload[k];
+      if (v === undefined || v === null || v === '') v = payload['cf_' + k];
+      if ((v === undefined || v === null || v === '') && payload.extra && typeof payload.extra === 'object') {
+        v = payload.extra[k];
+      }
+      if (v !== undefined && v !== null && v !== '') {
+        extraJson[k] = (typeof v === 'object') ? v : String(v);
+      }
+    }
+  } catch (e) {
+    console.warn('[integrations] custom-field merge failed:', e.message);
+  }
+
   const lead = {
     name: String(payload.name || _phone).trim(),
     phone: _phone,
@@ -142,10 +170,24 @@ async function _internalCreateLead(payload, asUserId) {
     status_id: _status ? _status.id : null,
     assigned_to: payload.assigned_to ? Number(payload.assigned_to) : me.id,
     city: payload.city || '',
+    state: payload.state || '',
     company: payload.company || '',
+    address: payload.address || '',
+    pincode: payload.pincode || payload.zip || '',
     notes: payload.notes || payload.message || '',
     tags: payload.tags || '',
+    product: payload.product || '',
     value: Number(payload.value) || null,
+    currency: payload.currency || '',
+    // First-class attribution columns — mapping can target these directly.
+    gclid:          payload.gclid || '',
+    gad_campaignid: payload.gad_campaignid || '',
+    utm_source:     payload.utm_source || '',
+    utm_medium:     payload.utm_medium || '',
+    utm_campaign:   payload.utm_campaign || '',
+    utm_term:       payload.utm_term || '',
+    utm_content:    payload.utm_content || '',
+    extra_json: Object.keys(extraJson).length ? extraJson : null,
     created_by: me.id,
     created_at: db.nowIso(),
     updated_at: db.nowIso(),
