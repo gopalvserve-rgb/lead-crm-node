@@ -4204,8 +4204,9 @@ function renderDialerSettings() {
         )
   ));
 
-  // Filter card
-  const includeUnmatched = localStorage.getItem('rec_include_unmatched') === '1';
+  // Filter card — default ON. Server auto-creates leads from unmatched
+  // recordings, so the safer default is upload-everything.
+  const includeUnmatched = localStorage.getItem('rec_include_unmatched') !== '0';
   wrap.appendChild(h('div', { class: 'settings-card' },
     h('h4', {}, '🎯 Sync filter'),
     h('p', { class: 'muted' },
@@ -14424,8 +14425,12 @@ async function syncRecordings(opts) {
       }
     }
   }
+  // Default is now ON — server-side /api/recordings auto-creates a lead
+  // from unmatched uploads (see routes/recordings.js auto-create-lead path),
+  // so files with no client-side match are still useful. Admin can opt out
+  // by toggling 'Include unmatched recordings' OFF in Settings → Recordings.
   const includeUnmatched = !!opts.includeUnmatched
-    || localStorage.getItem('rec_include_unmatched') === '1';
+    || localStorage.getItem('rec_include_unmatched') !== '0';
 
   const uploaded = JSON.parse(localStorage.getItem('rec_uploaded') || '{}');
   let success = 0, failed = 0, skipped = 0, skippedNoMatch = 0, skippedEmpty = 0;
