@@ -553,7 +553,73 @@ async function api_recording_applySuggestion(token, recId, opts) {
   return { ok: true, status_changed: !!updates.status_id, followup_id };
 }
 
+
+/**
+ * BULK_AUDIT_v1 — trigger AI audit on many recordings at once.
+ */
+async function api_recording_bulkAudit(token, payload) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) {
+    throw new Error('Admin/manager only');
+  }
+  const p = payload || {};
+  const scope = String(p.scope || 'unprocessed').toLowerCase();
+  const limit = Math.min(2000, Math.max(1, Number(p.limit) || 500));
+
+  const where = [];
+  const params = [];
+  if (scope === 'unprocessed')      where.push('ai_processed_at IS NULL');
+  else if (scope === 'failed')      where.push('ai_processed_at IS NULL AND ai_error IS NOT NULL');
+  else if (scope === 'all')         where.push('1=1');
+  else throw new Error('Invalid scope. Use unprocessed | failed | all');
+
+  where.push('audio_bytes IS NOT NULL');
+  where.push('COALESCE(size_bytes, 0) >= 4096');
+
+  if (p.user_id) { params.push(Number(p.user_id)); where.push('user_id = $' + params.length); }
+  if (p.from_date) { params.push(p.from_date); where.push('created_at >= $' + params.length); }
+  if (p.to_date)   { params.push(p.to_date);   where.push('created_at <= $' + params.length); }
+  params.push(limit);
+  const limitParamIdx = params.length;
+
+  const sql = 'SELECT id FROM lead_recordings WHERE ' + where.join(' AND ')
+            + ' ORDER BY id DESC LIMIT $' + limitParamIdx;
+  const r = await db.query(sql, params);
+  const ids = r.rows.map(x => x.id);
+  if (ids.length === 0) return { ok: true, queued: 0, ids: [], scope, message: 'Nothing to audit for that scope.' };
+
+  if (scope !== 'unprocessed') {
+    await db.query(
+      'UPDATE lead_recordings SET '
+      + 'ai_processed_at = NULL, ai_error = NULL, summary = NULL, '
+      + 'transcript = NULL, action_items = NULL, sentiment = NULL, '
+      + 'suggested_status_id = NULL, key_insight = NULL, next_followup_days = NULL, '
+      + 'committed_callback_at = NULL, actual_followup_at = NULL, callback_gap_minutes = NULL '
+      + 'WHERE id = ANY($1::int[])',
+      [ids]
+    );
+  }
+
+  try {
+    const { processRecording } = require('../utils/aiCallSummary');
+    ids.forEach((id, i) => {
+      setTimeout(() => {
+        processRecording(id).catch(e => console.warn('[bulkAudit] id=' + id + ' failed:', e.message));
+      }, i * 250);
+    });
+  } catch (e) {
+    console.warn('[bulkAudit] aiCallSummary not available:', e.message);
+  }
+
+  return { ok: true, queued: ids.length, ids, scope };
+}
+
 async function api_recording_recentInsights(token, opts) {
+  /* PROMISE_SCHEMA_HEAL_v1 */ try {
+    await db.query(`ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS committed_callback_at TIMESTAMPTZ`);
+    await db.query(`ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS actual_followup_at    TIMESTAMPTZ`);
+    await db.query(`ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS callback_gap_minutes  INTEGER`);
+  } catch (e) { console.warn('[recentInsights] heal:', e.message); }
   const me = await authUser(token);
   opts = opts || {};
   const limit = Math.min(Number(opts.limit) || 50, 200);
@@ -573,7 +639,14 @@ async function api_recording_recentInsights(token, opts) {
            lr.created_at, lr.ai_processed_at, lr.sentiment, lr.summary,
            lr.action_items, lr.key_insight, lr.suggested_status_id,
            lr.next_followup_days, lr.rating, lr.ai_suggested_rating,
+           /* PROMISE_TRACK_v1 */ lr.committed_callback_at, lr.actual_followup_at, lr.callback_gap_minutes,
+           (SELECT MAX(t) FROM (
+              SELECT created_at AS t FROM remarks          WHERE lead_id = lr.lead_id
+              UNION ALL SELECT created_at FROM call_events WHERE lead_id = lr.lead_id
+              UNION ALL SELECT created_at FROM whatsapp_messages WHERE lead_id = lr.lead_id
+           ) z) AS last_activity_at,
            l.name AS lead_name, l.status_id AS lead_status_id,
+           /* NEXT_ACTIVITY_v1 */ l.next_followup_at AS lead_next_followup_at,
            u.name AS rep_name, u.role AS rep_role,
            s.name AS suggested_status_name, ls.name AS lead_status_name
       FROM lead_recordings lr
@@ -598,7 +671,12 @@ async function api_recording_recentInsights(token, opts) {
         key_insight: r.key_insight,
         suggested_status_name: r.suggested_status_name,
         next_followup_days: r.next_followup_days,
-        rating: r.rating, ai_suggested_rating: r.ai_suggested_rating
+        rating: r.rating, ai_suggested_rating: r.ai_suggested_rating,
+        /* PROMISE_TRACK_v1 */ committed_callback_at: r.committed_callback_at,
+        actual_followup_at: r.actual_followup_at,
+        callback_gap_minutes: r.callback_gap_minutes,
+        last_activity_at: r.last_activity_at,
+        /* NEXT_ACTIVITY_v1 */ lead_next_followup_at: r.lead_next_followup_at
       };
     });
   } catch (e) {
@@ -823,5 +901,6 @@ module.exports = {
   api_recording_rate,
   _findLeadByPhone,
   api_recording_recentInsights,
+  api_recording_bulkAudit,
   api_recording_clearAllAi
 };

@@ -29,6 +29,17 @@
  *     the feature without burning the platform's API budget.
  */
 
+
+/* PROMISE_TRACK_v1 — self-heal new AI columns */
+async function _healPromiseCols() {
+  try {
+    await db.query("ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS committed_callback_at TIMESTAMPTZ");
+    await db.query("ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS actual_followup_at    TIMESTAMPTZ");
+    await db.query("ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS callback_gap_minutes  INTEGER");
+  } catch (e) { console.warn('[aiCallSummary] heal:', e.message); }
+}
+_healPromiseCols();
+
 const db = require('../db/pg');
 let demo = { on: false };
 try { demo = require('./demoGuard'); } catch (_) { /* not in demo build */ }
@@ -107,6 +118,8 @@ Listen to the entire call. Then return ONLY a JSON object with these exact keys:
   "sentiment": "<one of: positive | neutral | negative>",
   "suggested_status": "<one of the existing CRM statuses that best fits where this lead is now>",
   "next_followup_in_days": <integer 0-30 — when should the rep call back? 0 = today>,
+  /* PROMISE_TRACK_v2 — capture rep OR customer commit-time */
+  "committed_callback_at": "<ISO8601 timestamp like 2026-05-18T10:30:00. Set this whenever EITHER party commits to a specific next-call time on this call. Examples: (a) rep promises a callback — e.g. 'I will call you at 10:30 AM tomorrow'. (b) customer asks for a callback — e.g. 'call me back after 30 minutes', 'call in 1 hour', 'phir kal subah call karna'. (c) both agree on a specific time. Resolve relative phrases (30 minutes, 1 hour, tomorrow, kal, parso, day-after) using the call recording timestamp as the base. Set to null ONLY if NO specific next-call time was discussed by either side.>",
   "key_insight": "<one-sentence insight that would surprise a busy manager>",
   "suggested_rating": <integer 1-5 — rate the REP's performance on this call.
     1 = poor (no qualifying, no objection handling, no next step),
@@ -307,12 +320,41 @@ async function processRecording(id) {
     next_followup_days: Number(ai.next_followup_in_days) || null,
     key_insight: ai.key_insight || null,
     ai_suggested_rating: suggestedRating,
+    /* PROMISE_TRACK_v1 */ committed_callback_at: (() => { try { const d = ai.committed_callback_at ? new Date(ai.committed_callback_at) : null; return (d && !isNaN(d.getTime())) ? d.toISOString() : null; } catch (_) { return null; } })(),
     ai_input_tokens:  tk.prompt,
     ai_output_tokens: tk.candidates,
     ai_cost_usd: cost.total_usd,
     ai_cost_inr: cost.total_inr
   });
 
+  
+  /* PROMISE_GAP_COMPUTE_v1 — when next call/remark happens, compute gap vs committed_callback_at */
+  try {
+    const recRow = (await db.query('SELECT lead_id, started_at, duration_s, committed_callback_at FROM lead_recordings WHERE id = $1', [id])).rows[0];
+    if (recRow && recRow.committed_callback_at) {
+      // Look for the very next call_event OR remark after this call ended.
+      const callEndedAt = recRow.started_at
+        ? new Date(new Date(recRow.started_at).getTime() + (Number(recRow.duration_s) || 0) * 1000).toISOString()
+        : new Date().toISOString();
+      const nxt = await db.query(
+        `SELECT MIN(t) AS t FROM (
+            SELECT created_at AS t FROM call_events WHERE lead_id = $1 AND created_at > $2
+            UNION ALL
+            SELECT created_at FROM remarks      WHERE lead_id = $1 AND created_at > $2
+         ) z`,
+        [recRow.lead_id, callEndedAt]
+      );
+      const actual = nxt.rows[0] && nxt.rows[0].t ? new Date(nxt.rows[0].t) : null;
+      let gap = null;
+      if (actual) {
+        gap = Math.round((actual.getTime() - new Date(recRow.committed_callback_at).getTime()) / 60000);
+      }
+      await db.query(
+        'UPDATE lead_recordings SET actual_followup_at = $1, callback_gap_minutes = $2 WHERE id = $3',
+        [actual ? actual.toISOString() : null, gap, id]
+      );
+    }
+  } catch (e) { console.warn('[promiseGapCompute] id=' + id, e.message); }
   return { ok: true, id, summary: ai.summary };
 }
 

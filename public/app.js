@@ -8634,6 +8634,46 @@ VIEWS.callinsights = async (view) => {
         kpiCard('😟 Negative',  neg + ' (' + Math.round(neg/total*100) + '%)', 'Need review', 'warn'),
         kpiCard('🤖 AI accuracy', '~95%', 'Hindi-English code-mix', 'accent')
       ));
+      // BULK_AUDIT_v1 — admin/manager-only bulk audit toolbar
+      if (['admin','manager'].includes((CRM.user || {}).role)) {
+        const _bulkBar = h('div', { class: 'card', style: { padding: '.7rem .9rem', margin: '0 0 1rem', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center', background: '#f1f5f9' } },
+          h('span', { style: { fontWeight: 600 } }, '🤖 Bulk AI Audit'),
+          h('span', { class: 'muted', style: { fontSize: '.82rem' } }, 'Queue many recordings at once.')
+        );
+        const _scopeSel = h('select', { class: 'input', style: { maxWidth: '220px' } },
+          h('option', { value: 'unprocessed', selected: 'selected' }, 'All unaudited recordings'),
+          h('option', { value: 'failed' }, 'Previously failed only'),
+          h('option', { value: 'all' }, 'Force re-audit ALL (last 2000)')
+        );
+        const _userSel2 = h('select', { class: 'input', style: { maxWidth: '180px' } },
+          h('option', { value: '' }, 'All reps'),
+          ...((CRM.cache.users || []).map(u => h('option', { value: u.id }, u.name)))
+        );
+        const _limitInp = h('input', { class: 'input', type: 'number', min: 1, max: 2000, value: 500, style: { width: '90px' } });
+        const _runBtn = h('button', { class: 'btn primary' }, '🚀 Run audit');
+        _runBtn.onclick = async () => {
+          const scope = _scopeSel.value;
+          if (scope === 'all' && !confirm('Re-audit ALL recordings? This wipes existing summaries and re-runs Gemini on every recording.')) return;
+          _runBtn.disabled = true; _runBtn.textContent = '⏳ Queueing…';
+          try {
+            const r = await api('api_recording_bulkAudit', {
+              scope, limit: Number(_limitInp.value) || 500,
+              user_id: _userSel2.value ? Number(_userSel2.value) : null
+            });
+            if (typeof toast === 'function') toast('✅ Queued ' + r.queued + ' recordings — AI processing in background', 'ok');
+            setTimeout(() => load(), 8000);
+          } catch (e) {
+            if (typeof toast === 'function') toast('⚠ ' + e.message, 'err');
+          } finally {
+            _runBtn.disabled = false; _runBtn.textContent = '🚀 Run audit';
+          }
+        };
+        _bulkBar.appendChild(_scopeSel);
+        _bulkBar.appendChild(_userSel2);
+        _bulkBar.appendChild(_limitInp);
+        _bulkBar.appendChild(_runBtn);
+        feedDiv.appendChild(_bulkBar);
+      }
       rows.forEach(r => feedDiv.appendChild(insightCard(r)));
     } catch (e) {
       feedDiv.innerHTML = '<div class="ai-error">Could not load: ' + esc(e.message) + '</div>';
@@ -8651,7 +8691,21 @@ VIEWS.callinsights = async (view) => {
           h('a', { href: '#/leads', onclick: e => { e.preventDefault(); openLeadModal(r.lead_id); } },
             h('b', {}, r.lead_name || r.phone || '—')
           ),
-          h('span', { class: 'muted' }, ' · ' + (r.rep_name || '—') + ' · ' + mm + ':' + ss + ' · ' + fmtDate(r.created_at, 'relative'))
+          h('span', { class: 'muted' }, ' · ' + (r.rep_name || '—') + ' · ' + mm + ':' + ss + ' · ' + fmtDate(r.created_at, 'relative')),
+          /* PROMISE_TRACK_v1 — info-row */
+          h('div', { class: 'pt-row', style: { display: 'flex', gap: '.6rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '.3rem', fontSize: '.78rem' } },
+            r.lead_status_name ? h('span', { style: { background: '#dbeafe', color: '#1e40af', padding: '.1rem .5rem', borderRadius: '999px', fontWeight: 600 } }, '📍 ' + r.lead_status_name) : null,
+            r.last_activity_at ? h('span', { class: 'muted', title: new Date(r.last_activity_at).toLocaleString() }, '🕒 last activity ' + fmtDate(r.last_activity_at, 'relative')) : null,
+            /* NEXT_ACTIVITY_v1 */ r.lead_next_followup_at ? h('span', { style: { background: '#e0e7ff', color: '#3730a3', padding: '.1rem .5rem', borderRadius: '999px', fontWeight: 600 }, title: new Date(r.lead_next_followup_at).toLocaleString() }, '🗓 next activity ' + new Date(r.lead_next_followup_at).toLocaleString('en-IN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})) : null,
+            r.committed_callback_at ? h('span', { class: 'muted' }, '⏰ promised ' + new Date(r.committed_callback_at).toLocaleString('en-IN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})) : null,
+            r.actual_followup_at ? h('span', { class: 'muted' }, '✅ actual ' + new Date(r.actual_followup_at).toLocaleString('en-IN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'short'})) : null,
+            (r.callback_gap_minutes != null) ? (() => {
+              const g = Number(r.callback_gap_minutes);
+              if (g <= 5)   return h('span', { style: { background: '#dcfce7', color: '#15803d', padding: '.1rem .5rem', borderRadius: '999px', fontWeight: 600 } }, '🎯 on time');
+              if (g <= 60)  return h('span', { style: { background: '#fef3c7', color: '#92400e', padding: '.1rem .5rem', borderRadius: '999px', fontWeight: 600 } }, '⚠ ' + g + ' min late');
+              return         h('span', { style: { background: '#fee2e2', color: '#b91c1c', padding: '.1rem .5rem', borderRadius: '999px', fontWeight: 600 } }, '🚨 ' + g + ' min late');
+            })() : null
+          )
         ),
         h('div', {},
           h('span', { class: 'ai-sentiment-pill', style: 'background:' + sentColor }, sentLabel + ' ' + (r.sentiment || '—')),
