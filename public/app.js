@@ -4351,6 +4351,7 @@ function renderDialerSettings() {
           h('div', { class: 'actions' },
             h('button', { class: 'btn primary', onclick: () => syncRecordings() }, '🔄 Sync now'),
             h('button', { class: 'btn', onclick: () => syncRecordings({ full: true }) }, '⚡ Re-sync all'),
+            /* RESYNC_HINT_v1 */ h('button', { class: 'btn primary', title: 'Clears uploaded markers + re-scans every file in the folder. Use after a server-side fix.', onclick: async () => { if (!confirm('Reset all uploaded markers and re-scan EVERY file? Use this only after a server-side bug fix.')) return; localStorage.removeItem('rec_uploaded'); toast('Markers cleared — running full sync now…', 'ok'); await syncRecordings({ full: true }); } }, '🩹 Fresh sync (after fix)'),
             h('button', { class: 'btn', onclick: () => openRecordingSyncDebug() }, '🐞 Debug sync'),
             h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
             h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
@@ -14768,7 +14769,7 @@ async function syncRecordings(opts) {
   try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
 
   if (files.length === 0) {
-    toast('No new recordings in the folder');
+    /* RESYNC_HINT_v1 */ toast(opts.full ? 'Folder is empty — no recordings found at all.' : 'No new recordings in the last 30 min. Tap ⚡ Re-sync all to scan every file.', opts.full ? 'warn' : 'ok');
     return;
   }
 
