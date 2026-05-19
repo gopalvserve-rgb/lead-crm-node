@@ -318,7 +318,10 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
     // Self-heal schema on first hit (column + unique index).
     try {
       await db.query('ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS dedup_key TEXT');
-      await db.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_lead_rec_user_dedup ON lead_recordings(user_id, dedup_key) WHERE dedup_key IS NOT NULL');
+      // REC_DEDUP_v2_HOTFIX — partial index broke ON CONFLICT clause matching.
+      // Drop it + recreate as NON-partial. dedup_key is always computed (never NULL).
+      await db.query('DROP INDEX IF EXISTS uniq_lead_rec_user_dedup');
+      await db.query('CREATE UNIQUE INDEX IF NOT EXISTS uniq_lead_rec_user_dedup ON lead_recordings(user_id, dedup_key)');
     } catch (_) {}
     // Already uploaded? Return its id so client treats as no-op success.
     let id = null;
@@ -351,7 +354,11 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       );
       id = _ins.rows[0] ? _ins.rows[0].id : null;
     } catch (e) {
+      // REC_DEDUP_v2_HOTFIX — used to be silently swallowed. The actual SQL
+      // error (e.g. 'no unique constraint matching ON CONFLICT') must bubble
+      // up so the client sees real failures instead of generic 'insert returned no id'.
       console.error('[/api/recordings] insert error:', e.message);
+      throw e;
     }
     if (!id) {
       // Lost race against a concurrent identical upload — find the winner.
