@@ -581,6 +581,7 @@ const NAV_GROUPS = [
   ] },
   { label: 'Reports', icon: '📉', items: [
     { id: 'reports',       label: 'Reports',         icon: '📉', roles: ['admin', 'manager', 'team_leader'] },
+    /* CALL_ACTIVITY_v1 */ { id: 'callactivity', label: 'Call activity', icon: '📞', roles: ['admin', 'manager', 'team_leader'] },
     { id: 'reportbuilder', label: 'Report builder',  icon: '🧪', roles: ['admin', 'manager', 'team_leader'] },
     { id: 'tatreport',     label: 'TAT report',      icon: '⏱️', roles: ['admin', 'manager', 'team_leader'] }
   ] },
@@ -17559,4 +17560,313 @@ function openUserHierarchyModal(users) {
   document.body.appendChild(m);
 }
 window.openUserHierarchyModal = openUserHierarchyModal;
+
+
+
+/* CALL_ACTIVITY_v1 — full feature ported from smartcrm-saas */
+VIEWS.callactivity = async (view) => {
+  await ensureChartJs();
+  view.innerHTML = '';
+  const { users = [] } = CRM.cache;
+
+  // Default range: last 30 days
+  const today = new Date();
+  const from30 = new Date(today.getTime() - 30 * 86400 * 1000);
+  const isoDate = d => d.toISOString().slice(0, 10);
+
+  const toolbar = h('div', { class: 'toolbar' },
+    h('input', { type: 'date', id: 'ca-from', value: isoDate(from30) }),
+    h('span', {}, 'to'),
+    h('input', { type: 'date', id: 'ca-to',   value: isoDate(today) }),
+    h('select', { id: 'ca-user' },
+      h('option', { value: '' }, 'All users'),
+      ...users.map(u => h('option', { value: String(u.id) }, u.name))
+    ),
+    h('button', { class: 'btn primary', onclick: () => loadCallActivity() }, '🔎 Apply'),
+    h('button', { class: 'btn', onclick: () => downloadCallActivityCsv() }, '⬇️ CSV')
+  );
+  view.appendChild(toolbar);
+
+  view.appendChild(h('div', { id: 'ca-cards', class: 'cards' }));
+  view.appendChild(h('div', { class: 'chart-grid' },
+    h('div', { class: 'card card-wide' },
+      h('h3', {}, 'Daily call activity'),
+      h('div', { class: 'chart-wrap' }, h('canvas', { id: 'ca-chart' }))
+    ),
+    h('div', { class: 'card' },
+      h('h3', {}, '🏆 Top performers'),
+      h('div', { id: 'ca-top' })
+    ),
+    h('div', { class: 'card' },
+      h('h3', {}, '🐢 Needs improvement'),
+      h('div', { id: 'ca-bottom' })
+    ),
+  ));
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, 'By user'),
+    h('div', { id: 'ca-byuser', style: { overflowX: 'auto' } })
+  ));
+  view.appendChild(h('div', { class: 'card' },
+    h('h3', {}, 'By manager'),
+    h('div', { id: 'ca-bymgr', style: { overflowX: 'auto' } })
+  ));
+  view.appendChild(h('div', { class: 'card' },
+    h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '.4rem' } },
+      h('h3', { style: { margin: 0 } }, '\uD83D\uDCDE Recent calls'),
+      h('span', { class: 'muted', style: { fontSize: '.8rem' } }, 'last 200 events in selected window')
+    ),
+    h('div', { id: 'ca-recent', style: { overflowX: 'auto' } })
+  ));
+
+  await loadCallActivity();
+};
+async function loadCallActivity() {
+  const from = $('#ca-from')?.value;
+  const to   = $('#ca-to')?.value;
+  const userId = $('#ca-user')?.value;
+  const filters = {};
+  if (from)   filters.from = from + 'T00:00:00';
+  if (to)     filters.to   = to   + 'T23:59:59';
+  if (userId) filters.userId = Number(userId);
+
+  const cards = $('#ca-cards');
+  if (cards) cards.innerHTML = '<div class="loading">Loading…</div>';
+
+  try {
+    const r = await api('api_reports_callActivity', filters);
+    window._caData = r;
+    _renderCallActivity(r);
+  } catch (e) {
+    if (cards) cards.innerHTML = '<div class="error-box">' + esc(e.message) + '</div>';
+  }
+}
+function _renderCallActivity(r) {
+  const s = r.summary || {};
+  const cards = $('#ca-cards');
+  if (cards) {
+    cards.innerHTML = '';
+    const mk = (label, val, sub) => {
+      const c = h('div', { class: 'card kpi' },
+        h('div', { class: 'kpi-label' }, label),
+        h('div', { class: 'kpi-val' }, val)
+      );
+      if (sub) c.appendChild(h('div', { class: 'kpi-sub' }, sub));
+      return c;
+    };
+    cards.appendChild(mk('📞 Total calls',   s.total_calls || 0));
+    cards.appendChild(mk('📥 Incoming',      s.incoming || 0));
+    cards.appendChild(mk('📤 Outgoing',      s.outgoing || 0));
+    cards.appendChild(mk('❌ Missed',        s.missed || 0));
+    cards.appendChild(mk('🗣️ Total talk',    _caSecsToHuman(s.total_talk_s), 'sum of recorded durations'));
+    cards.appendChild(mk('⏱️ Avg call',       _caSecsToHuman(s.avg_talk_s), 'mean of non-zero calls'));
+    cards.appendChild(mk('👥 Active users',  s.total_users || 0));
+    cards.appendChild(mk('💤 Idle time',     _caSecsToHuman(s.idle_s), 'work hrs − talk time'));
+  }
+
+  // By-user table
+  const u = $('#ca-byuser');
+  if (u) {
+    const rows = r.byUser || [];
+    if (!rows.length) {
+      u.innerHTML = '<div class="muted">No calls in this window.</div>';
+    } else {
+      u.innerHTML = '';
+      const t = h('table', { class: 'table' });
+      t.innerHTML = '<thead><tr>' +
+        '<th>Rep</th><th>Manager</th>' +
+        '<th>Total</th><th>In</th><th>Out</th><th>Missed</th>' +
+        '<th>Talk</th><th>Avg call</th><th>Avg gap</th><th>Last call</th>' +
+        '</tr></thead><tbody>' +
+        rows.map(r => '<tr>' +
+          '<td>' + esc(r.user_name || '—') + '<div class="muted" style="font-size:.75rem">' + esc(r.role || '') + '</div></td>' +
+          '<td>' + esc(r.manager_name || '—') + '</td>' +
+          '<td>' + (r.total_calls || 0) + '</td>' +
+          '<td>' + (r.in_calls || 0) + '</td>' +
+          '<td>' + (r.out_calls || 0) + '</td>' +
+          '<td>' + (r.missed_calls || 0) + '</td>' +
+          '<td>' + _caSecsToHuman(r.talk_s) + '</td>' +
+          '<td>' + _caSecsToHuman(r.avg_talk_s) + '</td>' +
+          '<td>' + _caSecsToHuman(r.avg_gap_s) + '</td>' +
+          '<td>' + (r.last_call_at ? new Date(r.last_call_at).toLocaleString('en-IN') : '—') + '</td>' +
+          '</tr>').join('') +
+        '</tbody>';
+      u.appendChild(t);
+    }
+  }
+
+  // By-manager table
+  const m = $('#ca-bymgr');
+  if (m) {
+    const rows = r.byManager || [];
+    if (!rows.length) {
+      m.innerHTML = '<div class="muted">No data.</div>';
+    } else {
+      m.innerHTML = '';
+      const t = h('table', { class: 'table' });
+      t.innerHTML = '<thead><tr><th>Manager</th><th>Team size</th><th>Total calls</th><th>In</th><th>Out</th><th>Missed</th><th>Talk</th><th>Avg call</th></tr></thead><tbody>' +
+        rows.map(r => '<tr>' +
+          '<td>' + esc(r.manager_name) + '</td>' +
+          '<td>' + (r.team_size || 0) + '</td>' +
+          '<td>' + (r.total_calls || 0) + '</td>' +
+          '<td>' + (r.in || 0) + '</td>' +
+          '<td>' + (r.out || 0) + '</td>' +
+          '<td>' + (r.missed || 0) + '</td>' +
+          '<td>' + _caSecsToHuman(r.talk_s) + '</td>' +
+          '<td>' + _caSecsToHuman(r.avg_talk_s) + '</td>' +
+          '</tr>').join('') +
+        '</tbody>';
+      m.appendChild(t);
+    }
+  }
+
+  // Top / bottom performers
+  const top = $('#ca-top');
+  const bot = $('#ca-bottom');
+  const mkList = (arr) => {
+    if (!arr || !arr.length) return '<div class="muted">No data.</div>';
+    return '<ol style="padding-left:1.2rem;margin:0">' + arr.map(u =>
+      '<li><strong>' + esc(u.user_name) + '</strong> — ' +
+      (u.total_calls || 0) + ' calls · ' + _caSecsToHuman(u.talk_s) +
+      '</li>').join('') + '</ol>';
+  };
+  if (top) top.innerHTML = mkList(r.topUsers);
+  if (bot) bot.innerHTML = mkList(r.bottomUsers);
+
+  // Daily trend chart
+  const canvas = $('#ca-chart');
+  if (canvas && window.Chart) {
+    const labels = (r.dailySeries || []).map(d => String(d.day).slice(0, 10));
+    const dataIn  = (r.dailySeries || []).map(d => d.in_count || 0);
+    const dataOut = (r.dailySeries || []).map(d => d.out_count || 0);
+    const dataMs  = (r.dailySeries || []).map(d => d.missed   || 0);
+    if (window._caChart) try { window._caChart.destroy(); } catch (_) {}
+    window._caChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Incoming', data: dataIn,  backgroundColor: '#4285F4' },
+          { label: 'Outgoing', data: dataOut, backgroundColor: '#34A853' },
+          { label: 'Missed',   data: dataMs,  backgroundColor: '#EA4335' }
+        ]
+      },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true } } }
+    });
+  }
+  // Recent calls table
+  _caRenderRecent(r.recentCalls || []);
+}
+function _caRenderRecent(rows) {
+  const el = document.getElementById('ca-recent');
+  if (!el) return;
+  if (!rows || !rows.length) { el.innerHTML = '<div class="muted">No calls in this window.</div>'; return; }
+  window._caSelectedIds = window._caSelectedIds || new Set();
+  // Toolbar — bulk-convert affordance, ALWAYS visible so users
+  // discover it. Button is disabled until they tick at least one row.
+  const unlinkedCount = rows.filter(r => !r.lead_id).length;
+  const tb = h('div', { id: 'ca-recent-toolbar', style: { display: 'flex', gap: '.4rem', flexWrap: 'wrap', alignItems: 'center', padding: '.5rem .35rem', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '8px', marginBottom: '.5rem' } },
+    h('span', { style: { fontWeight: 600, fontSize: '.85rem', marginRight: '.4rem' } },
+      'Bulk actions:'),
+    h('span', { class: 'muted', style: { fontSize: '.78rem' } },
+      unlinkedCount + ' unlinked call(s) below'),
+    h('span', { style: { flex: 1 } }),
+    h('button', { class: 'btn sm', onclick: () => { window._caSelectedIds = new Set(rows.filter(r => !r.lead_id).map(r => r.id)); _caRenderRecent(rows); } }, '\u2611\uFE0F Select all unlinked'),
+    h('button', { class: 'btn sm ghost', onclick: () => { window._caSelectedIds = new Set(); _caRenderRecent(rows); } }, 'Clear'),
+    (function(){
+      const b = h('button', { class: 'btn sm primary', onclick: () => _caBulkConvert(rows) },
+        '\u2795 Add ' + window._caSelectedIds.size + ' as lead' + (window._caSelectedIds.size === 1 ? '' : 's'));
+      if (!window._caSelectedIds.size) { b.disabled = true; b.style.opacity = '0.55'; b.style.cursor = 'not-allowed'; }
+      return b;
+    })()
+  );
+  el.innerHTML = '';
+  el.appendChild(tb);
+  const dirIcon = (r) => {
+    if (r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing')) return '\u274C';
+    if (r.direction === 'in')  return '\uD83D\uDCF2';
+    if (r.direction === 'out') return '\uD83D\uDCDE';
+    return '\uD83D\uDCDE';
+  };
+  const fmtDur = (s) => { s = Number(s) || 0; if (!s) return '—'; const m = Math.floor(s/60), ss = String(s%60).padStart(2,'0'); return m + ':' + ss; };
+  const t = h('table', { class: 'table' });
+  t.innerHTML = '<thead><tr>' +
+    '<th style="width:24px"></th><th></th><th>Name / Phone</th><th>Rep</th><th>Direction</th><th>Duration</th><th>When</th><th></th>' +
+    '</tr></thead><tbody>' +
+    rows.map(r => {
+      const dur = Number(r.rec_duration || r.duration_s) || 0;
+      const when = new Date(r.created_at).toLocaleString('en-IN');
+      const direction = (r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing'))
+        ? 'Missed' : (r.direction === 'in' ? 'Incoming' : (r.direction === 'out' ? 'Outgoing' : (r.direction || '')));
+      const canSelect = !r.lead_id;
+      const checked = window._caSelectedIds && window._caSelectedIds.has(r.id);
+      return '<tr>' +
+        '<td>' + (canSelect ? '<input type="checkbox" data-ce-id="' + r.id + '" ' + (checked ? 'checked' : '') + ' />' : '') + '</td>' +
+        '<td style="font-size:1.2rem">' + dirIcon(r) + '</td>' +
+        '<td><strong>' + esc(r.lead_name || r.phone || '—') + '</strong>' +
+          (r.lead_name && r.phone ? '<div class="muted" style="font-size:.75rem">' + esc(r.phone) + '</div>' : '') +
+        '</td>' +
+        '<td>' + esc(r.rep_name || '—') + '</td>' +
+        '<td>' + direction + '</td>' +
+        '<td>' + fmtDur(dur) + '</td>' +
+        '<td>' + when + '</td>' +
+        '<td>' +
+          (r.lead_id ? '<button class="btn sm" onclick="openLeadModal(' + r.lead_id + ')">Open lead</button>' : '') +
+        '</td>' +
+        '</tr>';
+    }).join('') + '</tbody>';
+  el.appendChild(t);
+  t.querySelectorAll('input[type=checkbox][data-ce-id]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = Number(cb.getAttribute('data-ce-id'));
+      if (cb.checked) window._caSelectedIds.add(id);
+      else window._caSelectedIds.delete(id);
+      // Just update the count label without re-rendering the whole table
+      const btn = document.querySelector('#ca-recent-toolbar button.btn.sm.primary');
+      if (btn) {
+        const n = window._caSelectedIds.size;
+        btn.textContent = '\u2795 Add ' + n + ' as lead' + (n === 1 ? '' : 's');
+        btn.disabled = n === 0;
+        btn.style.opacity = n === 0 ? '0.55' : '1';
+        btn.style.cursor  = n === 0 ? 'not-allowed' : 'pointer';
+      }
+    });
+  });
+}
+async function _caBulkConvert(allRows) {
+  const ids = Array.from(window._caSelectedIds || []);
+  if (!ids.length) return toast('Select at least one call first', 'err');
+  if (!confirm('Convert ' + ids.length + ' call(s) into leads?')) return;
+  try {
+    const r = await api('api_call_events_convertToLeads', ids);
+    const ok = (r && (r.created || 0)) || 0;
+    const skipped = (r && (r.skipped || 0)) || 0;
+    toast('Created ' + ok + ' lead' + (ok === 1 ? '' : 's') + (skipped ? ' \u00B7 ' + skipped + ' skipped' : ''), 'ok');
+    window._caSelectedIds = new Set();
+    // Reload the Call Activity data
+    if (typeof loadCallActivity === 'function') loadCallActivity();
+  } catch (e) {
+    toast(e.message, 'err');
+  }
+}
+function downloadCallActivityCsv() {
+  const r = window._caData;
+  if (!r) return toast('Apply a filter first', 'err');
+  const rows = [['user_name', 'role', 'manager', 'total', 'in', 'out', 'missed', 'talk_seconds', 'avg_call_s', 'avg_gap_s', 'last_call_at']];
+  (r.byUser || []).forEach(u => {
+    rows.push([
+      u.user_name || '', u.role || '', u.manager_name || '',
+      u.total_calls || 0, u.in_calls || 0, u.out_calls || 0, u.missed_calls || 0,
+      u.talk_s || 0, u.avg_talk_s || 0, u.avg_gap_s || 0,
+      u.last_call_at || ''
+    ]);
+  });
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'call-activity-' + Date.now() + '.csv';
+  a.click();
+}
+/* end CALL_ACTIVITY_v1 */
 
