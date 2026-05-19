@@ -17692,6 +17692,14 @@ window.openUserHierarchyModal = openUserHierarchyModal;
 
 
 /* CALL_ACTIVITY_v1 — full feature ported from smartcrm-saas */
+function _caSecsToHuman(s) {
+  s = Number(s) || 0;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h) return h + 'h ' + m + 'm';
+  if (m) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
+
 VIEWS.callactivity = async (view) => {
   await ensureChartJs();
   view.innerHTML = '';
