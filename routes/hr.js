@@ -514,7 +514,11 @@ async function api_salary_bulkSave(token, rows) {
   return { saved: saved.length, results: saved };
 }
 
-/** Monthly report: totals + per-user breakdown for a specific month. */
+/** Monthly report: totals + per-user breakdown for a specific month.
+ *  CEL_4FIX_v1 — includes EVERY active employee, even when no salary row exists
+ *  for that month. Missing rows get base = user.monthly_salary so admins can
+ *  see who hasn't been paid. Totals still reflect only the paid rows.
+ */
 async function api_salary_report(token, month) {
   const me = await authUser(token);
   if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin or Manager only');
@@ -527,13 +531,27 @@ async function api_salary_report(token, month) {
     user_name: byId[Number(s.user_id)]?.name || '',
     user_role: byId[Number(s.user_id)]?.role || ''
   }));
-  const totals = hydrated.reduce((acc, r) => ({
+  // CEL_4FIX_v1: append a stub row for every active user who has no salary entry this month.
+  const paidIds = new Set(hydrated.map(r => Number(r.user_id)));
+  let userList = users.filter(u => Number(u.is_active) === 1);
+  if (me.role !== 'admin') userList = userList.filter(u => visible.includes(Number(u.id)));
+  for (const u of userList) {
+    if (paidIds.has(Number(u.id))) continue;
+    hydrated.push({
+      id: null, user_id: u.id, month,
+      base: Number(u.monthly_salary || 0), allowances: 0, deductions: 0, net_pay: 0,
+      user_name: u.name, user_role: u.role,
+      not_paid: 1
+    });
+  }
+  hydrated.sort((a, b) => Number(b.not_paid ? 0 : 1) - Number(a.not_paid ? 0 : 1) || String(a.user_name).localeCompare(String(b.user_name)));
+  const totals = hydrated.filter(r => !r.not_paid).reduce((acc, r) => ({
     base: acc.base + Number(r.base || 0),
     allowances: acc.allowances + Number(r.allowances || 0),
     deductions: acc.deductions + Number(r.deductions || 0),
     net_pay: acc.net_pay + Number(r.net_pay || 0)
   }), { base: 0, allowances: 0, deductions: 0, net_pay: 0 });
-  return { month, rows: hydrated, totals };
+  return { month, rows: hydrated, totals, paid_count: hydrated.filter(r => !r.not_paid).length, unpaid_count: hydrated.filter(r => r.not_paid).length };
 }
 
 /** Generate an HTML payslip for a single salary record. Returns a blob-ready HTML.
@@ -652,6 +670,8 @@ async function api_salary_payslip(token, salaryId) {
   @media print{body{margin:0;padding:1rem;max-width:none}.no-print{display:none}}
 </style>
 </head><body>
+  <!-- CEL_4FIX_v1 — profile-completeness banner -->
+  ${(() => { const missing = []; if (!u?.designation) missing.push('Designation'); if (!u?.pan_number) missing.push('PAN'); if (!u?.joining_date) missing.push('Joining date'); if (!bank?.bank_name || !bank?.account_number) missing.push('Bank details'); return missing.length ? '<div style="background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:.6rem .8rem;border-radius:6px;margin-bottom:.8rem;font-size:.85rem" class="no-print">⚠ This payslip looks generic because the following employee fields are not set: <b>' + missing.join(', ') + '</b>. Open Users → edit ' + (u?.name || 'this employee') + ' to complete the profile, then regenerate.</div>' : ''; })()}
   <div class="header">
     ${logoUrl ? `<img src="${esc(logoUrl)}" alt="${esc(company)}" />` : ''}
     <h1>${esc(company.toUpperCase())}</h1>

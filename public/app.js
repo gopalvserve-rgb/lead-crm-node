@@ -5053,8 +5053,55 @@ async function renderNewTodayLeads(view) {
 }
 
 VIEWS.followups = async (view) => {
+  /* CEL_4FIX_v1 — follow-up filters */
+  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' };
+  const F = window._fuFilter;
   const data = await api('api_notifications_mine');
   view.innerHTML = '';
+  const isAdmin = ['admin','manager','team_leader'].includes(CRM.user.role);
+  const users = (CRM.cache && CRM.cache.users) || [];
+  const filterCard = h('div', { class:'card', style:{ padding:'.7rem .9rem', marginBottom:'.6rem' } },
+    h('div', { style:{ display:'flex', gap:'.5rem', flexWrap:'wrap', alignItems:'center' } },
+      h('span', { style:{ fontWeight:600 } }, '🔎 Filter:'),
+      h('select', { class:'input', style:{ maxWidth:'170px' },
+        onchange: ev => { F.bucket = ev.target.value; VIEWS.followups(view); } },
+        h('option', { value:'all',      selected: F.bucket==='all' ? 'selected' : null }, 'All'),
+        h('option', { value:'overdue',  selected: F.bucket==='overdue' ? 'selected' : null }, '⚠ Overdue only'),
+        h('option', { value:'today',    selected: F.bucket==='today' ? 'selected' : null }, '📅 Due today'),
+        h('option', { value:'upcoming', selected: F.bucket==='upcoming' ? 'selected' : null }, '⏰ Upcoming')
+      ),
+      h('input', { class:'input', placeholder:'Search name / phone…', value:F.q, style:{ maxWidth:'220px' },
+        oninput: ev => { F.q = ev.target.value; clearTimeout(window._fuTimer); window._fuTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
+      isAdmin ? h('select', { class:'input', style:{ maxWidth:'180px' },
+        onchange: ev => { F.user = ev.target.value; VIEWS.followups(view); } },
+        h('option', { value:'' }, 'All assignees'),
+        ...users.filter(u => Number(u.is_active) === 1).map(u => h('option', { value:String(u.id), selected: String(F.user)===String(u.id) ? 'selected' : null }, u.name))
+      ) : null,
+      h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'From'),
+      h('input', { class:'input', type:'date', value:F.from, style:{ maxWidth:'150px' },
+        onchange: ev => { F.from = ev.target.value; VIEWS.followups(view); } }),
+      h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'To'),
+      h('input', { class:'input', type:'date', value:F.to, style:{ maxWidth:'150px' },
+        onchange: ev => { F.to = ev.target.value; VIEWS.followups(view); } }),
+      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' }; VIEWS.followups(view); } }, 'Clear')
+    )
+  );
+  view.appendChild(filterCard);
+  /* Apply filter to the data buckets in-place */
+  const _applyFilter = arr => arr.filter(r => {
+    if (F.q) {
+      const q = F.q.toLowerCase();
+      const hay = ((r.lead_name||'') + ' ' + (r.lead_phone||'') + ' ' + (r.note||'')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (F.user && String(r.assigned_to) !== String(F.user)) return false;
+    if (F.from && String(r.due_at || '').slice(0,10) < F.from) return false;
+    if (F.to   && String(r.due_at || '').slice(0,10) > F.to)   return false;
+    return true;
+  });
+  data.overdue   = _applyFilter(data.overdue || []);
+  data.due_today = _applyFilter(data.due_today || []);
+  data.upcoming  = _applyFilter(data.upcoming || []);
   const section = (title, rows, klass) => {
     const wrap = h('div', { class: 'card' },
       h('h3', {}, title, ' ', h('span', { class: 'chip-count ' + (klass || '') }, rows.length))
@@ -5108,9 +5155,10 @@ VIEWS.followups = async (view) => {
     wrap.appendChild(tbl);
     view.appendChild(wrap);
   };
-  section('⚠️ Overdue', data.overdue, 'err');
-  section('📅 Due today', data.due_today, 'warn');
-  section('⏰ Upcoming', data.upcoming);
+  /* CEL_4FIX_v1 — honour bucket filter */
+  if (F.bucket === 'all' || F.bucket === 'overdue')  section('⚠️ Overdue', data.overdue, 'err');
+  if (F.bucket === 'all' || F.bucket === 'today')    section('📅 Due today', data.due_today, 'warn');
+  if (F.bucket === 'all' || F.bucket === 'upcoming') section('⏰ Upcoming', data.upcoming);
 };
 
 /* ---------------- Calendar ----------------------------------------
@@ -12997,21 +13045,97 @@ VIEWS.tasks = async (view) => {
     if (which === 'today') renderTodayTasks();
   }
 
+  /* CEL_4FIX_v1 — Tasks admin detail view */
+  const _taskFilter = { assigned_to: '', status: '' };
   async function renderAllTasks() {
     content.innerHTML = '<div class="loading">Loading…</div>';
-    const rows = await api('api_tasks_list', {});
+    const users = (CRM.cache && CRM.cache.users) || (await api('api_users_list')) || [];
+    const rows = await api('api_tasks_list', _taskFilter);
+    const isAdmin = CRM.user.role === 'admin' || CRM.user.role === 'manager';
     content.innerHTML = '';
+    const userSel = h('select', { class: 'input' },
+      h('option', { value: '' }, isAdmin ? 'All users' : 'Me'),
+      ...users.map(u => h('option', { value: String(u.id) }, u.name))
+    );
+    if (_taskFilter.assigned_to) userSel.value = String(_taskFilter.assigned_to);
+    const statusSel = h('select', { class: 'input' },
+      h('option', { value: '' }, 'All statuses'),
+      h('option', { value: 'open' }, 'Open'),
+      h('option', { value: 'done' }, 'Done')
+    );
+    if (_taskFilter.status) statusSel.value = _taskFilter.status;
+    const toolbar = h('div', { class: 'toolbar', style: { display:'flex', gap:'.4rem', alignItems:'center', flexWrap:'wrap' } },
+      h('button', { class: 'btn primary', onclick: () => openTaskModal() }, '+ New task')
+    );
+    if (isAdmin) {
+      toolbar.appendChild(h('span', { class:'muted', style:{ marginLeft:'.5rem' } }, 'Filter:'));
+      toolbar.appendChild(userSel);
+      toolbar.appendChild(statusSel);
+      toolbar.appendChild(h('button', { class:'btn sm', onclick: () => { _taskFilter.assigned_to = userSel.value ? Number(userSel.value) : ''; _taskFilter.status = statusSel.value; renderAllTasks(); } }, '🔎 Apply'));
+      toolbar.appendChild(h('button', { class:'btn sm ghost', onclick: () => { _taskFilter.assigned_to=''; _taskFilter.status=''; renderAllTasks(); } }, 'Clear'));
+    }
+    const prioBadge = p => {
+      if (p === 'high')   return h('span', { style:{ background:'#fee2e2', color:'#b91c1c', padding:'1px 8px', borderRadius:'999px', fontSize:'.75rem', fontWeight:600 } }, 'HIGH');
+      if (p === 'low')    return h('span', { style:{ background:'#dbeafe', color:'#1e40af', padding:'1px 8px', borderRadius:'999px', fontSize:'.75rem' } }, 'low');
+      return h('span', { class:'muted', style:{ fontSize:'.75rem' } }, 'normal');
+    };
     content.append(
-      h('div', { class: 'toolbar' }, h('button', { class: 'btn primary', onclick: () => openTaskModal() }, '+ New task')),
+      toolbar,
+      h('div', { class: 'muted', style:{ marginBottom:'.5rem' } }, rows.length + ' task(s) shown'),
       h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, h('th', {}, 'Title'), h('th', {}, 'Assigned'), h('th', {}, 'Due'), h('th', {}, 'Status'), h('th', {}))),
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Title'),
+          h('th', {}, 'Description'),
+          h('th', {}, 'Priority'),
+          h('th', {}, 'Assigned'),
+          h('th', {}, 'Created by'),
+          h('th', {}, 'Due'),
+          h('th', {}, 'Completed'),
+          h('th', {}, 'Status'),
+          h('th', {}, '')
+        )),
         h('tbody', {}, ...rows.map(t => h('tr', {},
-          h('td', {}, t.title), h('td', {}, t.assigned_name || ''),
-          h('td', {}, fmtDate(t.due_at)), h('td', {}, t.status),
-          h('td', {}, t.status !== 'done' ? h('button', { class: 'btn sm', onclick: async () => { await api('api_tasks_complete', t.id); toast('Done'); renderAllTasks(); } }, '✓') : null)
+          h('td', {}, h('b', {}, t.title)),
+          h('td', { class:'muted', style:{ maxWidth:'280px', whiteSpace:'normal' } }, (t.description || '').slice(0, 140) + ((t.description||'').length > 140 ? '…' : '')),
+          h('td', {}, prioBadge(t.priority)),
+          h('td', {}, t.assigned_name || ''),
+          h('td', { class:'muted' }, t.creator_name || ''),
+          h('td', {}, fmtDate(t.due_at)),
+          h('td', { class:'muted' }, t.completed_at ? fmtDate(t.completed_at, 'relative') : '—'),
+          h('td', {}, h('span', { style:{ background: t.status==='done' ? '#dcfce7' : '#fef3c7', color: t.status==='done' ? '#15803d' : '#92400e', padding:'1px 8px', borderRadius:'999px', fontSize:'.75rem', fontWeight:600 } }, t.status)),
+          h('td', { style:{ whiteSpace:'nowrap' } },
+            h('button', { class: 'btn xs', title:'View full details', onclick: () => openTaskDetail(t.id) }, '👁'),
+            t.status !== 'done' ? h('button', { class: 'btn xs primary', style:{ marginLeft:'.25rem' }, onclick: async () => { await api('api_tasks_complete', t.id); toast('Done'); renderAllTasks(); } }, '✓') : null
+          )
         )))
       ))
     );
+  }
+  async function openTaskDetail(id) {
+    const rows = await api('api_tasks_list', {});
+    const t = rows.find(r => Number(r.id) === Number(id));
+    if (!t) { toast('Task not found', 'err'); return; }
+    const modal = h('div', { class: 'modal' });
+    modal.appendChild(h('div', { class: 'modal-content' },
+      h('h3', {}, '📋 ' + t.title),
+      h('table', { style:{ width:'100%' } },
+        h('tbody', {},
+          h('tr', {}, h('td', { class:'muted' }, 'Status'), h('td', {}, t.status)),
+          h('tr', {}, h('td', { class:'muted' }, 'Priority'), h('td', {}, t.priority || 'normal')),
+          h('tr', {}, h('td', { class:'muted' }, 'Assigned to'), h('td', {}, t.assigned_name || '—')),
+          h('tr', {}, h('td', { class:'muted' }, 'Created by'), h('td', {}, t.creator_name || '—')),
+          h('tr', {}, h('td', { class:'muted' }, 'Due'), h('td', {}, t.due_at ? new Date(t.due_at).toLocaleString('en-IN') : '—')),
+          h('tr', {}, h('td', { class:'muted' }, 'Completed'), h('td', {}, t.completed_at ? new Date(t.completed_at).toLocaleString('en-IN') : '—')),
+          h('tr', {}, h('td', { class:'muted' }, 'Created'), h('td', {}, t.created_at ? new Date(t.created_at).toLocaleString('en-IN') : '—'))
+        )
+      ),
+      h('h4', { style:{ marginTop:'.8rem' } }, 'Description'),
+      h('div', { style:{ background:'#f8fafc', padding:'.6rem .8rem', borderRadius:'6px', whiteSpace:'pre-wrap' } }, t.description || h('span',{class:'muted'},'(no description)')),
+      h('div', { class: 'modal-actions', style:{ marginTop:'.8rem', display:'flex', justifyContent:'flex-end' } },
+        h('button', { class: 'btn ghost', onclick: () => modal.remove() }, 'Close')
+      )
+    ));
+    document.body.appendChild(modal);
   }
 
   async function renderTodayTasks() {
@@ -13913,10 +14037,13 @@ async function renderSalaryReport() {
       const r = await api('api_salary_report', monthInput.value);
       out.innerHTML = '';
       if (!r.rows.length) { out.innerHTML = '<p class="muted">No salary records for this month.</p>'; return; }
+      /* CEL_4FIX_v1 — unpaid chip */
       out.append(
         h('div', { class: 'cards' },
           h('div', { class: 'card stat accent' }, h('div', { class: 'stat-body' },
             h('div', { class: 'stat-label' }, 'Total base'), h('div', { class: 'stat-value' }, '₹' + r.totals.base.toFixed(0)))),
+          h('div', { class: 'card stat ' + (r.unpaid_count ? 'warn' : 'ok') }, h('div', { class: 'stat-body' },
+            h('div', { class: 'stat-label' }, (r.unpaid_count ? '⚠ Not paid' : '✅ Paid')), h('div', { class: 'stat-value' }, (r.paid_count || 0) + ' / ' + ((r.paid_count || 0) + (r.unpaid_count || 0))))),
           h('div', { class: 'card stat' }, h('div', { class: 'stat-body' },
             h('div', { class: 'stat-label' }, 'Allowances'), h('div', { class: 'stat-value' }, '₹' + r.totals.allowances.toFixed(0)))),
           h('div', { class: 'card stat err' }, h('div', { class: 'stat-body' },
@@ -13927,8 +14054,8 @@ async function renderSalaryReport() {
         h('div', { class: 'table-wrap' }, h('table', {},
           h('thead', {}, h('tr', {}, h('th', {}, 'User'), h('th', {}, 'Role'),
             h('th', {}, 'Base'), h('th', {}, 'Allowances'), h('th', {}, 'Deductions'), h('th', {}, 'Net'), h('th', {}))),
-          h('tbody', {}, ...r.rows.map(s => h('tr', {},
-            h('td', {}, s.user_name),
+          h('tbody', {}, ...r.rows.map(s => h('tr', { style: s.not_paid ? { background:'#fef3c7', opacity:'.85' } : null },
+            h('td', {}, s.user_name, s.not_paid ? h('span', { style:{ marginLeft:'.4rem', background:'#fee2e2', color:'#b91c1c', padding:'1px 6px', borderRadius:'999px', fontSize:'.7rem', fontWeight:600 } }, 'NOT PAID') : null),
             h('td', {}, s.user_role),
             h('td', {}, '₹' + Number(s.base).toFixed(2)),
             h('td', {}, '₹' + Number(s.allowances).toFixed(2)),
