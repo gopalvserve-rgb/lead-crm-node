@@ -14762,8 +14762,13 @@ async function syncRecordings(opts) {
   // watermark (e.g. user picked the folder a year ago) from re-pulling
   // every recording on the device. The gate-by-call-event logic below
   // is the backup; this is the front-line filter.
+  // REC_REWIND_v1 (2026-05-20): rewind watermark by 5 minutes on each
+  // incremental sync so files whose mod time lags slightly behind the
+  // previous sync don't get permanently skipped. uploaded[f.uri] still
+  // dedupes within a single device so re-checking older files is free.
+  const REWIND_MS = 5 * 60_000;
   const minWatermark = Date.now() - 30 * 60_000;
-  const sinceMs = opts.full ? 0 : Math.max(stored, minWatermark);
+  const sinceMs = opts.full ? 0 : Math.max(stored - REWIND_MS, minWatermark);
   const filesJson = LeadCRMNative.listRecordings(sinceMs);
   let files = [];
   try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
