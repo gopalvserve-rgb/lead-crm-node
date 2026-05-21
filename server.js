@@ -325,6 +325,26 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
     } catch (_) {}
     // Already uploaded? Return its id so client treats as no-op success.
     let id = null;
+    // REC_FILENAME_DEDUP_v1: filename match BEFORE dedup_key
+    const _filename = String(req.body.filename || (req.file && req.file.originalname) || '');
+    if (_filename) {
+      try {
+        const _exF = await db.query(
+          'SELECT id, lead_id FROM lead_recordings WHERE original_filename = $1 LIMIT 1',
+          [_filename]
+        );
+        if (_exF.rows[0]) {
+          return res.json({
+            ok: true,
+            id: _exF.rows[0].id,
+            lead_id: _exF.rows[0].lead_id,
+            auto_created: false,
+            already_synced: true,
+            dedup_via: 'filename'
+          });
+        }
+      } catch (_) { /* column may not exist on first deploy */ }
+    }
     try {
       const _ex = await db.query(
         'SELECT id, lead_id FROM lead_recordings WHERE user_id = $1 AND dedup_key = $2 LIMIT 1',
@@ -342,15 +362,18 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
     } catch (_) {}
     // Fresh upload — INSERT with ON CONFLICT for race safety.
     try {
+      // REC_FILENAME_DEDUP_v1 — store original_filename for cross-device dedup
+      try { await db.query('ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS original_filename TEXT'); } catch (_) {}
+      try { await db.query('CREATE INDEX IF NOT EXISTS idx_lead_rec_filename ON lead_recordings(original_filename) WHERE original_filename IS NOT NULL'); } catch (_) {}
       const _ins = await db.query(
         `INSERT INTO lead_recordings
-           (lead_id, user_id, phone, direction, duration_s, device_path, mime_type, size_bytes, audio_bytes, started_at, created_at, dedup_key)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+           (lead_id, user_id, phone, direction, duration_s, device_path, mime_type, size_bytes, audio_bytes, started_at, created_at, dedup_key, original_filename)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
          ON CONFLICT (user_id, dedup_key) DO NOTHING
          RETURNING id`,
         [leadId, me.id, phone, direction, Number(req.body.duration_s) || 0,
          _devicePath, _finalMime, _audioSize, _audioBuf,
-         req.body.started_at || db.nowIso(), db.nowIso(), _dedupKey]
+         req.body.started_at || db.nowIso(), db.nowIso(), _dedupKey, (req.body.filename || (req.file && req.file.originalname) || null)]
       );
       id = _ins.rows[0] ? _ins.rows[0].id : null;
     } catch (e) {

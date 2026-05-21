@@ -14773,6 +14773,24 @@ async function syncRecordings(opts) {
   let files = [];
   try { files = JSON.parse(filesJson || '[]'); } catch (e) { files = []; }
 
+    /* REC_FILENAME_DEDUP_v1 — server-authoritative dedup */
+  if (files.length) {
+    try {
+      const filenames = files.map(f => f.name).filter(Boolean);
+      if (filenames.length) {
+        const r = await api('api_recordings_filenamesPresent', { filenames });
+        const presentSet = new Set((r && r.present) || []);
+        if (presentSet.size) {
+          const beforeCount = files.length;
+          files = files.filter(f => !presentSet.has(f.name));
+          console.log('[leadcrm] server dedup: dropped ' + (beforeCount - files.length) + ' files already on CRM');
+        }
+      }
+    } catch (e) {
+      console.warn('[leadcrm] server-side filename dedup failed (continuing):', e.message);
+    }
+  }
+
   if (files.length === 0) {
     /* RESYNC_HINT_v1 */ toast(opts.full ? 'Folder is empty — no recordings found at all.' : 'No new recordings in the last 30 min. Tap ⚡ Re-sync all to scan every file.', opts.full ? 'warn' : 'ok');
     return;

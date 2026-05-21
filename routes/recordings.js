@@ -886,6 +886,26 @@ async function api_recordings_relinkOrphans(token) {
   return { ok: true, scanned: orphans.rows.length, linked };
 }
 
+
+
+/* REC_FILENAME_DEDUP_v1 (2026-05-20) — pre-flight check */
+async function api_recordings_filenamesPresent(token, payload) {
+  await authUser(token);
+  const names = Array.isArray(payload && payload.filenames) ? payload.filenames : [];
+  const list = names.map(s => String(s || '').trim()).filter(Boolean).slice(0, 500);
+  if (!list.length) return { present: [], asked: 0 };
+  try { await db.query('ALTER TABLE lead_recordings ADD COLUMN IF NOT EXISTS original_filename TEXT'); } catch (_) {}
+  try {
+    const { rows } = await db.query(
+      'SELECT DISTINCT original_filename FROM lead_recordings WHERE original_filename = ANY($1::text[])',
+      [list]
+    );
+    return { present: rows.map(r => r.original_filename), asked: list.length };
+  } catch (e) {
+    return { present: [], asked: list.length, error: e.message };
+  }
+}
+
 module.exports = {
   api_call_logEvent, api_call_events_pending, api_call_events_convertToLeads,
   api_call_hasRecentEvent,
@@ -894,7 +914,7 @@ module.exports = {
   api_leads_recordings,
   api_call_history,
   api_my_recordings,
-  api_recordings_delete, api_recordings_resetAll, api_recordings_relinkOrphans,
+  api_recordings_delete, api_recordings_filenamesPresent, /* REC_FILENAME_DEDUP_v1 */ api_recordings_resetAll, api_recordings_relinkOrphans,
   api_recording_aiSummary,
   api_recording_aiReprocess,
   api_recording_applySuggestion,
