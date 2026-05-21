@@ -244,11 +244,9 @@ async function _centralRegistryCall(page, op, opts) {
   const url    = process.env.FB_REGISTRY_URL    || 'https://smartcrmsolution.com/fb_leads_register.php';
   const secret = process.env.FB_REGISTRY_SECRET || '';
   if (!secret) {
-    console.warn('[fb-registry] FB_REGISTRY_SECRET env not set — skipping central registration for page', page && page.page_id);
+    console.warn('[fb-registry] FB_REGISTRY_SECRET env not set \u2014 skipping central registration for page', page && page.page_id);
     return { ok: false, skipped: 'no_secret' };
   }
-  // Build target_url per CRM. Each repo overrides FB_TARGET_URL_BUILDER if
-  // the default doesn't match the actual /hook/meta path for that CRM.
   let target_url = '';
   if (typeof _fbTargetUrlBuilder === 'function') {
     try { target_url = _fbTargetUrlBuilder(page, opts); } catch (_) {}
@@ -259,15 +257,23 @@ async function _centralRegistryCall(page, op, opts) {
     return { ok: false, skipped: 'no_target_url' };
   }
 
+  // db_prefix: Celeste is single-tenant, fixed value matches legacy *_tbl convention.
+  let db_prefix = String(opts.db_prefix || '');
+  if (!db_prefix && typeof _fbDbPrefixBuilder === 'function') {
+    try { db_prefix = _fbDbPrefixBuilder(opts) || ''; } catch (_) {}
+  }
+
   const payload = {
     op,
-    page_id:      String((page && page.page_id) || ''),
-    page_name:    String((page && page.page_name) || ''),
-    access_token: String((page && page.access_token) || ''),
-    tenant_slug:  String(opts.tenant_slug || ''),
-    crm_brand:    String(opts.crm_brand || (process.env.CRM_BRAND || '')),
+    page_id:                String((page && page.page_id) || ''),
+    page_name:              String((page && page.page_name) || ''),
+    page_access_token:      String((page && page.access_token) || ''),
+    long_life_access_token: String((page && page.long_life_access_token) || ''),
+    app_id:                 String(opts.app_id || ''),
+    db_prefix,
     target_url,
-    verify_token: String(opts.verify_token || '')
+    is_active:              (op === 'remove') ? 0 : 1,
+    is_subscribed:          opts.is_subscribed != null ? (opts.is_subscribed ? 1 : 0) : 1
   };
 
   try {
@@ -284,7 +290,7 @@ async function _centralRegistryCall(page, op, opts) {
       console.warn('[fb-registry] HTTP ' + r.status + ' for page ' + payload.page_id + ': ' + (j.error || 'unknown'));
       return { ok: false, status: r.status, error: j.error || 'unknown' };
     }
-    console.log('[fb-registry] ' + op + ' page=' + payload.page_id + ' tenant=' + payload.tenant_slug + ' total=' + j.total_pages);
+    console.log('[fb-registry] ' + op + ' page=' + payload.page_id + ' db_prefix=' + payload.db_prefix + ' total=' + (j.total_entries != null ? j.total_entries : j.total_pages));
     return j;
   } catch (e) {
     console.warn('[fb-registry] network error for page ' + payload.page_id + ': ' + e.message);
@@ -305,6 +311,12 @@ function _fbTargetUrlBuilder(page, opts) {
   return base.replace(/\/$/, '') + '/hook/meta';
 }
 
+
+
+function _fbDbPrefixBuilder(opts) {
+  // Celeste is single-tenant. Fixed value follows legacy *_tbl naming.
+  return 'celeste_tbl';
+}
 
 // ---------- API: Connect (FB Login) ----------
 
@@ -361,7 +373,11 @@ async function api_fb_disconnect(token) {
   }
   // FB_CENTRAL_REGISTRY_v1 — also remove from the shared registry.
   for (const pg of list) {
-    try { await _centralRegistryCall(pg, 'remove', { tenant_slug: (typeof db.getTenantSlug === 'function' ? (db.getTenantSlug() || '') : (process.env.TENANT_SLUG || '')) }); }
+    try {
+      const _slug = (typeof db.getTenantSlug === 'function') ? (db.getTenantSlug() || '') : (process.env.TENANT_SLUG || '');
+      const _appId = await db.getConfig('META_APP_ID', '');
+      await _centralRegistryCall(pg, 'remove', { tenant_slug: _slug, app_id: _appId, is_subscribed: 0 });
+    }
     catch (_) {}
   }
   await db.setConfig('META_USER_TOKEN', '');
@@ -480,8 +496,11 @@ async function api_fb_pages_toggle(token, pageId, monitor) {
   try {
     const verifyToken = await db.getConfig('META_VERIFY_TOKEN', '');
     const tenantSlug = (typeof db.getTenantSlug === 'function') ? (db.getTenantSlug() || '') : (process.env.TENANT_SLUG || '');
+    const appId = await db.getConfig('META_APP_ID', '');
     await _centralRegistryCall(pg, monitor ? 'upsert' : 'remove', {
       tenant_slug: tenantSlug,
+      app_id: appId,
+      is_subscribed: monitor ? 1 : 0,
       verify_token: verifyToken
     });
   } catch (e) { console.warn('[fb-registry] toggle sync failed:', e.message); }
