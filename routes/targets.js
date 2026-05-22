@@ -169,9 +169,18 @@ async function api_targets_dashboard(token, month, userId) {
   const allStatuses  = await db.getAll('statuses');
   const customerSales = await db.getAll('customer_sales').catch(() => []);
   const statusById   = Object.fromEntries(allStatuses.map(s => [Number(s.id), s]));
-  const wonStatusIds = allStatuses
-    .filter(s => /\bwon\b/i.test(String(s.name || '')))
-    .map(s => Number(s.id));
+  // TARGETS_FIX_v1: robust won-status detection.
+  // Step 1: name-based match against common winning-stage vocabulary.
+  // Step 2: fallback to is_final=1 statuses that don't look like "Lost".
+  const _NEG_RE  = /lost|junk|invalid|not[_\s]?interested|disqualif|spam|cancel|reject|fake|drop/i;
+  const _WIN_RE  = /won|closed|booked|converted|completed|sold|paid|success|deal\s*done|sale\s*done|sale\s*final|enroll/i;
+  let _wonStatuses = allStatuses.filter(s => _WIN_RE.test(String(s.name || '')) && !_NEG_RE.test(String(s.name || '')));
+  if (!_wonStatuses.length) {
+    // Fallback: any is_final=1 status that isn't clearly a loss state.
+    _wonStatuses = allStatuses.filter(s => Number(s.is_final) === 1 && !_NEG_RE.test(String(s.name || '')));
+  }
+  const wonStatusIds = _wonStatuses.map(s => Number(s.id));
+  const wonStatusNames = _wonStatuses.map(s => s.name);
 
   // Apply scope filter at the lead level
   const inScope = l => {
@@ -339,7 +348,27 @@ async function api_targets_dashboard(token, month, userId) {
     weekly_trend: weeklyTrend,
     funnel,
     rep_breakdown: repBreakdown,
-    revenue_source: usedSalesTable ? 'customer_sales' : 'won_leads'
+    revenue_source: usedSalesTable ? 'customer_sales' : 'won_leads',
+    // TARGETS_FIX_v1: diagnostic block — surfaces WHY revenue might be 0
+    diagnostic: (() => {
+      const total = scopedLeads.length;
+      const valued = scopedLeads.filter(l => Number(l.value) > 0).length;
+      const reasons = [];
+      if (!target) reasons.push('No target set for this month — admin can click "🎯 Set target" above.');
+      if (!wonStatusIds.length) reasons.push('No "won" status detected. Edit Settings → Statuses and mark your final sale status as is_final=1 (e.g. "Booked", "Sale Done", "Closed").');
+      if (!usedSalesTable && wonStatusIds.length && wonLeadsMonth.length === 0) reasons.push('No leads moved to a won status this month yet (status changes are timestamped via last_status_change_at).');
+      if (!usedSalesTable && wonLeadsMonth.length > 0 && revenueAchieved === 0) reasons.push('Won leads exist but lead.value is empty on all of them — enter a deal value on each lead to count toward revenue.');
+      if (valued === 0 && total > 0 && !usedSalesTable) reasons.push(total + ' leads in scope but none have a deal value entered.');
+      return {
+        won_status_names: wonStatusNames,
+        won_status_count: wonStatusIds.length,
+        leads_in_scope: total,
+        leads_with_value: valued,
+        won_leads_this_month: wonLeadsMonth.length,
+        revenue_source_used: usedSalesTable ? 'customer_sales table' : 'lead.value of won leads',
+        hints: reasons
+      };
+    })()
   };
 }
 

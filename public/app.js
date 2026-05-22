@@ -8559,6 +8559,33 @@ function renderDashboard(body, r) {
     )
   ));
 
+  // TARGETS_FIX_v1 — diagnostic banner when something looks wrong
+  if (r.diagnostic) {
+    const d = r.diagnostic;
+    const showBanner = (d.hints && d.hints.length > 0) || (r.target_revenue > 0 && r.revenue_achieved === 0);
+    if (showBanner) {
+      const banner = h('div', { style: {
+        background: '#fef3c7', border: '1px solid #f59e0b', color: '#92400e',
+        padding: '.7rem .9rem', borderRadius: '8px', marginBottom: '14px',
+        fontSize: '.83rem', lineHeight: '1.5'
+      } });
+      banner.appendChild(h('div', { style: { fontWeight: 700, marginBottom: '.3rem' } },
+        '⚠ Why these numbers might look off:'));
+      if (d.hints && d.hints.length) {
+        const ul = h('ul', { style: { margin: '.2rem 0 .4rem 1.2rem' } });
+        d.hints.forEach(hint => ul.appendChild(h('li', {}, hint)));
+        banner.appendChild(ul);
+      }
+      banner.appendChild(h('div', { class: 'muted', style: { fontSize: '.75rem', marginTop: '.4rem', borderTop: '1px solid #fcd34d', paddingTop: '.3rem' } },
+        '🔍 Detected won statuses: ' + (d.won_status_names && d.won_status_names.length ? d.won_status_names.join(', ') : '(none)') +
+        ' · Leads in scope: ' + d.leads_in_scope +
+        ' · With value: ' + d.leads_with_value +
+        ' · Won this month: ' + d.won_leads_this_month +
+        ' · Source: ' + d.revenue_source_used));
+      body.appendChild(banner);
+    }
+  }
+
   // ---- Big KPI grid (the metrics product asked for) -----------------
   const kpi = (label, value, sub, color) => h('div', { style: {
     background: color || 'var(--bg-alt)',
