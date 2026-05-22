@@ -12539,7 +12539,7 @@ async function adminRules() {
     wrap.appendChild(adCard);
 
     // ---- AI call summary / transcription toggle ----
-    const aiOn = String(cfg.AI_TRANSCRIPTION_ENABLED == null ? '1' : cfg.AI_TRANSCRIPTION_ENABLED) === '1';
+    const aiOn = String(cfg.AI_TRANSCRIPTION_ENABLED == null ? '0' : cfg.AI_TRANSCRIPTION_ENABLED) === '1';
     const aiCard = h('div', { class: 'card', style: { marginBottom: '1rem' } });
     aiCard.appendChild(h('h4', { style: { marginTop: 0 } }, '🤖 AI call summary (Gemini 2.5 Flash)'));
     aiCard.appendChild(h('p', { class: 'muted' },

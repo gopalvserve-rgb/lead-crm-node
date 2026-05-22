@@ -244,7 +244,7 @@ async function processRecording(id) {
   // Admin can disable AI transcription per-tenant.
   // Skip silently — the row stays unprocessed but the worker won't loop.
   try {
-    const enabled = await db.getConfig('AI_TRANSCRIPTION_ENABLED', '1');
+    const enabled = await db.getConfig('AI_TRANSCRIPTION_ENABLED', '0')  // KILL_SWITCH_v1: default OFF — admin must explicitly enable in Settings;
     if (String(enabled) === '0') {
       // Mark as processed-with-skip so the worker doesn't keep retrying.
       await _saveResult(id, {
