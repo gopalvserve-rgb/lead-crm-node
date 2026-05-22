@@ -567,6 +567,13 @@ async function api_salary_report(token, month) {
  */
 async function api_salary_payslip(token, salaryId) {
   const me = await authUser(token);
+  // PAYSLIP_FIX_v1: refuse explicitly when salaryId is null/undefined/0 — the
+  // SPA salary report includes "not_paid" stub rows with id: null, and
+  // db.findById falls through to "first row" in some adapters which made every
+  // unpaid employee's payslip look identical ("dummy slip"). Validate FIRST.
+  if (!salaryId || isNaN(Number(salaryId)) || Number(salaryId) <= 0) {
+    throw new Error('No salary record yet for this employee/month. Save the salary first under Salary → Bulk save, then click Payslip.');
+  }
   const s = await db.findById('salaries', salaryId);
   if (!s) throw new Error('Salary record not found');
   if (me.role !== 'admin' && Number(s.user_id) !== Number(me.id)) throw new Error('Forbidden');
@@ -712,6 +719,18 @@ async function api_salary_payslip(token, salaryId) {
       <td>${esc(u?.pan_number || '—')}</td>
       <td class="label">Worked Days</td>
       <td>${workedDays}</td>
+    </tr>
+    <tr>
+      <td class="label">Email</td>
+      <td>${esc(u?.email || '—')}</td>
+      <td class="label">Phone</td>
+      <td>${esc(u?.phone || '—')}</td>
+    </tr>
+    <tr>
+      <td class="label">Role</td>
+      <td>${esc(u?.role || '—')}</td>
+      <td class="label">User ID</td>
+      <td>${esc(String(u?.id || s.user_id || '—'))}</td>
     </tr>
   </table>
 

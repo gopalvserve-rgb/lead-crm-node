@@ -14278,7 +14278,13 @@ async function renderSalaryReport() {
             h('td', {}, '₹' + Number(s.allowances).toFixed(2)),
             h('td', {}, '₹' + Number(s.deductions).toFixed(2)),
             h('td', { class: 'cell-ok' }, '₹' + Number(s.net_pay).toFixed(2)),
-            h('td', {}, h('button', { class: 'btn sm', onclick: () => downloadPayslip(s.id) }, '📄'))
+            // PAYSLIP_FIX_v1: not_paid stub rows have id: null — clicking 📄
+            // would either error or fall through to a wrong record, which
+            // looked like "every employee gets the same dummy slip". Hide
+            // the button on stubs; show a "Set salary" hint instead.
+            h('td', {}, s.not_paid
+              ? h('button', { class: 'btn sm ghost', title: 'No salary record yet — switch to Bulk save tab to enter it', onclick: () => { showSalaryTab({ target: $$('.subtab')[2] }, 'bulk'); } }, '💼 Set salary')
+              : h('button', { class: 'btn sm', onclick: () => downloadPayslip(s.id) }, '📄 Payslip'))
           )))
         ))
       );
