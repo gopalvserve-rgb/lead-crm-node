@@ -62,7 +62,12 @@ async function api_notifications_mine(token) {
     items.push({
       id: f.id, lead_id: f.lead_id, due_at: f.due_at, note: f.note || '',
       lead_name: lead?.name || '', lead_phone: lead?.phone || '',
-      assigned_to: lead?.assigned_to
+      assigned_to: lead?.assigned_to,
+      /* CEL_FU_FILTERS_v1 — additional fields for Source/Product/Status/Tag filters */
+      lead_source: lead?.source || '',
+      lead_product: lead?.product || '',
+      lead_status_id: lead ? (lead.status_id || null) : null,
+      lead_tags: lead?.tags || ''
     });
   });
 
@@ -75,7 +80,12 @@ async function api_notifications_mine(token) {
     items.push({
       id: null, lead_id: l.id, due_at: l.next_followup_at, note: '',
       lead_name: l.name || '', lead_phone: l.phone || '',
-      assigned_to: l.assigned_to
+      assigned_to: l.assigned_to,
+      /* CEL_FU_FILTERS_v1 */
+      lead_source: l.source || '',
+      lead_product: l.product || '',
+      lead_status_id: l.status_id || null,
+      lead_tags: l.tags || ''
     });
   });
 
