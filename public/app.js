@@ -2200,29 +2200,46 @@ async function deleteAllDuplicates() {
 }
 
 /* --- CSV export / upload --- */
-function exportCSV() {
-  const rows = CRM.cache.lastLeads || [];
+async function exportCSV() {
+  /* CEL_LEAD_EXPORT_v1 (2026-05-23) — fixes:
+       1. Fetches ALL leads from the server (was only exporting visible page)
+       2. UTF-8 BOM prefix so Excel auto-detects encoding (no garbled rupee/diacritics)
+       3. Phone / alt_phone / whatsapp wrapped in ="..." Excel text formula so long
+          10+ digit numbers stop becoming 9.19999E+11 scientific notation
+       4. Extra fields: id, created_by, latest_remark
+  */
+  toast('Fetching all leads…', 'info');
+  let rows = [];
+  try {
+    const res = await api('api_leads_list', { limit: 100000, offset: 0 });
+    rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
+  } catch (e) {
+    rows = CRM.cache.lastLeads || [];
+    if (!rows.length) return toast('Export failed: ' + e.message, 'err');
+  }
   if (!rows.length) return toast('No leads to export', 'warn');
 
-  // Resolve assignee email if we have the users cache (fallback to name)
   const usersById = {};
   (CRM.cache.users || []).forEach(u => { usersById[Number(u.id)] = u; });
   function assigneeEmail(r) {
     const u = usersById[Number(r.assigned_to)];
     return (u && (u.email || u.name)) || r.assigned_name || '';
   }
+  function createdByName(r) {
+    const u = usersById[Number(r.created_by)];
+    return (u && u.name) || '';
+  }
 
-  // Fixed columns — exact order matches the canonical lead-crm-sample.csv
   const fixedCols = [
-    'name','phone','alt_phone','whatsapp','email','status','source','source_ref',
-    'product','assigned_to','address','city','state','pincode','country','company',
+    'id','name','phone','alt_phone','whatsapp','email','status','source','source_ref',
+    'product','assigned_to','created_by','address','city','state','pincode','country','company',
     'value','currency','qualified','tags','next_followup_at','notes','created_at',
     'last_status_change_at','gclid','gad_campaignid','utm_source','utm_medium',
-    'utm_campaign','utm_term','utm_content'
+    'utm_campaign','utm_term','utm_content','latest_remark'
   ];
 
-  // Collect every custom-field key across all rows (extra_json or extra) so each
-  // becomes its own cf_<key> column. Preserves insertion order across rows.
+  const PHONE_COLS = new Set(['phone','alt_phone','whatsapp']);
+
   const cfKeys = [];
   const seen = new Set();
   rows.forEach(r => {
@@ -2238,13 +2255,14 @@ function exportCSV() {
   const headers = fixedCols.concat(cfKeys.map(k => 'cf_' + k));
 
   function getCell(r, col) {
-    // Field-level resolution rules
-    if (col === 'status')      return r.status_name || '';
-    if (col === 'product')     return r.product_name || '';
-    if (col === 'assigned_to') return assigneeEmail(r);
-    if (col === 'qualified')   return Number(r.qualified) ? 1 : 0;
-    if (col === 'value')       return r.value == null ? '' : r.value;
-    if (col === 'currency')    return r.currency || '';
+    if (col === 'status')        return r.status_name || '';
+    if (col === 'product')       return r.product_name || '';
+    if (col === 'assigned_to')   return assigneeEmail(r);
+    if (col === 'created_by')    return createdByName(r);
+    if (col === 'qualified')     return Number(r.qualified) ? 1 : 0;
+    if (col === 'value')         return r.value == null ? '' : r.value;
+    if (col === 'currency')      return r.currency || '';
+    if (col === 'latest_remark') return r.latest_remark || '';
     return r[col] == null ? '' : r[col];
   }
   function getCustom(r, key) {
@@ -2260,22 +2278,33 @@ function exportCSV() {
     const s = v == null ? '' : String(v).replace(/"/g, '""');
     return /[",\n]/.test(s) ? `"${s}"` : s;
   }
+  function quotePhone(v) {
+    const s = v == null ? '' : String(v).replace(/"/g, '""');
+    if (!s) return '';
+    /* Excel text-formula trick — opens as literal text, no scientific notation */
+    return `"=""${s}"""`;
+  }
 
   const csv = [headers.join(',')].concat(
     rows.map(r => {
-      const fixed = fixedCols.map(c => quote(getCell(r, c)));
+      const fixed = fixedCols.map(c =>
+        PHONE_COLS.has(c) ? quotePhone(getCell(r, c)) : quote(getCell(r, c))
+      );
       const cf = cfKeys.map(k => quote(getCustom(r, k)));
       return fixed.concat(cf).join(',');
     })
   ).join('\n');
 
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const BOM = '﻿';
+  const blob = new Blob([BOM + csv], { type: 'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `leads-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
+  toast(`Exported ${rows.length} lead${rows.length === 1 ? '' : 's'} • ${headers.length} columns`, 'ok');
 }
+
 function openBulkUpload() {
   // Include admin too, since admin may want to assign to themselves
   const users = (CRM.cache.users || []).filter(u => Number(u.is_active ?? 1) === 1);
@@ -5055,7 +5084,7 @@ async function renderNewTodayLeads(view) {
 
 VIEWS.followups = async (view) => {
   /* CEL_4FIX_v1 — follow-up filters */
-  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' };  /* CEL_FU_FILTERS_v1 */
+  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' };
   const F = window._fuFilter;
   const data = await api('api_notifications_mine');
   view.innerHTML = '';
@@ -5084,28 +5113,7 @@ VIEWS.followups = async (view) => {
       h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'To'),
       h('input', { class:'input', type:'date', value:F.to, style:{ maxWidth:'150px' },
         onchange: ev => { F.to = ev.target.value; VIEWS.followups(view); } }),
-      /* CEL_FU_FILTERS_v1 — Source / Product / Status / Tag */
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.source = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All sources'),
-        ...((CRM.cache && CRM.cache.sources) || []).map(s =>
-          h('option', { value: s.name || s, selected: F.source === (s.name || s) ? 'selected' : null }, s.name || s))
-      ),
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.product = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All products'),
-        ...((CRM.cache && CRM.cache.products) || []).map(p =>
-          h('option', { value: p.name || p, selected: F.product === (p.name || p) ? 'selected' : null }, p.name || p))
-      ),
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.status = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All statuses'),
-        ...((CRM.cache && CRM.cache.statuses) || []).map(s =>
-          h('option', { value: String(s.id), selected: String(F.status) === String(s.id) ? 'selected' : null }, s.name || ('Status ' + s.id)))
-      ),
-      h('input', { class:'input', placeholder:'Tag contains…', value:F.tag, style:{ maxWidth:'140px' },
-        oninput: ev => { F.tag = ev.target.value; clearTimeout(window._fuTagTimer); window._fuTagTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
-      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' }; VIEWS.followups(view); } }, 'Clear')
+      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' }; VIEWS.followups(view); } }, 'Clear')
     )
   );
   view.appendChild(filterCard);
@@ -5119,14 +5127,6 @@ VIEWS.followups = async (view) => {
     if (F.user && String(r.assigned_to) !== String(F.user)) return false;
     if (F.from && String(r.due_at || '').slice(0,10) < F.from) return false;
     if (F.to   && String(r.due_at || '').slice(0,10) > F.to)   return false;
-    /* CEL_FU_FILTERS_v1 */
-    if (F.source && String(r.lead_source || '') !== String(F.source)) return false;
-    if (F.product && String(r.lead_product || '') !== String(F.product)) return false;
-    if (F.status && String(r.lead_status_id || '') !== String(F.status)) return false;
-    if (F.tag) {
-      const tagQ = F.tag.toLowerCase();
-      if (!String(r.lead_tags || '').toLowerCase().includes(tagQ)) return false;
-    }
     return true;
   });
   data.overdue   = _applyFilter(data.overdue || []);
