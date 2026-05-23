@@ -5055,7 +5055,7 @@ async function renderNewTodayLeads(view) {
 
 VIEWS.followups = async (view) => {
   /* CEL_4FIX_v1 — follow-up filters */
-  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' };
+  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' };  /* CEL_FU_FILTERS_v1 */
   const F = window._fuFilter;
   const data = await api('api_notifications_mine');
   view.innerHTML = '';
@@ -5084,7 +5084,28 @@ VIEWS.followups = async (view) => {
       h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'To'),
       h('input', { class:'input', type:'date', value:F.to, style:{ maxWidth:'150px' },
         onchange: ev => { F.to = ev.target.value; VIEWS.followups(view); } }),
-      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'' }; VIEWS.followups(view); } }, 'Clear')
+      /* CEL_FU_FILTERS_v1 — Source / Product / Status / Tag */
+      h('select', { class:'input', style:{ maxWidth:'150px' },
+        onchange: ev => { F.source = ev.target.value; VIEWS.followups(view); } },
+        h('option', { value:'' }, 'All sources'),
+        ...((CRM.cache && CRM.cache.sources) || []).map(s =>
+          h('option', { value: s.name || s, selected: F.source === (s.name || s) ? 'selected' : null }, s.name || s))
+      ),
+      h('select', { class:'input', style:{ maxWidth:'150px' },
+        onchange: ev => { F.product = ev.target.value; VIEWS.followups(view); } },
+        h('option', { value:'' }, 'All products'),
+        ...((CRM.cache && CRM.cache.products) || []).map(p =>
+          h('option', { value: p.name || p, selected: F.product === (p.name || p) ? 'selected' : null }, p.name || p))
+      ),
+      h('select', { class:'input', style:{ maxWidth:'150px' },
+        onchange: ev => { F.status = ev.target.value; VIEWS.followups(view); } },
+        h('option', { value:'' }, 'All statuses'),
+        ...((CRM.cache && CRM.cache.statuses) || []).map(s =>
+          h('option', { value: String(s.id), selected: String(F.status) === String(s.id) ? 'selected' : null }, s.name || ('Status ' + s.id)))
+      ),
+      h('input', { class:'input', placeholder:'Tag contains…', value:F.tag, style:{ maxWidth:'140px' },
+        oninput: ev => { F.tag = ev.target.value; clearTimeout(window._fuTagTimer); window._fuTagTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
+      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' }; VIEWS.followups(view); } }, 'Clear')
     )
   );
   view.appendChild(filterCard);
@@ -5098,6 +5119,14 @@ VIEWS.followups = async (view) => {
     if (F.user && String(r.assigned_to) !== String(F.user)) return false;
     if (F.from && String(r.due_at || '').slice(0,10) < F.from) return false;
     if (F.to   && String(r.due_at || '').slice(0,10) > F.to)   return false;
+    /* CEL_FU_FILTERS_v1 */
+    if (F.source && String(r.lead_source || '') !== String(F.source)) return false;
+    if (F.product && String(r.lead_product || '') !== String(F.product)) return false;
+    if (F.status && String(r.lead_status_id || '') !== String(F.status)) return false;
+    if (F.tag) {
+      const tagQ = F.tag.toLowerCase();
+      if (!String(r.lead_tags || '').toLowerCase().includes(tagQ)) return false;
+    }
     return true;
   });
   data.overdue   = _applyFilter(data.overdue || []);
