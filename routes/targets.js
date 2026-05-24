@@ -171,9 +171,10 @@ async function api_targets_dashboard(token, month, userId) {
   //                          - manager   → users from getVisibleUserIds(me)
   //                          - team_lead → users from getVisibleUserIds(me)
   const allTargets = await db.getAll('monthly_targets');
+  let target = null;  // CEL_TARGET_SCOPE_HOTFIX_v1: hoisted so lines below (response + diagnostic) can reference
   let targetRevenue = 0, targetLeads = 0, targetSales = 0;
   if (scopeUid != null) {
-    const target = allTargets.find(t =>
+    target = allTargets.find(t =>
       String(t.month) === m.month && Number(t.user_id) === Number(scopeUid)
     ) || null;
     targetRevenue = target ? Number(target.target_revenue) || 0 : 0;
@@ -391,7 +392,11 @@ async function api_targets_dashboard(token, month, userId) {
       const total = scopedLeads.length;
       const valued = scopedLeads.filter(l => Number(l.value) > 0).length;
       const reasons = [];
-      if (!target) reasons.push('No target set for this month — admin can click "🎯 Set target" above.');
+      // CEL_TARGET_SCOPE_HOTFIX_v1: in org-wide mode 'target' is null even when sums exist.
+      // Use the computed totals to decide whether to show the "no target set" hint.
+      if (!target && !targetRevenue && !targetLeads && !targetSales) {
+        reasons.push('No target set for this month — admin can click "🎯 Set target" above.');
+      }
       if (!wonStatusIds.length) reasons.push('No "won" status detected. Edit Settings → Statuses and mark your final sale status as is_final=1 (e.g. "Booked", "Sale Done", "Closed").');
       if (!usedSalesTable && wonStatusIds.length && wonLeadsMonth.length === 0) reasons.push('No leads moved to a won status this month yet (status changes are timestamped via last_status_change_at).');
       if (!usedSalesTable && wonLeadsMonth.length > 0 && revenueAchieved === 0) reasons.push('Won leads exist but lead.value is empty on all of them — enter a deal value on each lead to count toward revenue.');
