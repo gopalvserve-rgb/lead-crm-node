@@ -1,6 +1,6 @@
 {
   "name": "lead-crm-node",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Self-hosted Lead CRM - Node.js/Express + PostgreSQL. Port of the Apps Script edition.",
   "main": "server.js",
   "type": "commonjs",

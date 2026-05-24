@@ -624,6 +624,10 @@ function renderShell() {
               <div class="role">${esc(CRM.user.role)}</div>
             </div>
           </div>
+          <!-- CELESTE_VERSION_BADGE_v1: clickable pill showing app version + build. -->
+          <button class="btn ghost block" id="btn-about" style="margin-bottom:.35rem; font-size:.72rem; opacity:.7;">
+            ⓘ v${esc(CRM.config.app_version || '?')} ${CRM.config.build_sha ? ('· ' + esc(CRM.config.build_sha)) : ''}
+          </button>
           <button class="btn ghost block" id="btn-security" style="margin-bottom:.35rem;">🔒 Security</button>
           <button class="btn ghost block" id="btn-logout">Logout</button>
         </div>
@@ -732,6 +736,54 @@ function renderShell() {
   // "More" button opens the full menu as a bottom sheet
   mobileNav.appendChild(h('a', { href: '#', onclick: ev => { ev.preventDefault(); showMobileMore(); } },
     h('span', { class: 'bn-ico' }, '⋯'), h('span', {}, 'More')));
+
+    // CELESTE_VERSION_BADGE_v1 — About modal
+  const _aboutBtn = $('#btn-about');
+  if (_aboutBtn) _aboutBtn.onclick = () => {
+    const cfg = CRM.config || {};
+    const buildAt = cfg.build_at ? new Date(cfg.build_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+    const ago = cfg.build_at ? (() => {
+      const mins = Math.floor((Date.now() - new Date(cfg.build_at).getTime()) / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + ' min ago';
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + ' h ago';
+      const days = Math.floor(hrs / 24);
+      return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+    })() : '';
+    const m = h('div', { class: 'modal-bd' });
+    const card = h('div', { class: 'modal', style: { maxWidth: '420px' } },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, 'ℹ️ About this build'),
+        h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+      ),
+      h('div', { style: { padding: '1rem' } },
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '.5rem 1rem', fontSize: '.9rem' } },
+          h('div', { style: { color: '#64748b' } }, 'App'),       h('div', {}, h('b', {}, esc(cfg.company_name || 'Lead CRM'))),
+          h('div', { style: { color: '#64748b' } }, 'Version'),   h('div', {}, h('code', {}, 'v' + esc(cfg.app_version || '?'))),
+          h('div', { style: { color: '#64748b' } }, 'Build SHA'), h('div', {}, cfg.build_sha ? h('code', {}, esc(cfg.build_sha)) : '—'),
+          h('div', { style: { color: '#64748b' } }, 'Deployed'),  h('div', {}, esc(buildAt), ago ? h('span', { class: 'muted', style: { marginLeft: '.4rem', fontSize: '.78rem' } }, '(' + ago + ')') : null),
+          h('div', { style: { color: '#64748b' } }, 'Server'),    h('div', {}, h('code', {}, esc(cfg.base_url || ''))),
+        ),
+        h('p', { class: 'muted', style: { fontSize: '.78rem', marginTop: '1rem', marginBottom: 0 } },
+          'If the version shown above is older than the latest deploy, your browser is serving a cached app.js. ',
+          h('b', {}, 'Hard-refresh:'), ' Ctrl+Shift+R (Cmd+Shift+R on Mac) to force a fresh fetch.')
+      ),
+      h('div', { class: 'actions', style: { display: 'flex', justifyContent: 'space-between', padding: '1rem', borderTop: '1px solid #e2e8f0' } },
+        h('button', { class: 'btn', onclick: () => {
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister()));
+          }
+          if (window.caches) caches.keys().then(ks => ks.forEach(k => caches.delete(k)));
+          toast('Cache cleared — reloading…');
+          setTimeout(() => location.reload(true), 600);
+        } }, '🗑 Clear cache & reload'),
+        h('button', { class: 'btn primary', onclick: () => m.remove() }, 'Close')
+      )
+    );
+    m.appendChild(card);
+    document.body.appendChild(m);
+  };
 
   $('#btn-logout').onclick = logout;
   const _btnSec = $('#btn-security'); if (_btnSec) _btnSec.onclick = openSecurityModal;

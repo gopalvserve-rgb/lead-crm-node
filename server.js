@@ -847,6 +847,18 @@ app.get('/api/sample.csv', async (req, res) => {
 // Config for the frontend (non-secret; used to pre-populate CRM.webAppUrl etc.).
 // Reads from the config table so updates to brand name/logo show up immediately
 // without restarting the server.
+/* CELESTE_VERSION_BADGE_v1 — capture build info once at module load.
+   Read pkg.version + the Railway-injected git SHA (or fallback) so the
+   /config.json response can surface it to the SPA without an extra route. */
+const _PKG_VERSION = (() => {
+  try { return require('./package.json').version || '0.0.0'; } catch (_) { return '0.0.0'; }
+})();
+const _BUILD_SHA = (process.env.RAILWAY_GIT_COMMIT_SHA
+                 || process.env.GIT_COMMIT_SHA
+                 || process.env.SOURCE_VERSION
+                 || '').slice(0, 8);
+const _BUILD_AT_ISO = new Date().toISOString();
+
 app.get('/config.json', async (req, res) => {
   let cfg = {};
   try {
@@ -859,7 +871,12 @@ app.get('/config.json', async (req, res) => {
     // CSV of NAV item IDs the admin has hidden for everyone in this tenant.
     // The frontend filters NAV by this list. Empty = show everything.
     hidden_nav_ids:   cfg.HIDDEN_NAV_IDS   || '',
-    base_url: (req.protocol + '://' + req.get('host'))
+    base_url: (req.protocol + '://' + req.get('host')),
+    // CELESTE_VERSION_BADGE_v1 — surface to SPA so the sidebar pill knows
+    // exactly which build is loaded (vs the user being on a stale cached app.js).
+    app_version: _PKG_VERSION,
+    build_sha:   _BUILD_SHA || null,
+    build_at:    _BUILD_AT_ISO
   });
 });
 
