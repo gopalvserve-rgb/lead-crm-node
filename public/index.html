@@ -10,6 +10,18 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><text y=%2224%22 font-size=%2226%22>🎯</text></svg>" />
   <link rel="apple-touch-icon" href="/icon-192.png" />
+  <!-- CELESTE_IOS_PWA_v1 — iOS Add-to-Home-Screen support. apple-mobile-web-app-capable
+       tells iOS Safari to treat us as a standalone app (no browser chrome) when
+       launched from the home screen. status-bar-style "default" keeps the iOS
+       status bar visible with light icons; switch to "black-translucent" if you
+       prefer the brand color to extend under it. title is the label that appears
+       under the home-screen icon. mobile-web-app-capable is the W3C-spec
+       counterpart kept around for older Android Chrome installs. -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Lead CRM" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="format-detection" content="telephone=no" />
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(()=>{}));
@@ -18,6 +30,48 @@
 </head>
 <body>
   <div id="app"></div>
+
+  <!-- CELESTE_IOS_PWA_v1 — iOS install hint. Only shows on:
+         1. Apple iOS (iPhone/iPad detected via UA)
+         2. NOT already running in standalone (home-screen launch) mode
+         3. NOT dismissed in this browser before
+       Tapping the share icon explanation guides the user to the iOS-specific
+       "Add to Home Screen" action that doesn't exist on Android. -->
+  <div id="ios-install-hint" style="display:none;position:fixed;bottom:1rem;left:1rem;right:1rem;z-index:99999;background:#0f172a;color:#fff;padding:.85rem 1rem;border-radius:14px;box-shadow:0 12px 36px rgba(0,0,0,.35);font:14px/1.4 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;display:flex;align-items:center;gap:.6rem">
+    <div style="font-size:1.4rem">📱</div>
+    <div style="flex:1">
+      <div style="font-weight:600;margin-bottom:.15rem">Install Lead CRM on your iPhone</div>
+      <div style="font-size:.78rem;opacity:.85">Tap <span style="display:inline-block;border:1px solid rgba(255,255,255,.4);border-radius:4px;padding:0 .3rem">↑</span> Share &rarr; <b>Add to Home Screen</b></div>
+    </div>
+    <button id="ios-install-dismiss" style="background:transparent;border:1px solid rgba(255,255,255,.3);color:#fff;border-radius:8px;padding:.3rem .6rem;font-size:.78rem;cursor:pointer">Dismiss</button>
+  </div>
+  <script>
+    (function(){
+      try {
+        var ua = navigator.userAgent || '';
+        var isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
+        // Also handle iPadOS 13+ which lies about being a Mac with touch.
+        if (!isIOS && /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) isIOS = true;
+        var isStandalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
+        if (!isStandalone && navigator.standalone === true) isStandalone = true;
+        var dismissed = false;
+        try { dismissed = localStorage.getItem('ios_install_dismissed') === '1'; } catch(_) {}
+        if (isIOS && !isStandalone && !dismissed) {
+          var hint = document.getElementById('ios-install-hint');
+          if (hint) {
+            // Defer 2 seconds so the user gets a sense of the site first.
+            setTimeout(function(){ hint.style.display = 'flex'; }, 2000);
+            var dismissBtn = document.getElementById('ios-install-dismiss');
+            if (dismissBtn) dismissBtn.onclick = function(){
+              hint.style.display = 'none';
+              try { localStorage.setItem('ios_install_dismissed', '1'); } catch(_) {}
+            };
+          }
+        }
+      } catch(_) { /* never block the SPA boot on the hint logic */ }
+    })();
+  </script>
+
 
   <!-- Login screen -->
   <template id="tpl-login">
