@@ -196,12 +196,22 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
       if (!pick) pick = (ev.rows || [])[0];
       if (pick) {
         callEventOverride = pick;
-        // Within 60s = authoritative. Override client-supplied leadId
-        // (which may have come from a weak client-side fuzzy match).
-        if (nearestWithin60s) {
+        // CELESTE_REC_WRONG_LEAD_v1 (2026-05-24) — phone-match guard.
+        // Previous behaviour: blindly override filename phone + leadId with
+        // the nearest call_event. This mislinked recordings when the rep had
+        // dialed lead A just before, and recording B (different phone) synced
+        // within 60s of A's call_event. Now: if the call_event's phone last-10
+        // doesn't match the filename's phone last-10, SKIP the override and
+        // trust the filename. Logs the skip so we can audit.
+        const _pickPhoneTail = String(pick.phone || '').replace(/\D/g, '').slice(-10);
+        const _filePhoneTail = String(phone || '').replace(/\D/g, '').slice(-10);
+        const _phonesMatch   = _pickPhoneTail && _filePhoneTail && _pickPhoneTail === _filePhoneTail;
+        if (nearestWithin60s && (_phonesMatch || !phone)) {
           if (pick.phone) phone = pick.phone;
           if (pick.lead_id) leadId = pick.lead_id;
-          console.log('[/api/recordings] call_event override (within 60s): phone=' + phone + ' lead=' + leadId);
+          console.log('[/api/recordings] call_event override (within 60s, phones match): phone=' + phone + ' lead=' + leadId);
+        } else if (nearestWithin60s && !_phonesMatch) {
+          console.log('[/api/recordings] call_event override SKIPPED — phone mismatch: filename=' + _filePhoneTail + ' callevent=' + _pickPhoneTail + ' (trusting filename)');
         } else if (!phone || !leadId) {
           // Legacy fallback — only fill if we're missing data.
           if (!phone) phone = pick.phone || '';

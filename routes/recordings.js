@@ -896,6 +896,61 @@ async function api_recordings_resetAll(token) {
   };
 }
 
+/* CELESTE_REC_WRONG_LEAD_v1 — admin-only one-shot scan + repair.
+
+   Compares each lead_recordings.phone (last 10 digits) against the linked
+   lead's phone (last 10 digits). For each mismatch:
+     * find the CORRECT lead by phone (_findLeadByPhone)
+     * if found  → UPDATE lead_id to the correct lead
+     * if not    → set lead_id = NULL so the row appears in the Pending list
+                   and the admin can re-link / convert it manually
+
+   Idempotent and safe to run repeatedly.
+
+   Returns: { ok, audited, fixed, orphaned }
+*/
+async function api_recordings_auditMismatchedLinks(token) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin/manager only');
+
+  // Pull every recording with a lead_id + a phone we can compare.
+  const { rows } = await db.query(
+    `SELECT lr.id AS rec_id, lr.phone AS rec_phone, lr.lead_id AS rec_lead_id,
+            l.phone AS lead_phone, l.whatsapp AS lead_whatsapp
+       FROM lead_recordings lr
+       LEFT JOIN leads l ON l.id = lr.lead_id
+      WHERE lr.lead_id IS NOT NULL
+        AND lr.lead_id > 0
+        AND COALESCE(lr.phone, '') <> ''
+      ORDER BY lr.id DESC`
+  );
+
+  const tail10 = s => String(s || '').replace(/\D/g, '').slice(-10);
+  let fixed = 0;
+  let orphaned = 0;
+  for (const r of rows) {
+    const recT  = tail10(r.rec_phone);
+    const ldT   = tail10(r.lead_phone);
+    const waT   = tail10(r.lead_whatsapp);
+    if (!recT) continue;
+    // Lead phone OR whatsapp matches → row is correctly linked; skip.
+    if (recT === ldT || recT === waT) continue;
+    // Mismatch — look up the correct lead by the recording's own phone.
+    try {
+      const correct = await _findLeadByPhone(r.rec_phone);
+      if (correct && correct.id && Number(correct.id) !== Number(r.rec_lead_id)) {
+        await db.query('UPDATE lead_recordings SET lead_id = $1 WHERE id = $2', [correct.id, r.rec_id]);
+        fixed++;
+      } else if (!correct) {
+        // No lead exists for this phone → orphan it so admin sees it in Pending.
+        await db.query('UPDATE lead_recordings SET lead_id = NULL WHERE id = $1', [r.rec_id]);
+        orphaned++;
+      }
+    } catch (e) { console.warn('[audit-mismatched]', r.rec_id, e.message); }
+  }
+  return { ok: true, audited: rows.length, fixed, orphaned };
+}
+
 async function api_recordings_relinkOrphans(token) {
   const me = await authUser(token);
   if (!['admin', 'manager'].includes(me.role)) throw new Error('Admin/manager only');
@@ -988,7 +1043,7 @@ module.exports = {
   api_leads_recordings,
   api_call_history,
   api_my_recordings,
-  api_recordings_delete, api_recordings_filenamesPresent, /* REC_FILENAME_DEDUP_v1 */ api_recordings_resetAll, api_recordings_relinkOrphans,
+  api_recordings_delete, api_recordings_filenamesPresent, /* REC_FILENAME_DEDUP_v1 */ api_recordings_resetAll, api_recordings_relinkOrphans, api_recordings_auditMismatchedLinks,
   api_recording_aiSummary,
   api_recording_aiReprocess,
   api_recording_applySuggestion,

@@ -4435,7 +4435,22 @@ function renderDialerSettings() {
             /* RESYNC_HINT_v1 */ h('button', { class: 'btn primary', title: 'Clears uploaded markers + re-scans every file in the folder. Use after a server-side fix.', onclick: async () => { if (!confirm('Reset all uploaded markers and re-scan EVERY file? Use this only after a server-side bug fix.')) return; localStorage.removeItem('rec_uploaded'); toast('Markers cleared — running full sync now…', 'ok'); await syncRecordings({ full: true }); } }, '🩹 Fresh sync (after fix)'),
             h('button', { class: 'btn', onclick: () => openRecordingSyncDebug() }, '🐞 Debug sync'),
             h('button', { class: 'btn ghost', onclick: () => { setupRecordingFolder(); } }, 'Change folder'),
-            h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset')
+            h('button', { class: 'btn ghost', onclick: () => { if (confirm('Forget folder + clear sync history?')) resetRecordingFolder(); } }, 'Reset'),
+            /* CELESTE_REC_WRONG_LEAD_v1 — Audit + re-link mismatched recordings. */
+            h('button', { class: 'btn',
+              title: 'Scan every recording. If a recording is attached to a lead whose phone DOES NOT match the recording\'s own phone, move it to the correct lead by phone — or orphan it for manual review if no correct lead exists.',
+              onclick: async (ev) => {
+                if (!confirm('Audit all recordings and re-link any whose phone does not match the lead they are attached to?\n\nThis is safe to run any time. Recordings with no matching lead will move to the Pending list.')) return;
+                const btn = ev.currentTarget;
+                const orig = btn.textContent;
+                btn.disabled = true; btn.textContent = '⏳ Auditing…';
+                try {
+                  const r = await api('api_recordings_auditMismatchedLinks');
+                  toast('Audited ' + r.audited + ' · ✓ fixed ' + r.fixed + ' · ⚠ orphaned ' + r.orphaned, 'ok');
+                } catch (e) { toast(e.message, 'err'); }
+                finally { btn.disabled = false; btn.textContent = orig; }
+              }
+            }, '🩺 Audit wrong-lead links')
           ),
           h('div', { class: 'muted', style: { marginTop: '.5rem', fontSize: '.78rem' } },
             h('span', { id: 'sync-progress', style: { fontWeight: 600 } }, ''),
