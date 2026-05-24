@@ -17452,11 +17452,103 @@ function _initCrmCopilot() {
     }
   }, '✨');
   document.body.appendChild(fab);
+
+  /* CELESTE_COPILOT_DRAG_v1 — make FAB draggable + persist x/y in localStorage.
+     - 5px threshold separates tap from drag (quick taps still fire onclick)
+     - Position is constrained to viewport (no off-screen drags)
+     - Per-user localStorage key so each rep keeps their own preferred spot
+     - Restored on next render
+     - Works for both pointer (mouse) and touch via Pointer Events API */
+  const FAB_KEY = '_copilotFabPos_' + ((CRM && CRM.user && CRM.user.id) ? CRM.user.id : 'anon');
+  function _restoreFabPos() {
+    try {
+      const raw = localStorage.getItem(FAB_KEY);
+      if (!raw) return;
+      const { left, top } = JSON.parse(raw);
+      if (typeof left !== 'number' || typeof top !== 'number') return;
+      // Reapply within current viewport bounds (window may have resized).
+      const maxLeft = window.innerWidth  - fab.offsetWidth  - 8;
+      const maxTop  = window.innerHeight - fab.offsetHeight - 8;
+      const L = Math.max(8, Math.min(left, maxLeft));
+      const T = Math.max(8, Math.min(top,  maxTop));
+      fab.style.left   = L + 'px';
+      fab.style.top    = T + 'px';
+      fab.style.right  = 'auto';
+      fab.style.bottom = 'auto';
+    } catch (_) { /* corrupt JSON — ignore, use default bottom/right */ }
+  }
+  _restoreFabPos();
+  window.addEventListener('resize', _restoreFabPos);
+
+  let _dragStart = null;   // { x, y, fabL, fabT }  set on pointerdown
+  let _dragged   = false;  // flips true once threshold exceeded
+  const DRAG_THRESHOLD = 5;
+
+  fab.addEventListener('pointerdown', (ev) => {
+    // Ignore right-click and pinches.
+    if (ev.button && ev.button !== 0) return;
+    fab.setPointerCapture(ev.pointerId);
+    const r = fab.getBoundingClientRect();
+    _dragStart = { x: ev.clientX, y: ev.clientY, fabL: r.left, fabT: r.top };
+    _dragged = false;
+  });
+
+  fab.addEventListener('pointermove', (ev) => {
+    if (!_dragStart) return;
+    const dx = ev.clientX - _dragStart.x;
+    const dy = ev.clientY - _dragStart.y;
+    if (!_dragged && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    _dragged = true;
+    // Switch from bottom/right to left/top for free positioning.
+    const newL = Math.max(8, Math.min(_dragStart.fabL + dx, window.innerWidth  - fab.offsetWidth  - 8));
+    const newT = Math.max(8, Math.min(_dragStart.fabT + dy, window.innerHeight - fab.offsetHeight - 8));
+    fab.style.left   = newL + 'px';
+    fab.style.top    = newT + 'px';
+    fab.style.right  = 'auto';
+    fab.style.bottom = 'auto';
+    fab.style.cursor = 'grabbing';
+  });
+
+  function _endDrag(ev) {
+    if (!_dragStart) return;
+    try { fab.releasePointerCapture(ev.pointerId); } catch (_) {}
+    if (_dragged) {
+      // Persist the new position so it survives reloads.
+      try {
+        localStorage.setItem(FAB_KEY, JSON.stringify({
+          left: parseInt(fab.style.left, 10) || 0,
+          top:  parseInt(fab.style.top,  10) || 0
+        }));
+      } catch (_) {}
+    }
+    _dragStart = null;
+    fab.style.cursor = 'pointer';
+  }
+  fab.addEventListener('pointerup', _endDrag);
+  fab.addEventListener('pointercancel', _endDrag);
+
+  fab.title = 'Ask CRM — Gemini-powered data assistant (drag to reposition, double-tap to reset)';
+
+  // Double-click resets to default bottom-right spot (rescue for users who
+  // accidentally drag the button off-screen on a small phone).
+  fab.addEventListener('dblclick', () => {
+    try { localStorage.removeItem(FAB_KEY); } catch (_) {}
+    fab.style.left   = 'auto';
+    fab.style.top    = 'auto';
+    fab.style.right  = '20px';
+    fab.style.bottom = '20px';
+    if (typeof toast === 'function') toast('Copilot button reset to default position');
+  });
+
   let drawer = null;
-  fab.onclick = () => {
+  // Use addEventListener('click') instead of onclick so we can suppress it
+  // when the user just finished a drag. preventDefault+stopPropagation
+  // inside pointerup would have worked too, but this is clearer.
+  fab.addEventListener('click', (ev) => {
+    if (_dragged) { _dragged = false; ev.stopPropagation(); return; }
     if (drawer) { drawer.remove(); drawer = null; return; }
     drawer = _renderCopilotDrawer();
-  };
+  });
 }
 
 function _renderCopilotDrawer() {
