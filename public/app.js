@@ -6324,6 +6324,68 @@ async function wbConnect() {
     });
   }
 
+  /* WA_AUTOLEAD_CARD_v1 (Celeste, 2026-05-24) — standalone Auto-Lead Settings.
+     Renders BEFORE the embOn gate so it appears for any connected tenant
+     regardless of which connection mode they used (Embedded SignIn or Manual).
+     Backend cfg.autoLeadOn + api_wb_settings_save already supports the
+     autolead_on / autolead_source / default_user_id / default_status_id /
+     default_country_code fields — this just makes them reachable. */
+  if (isConnected) {
+    const aLead = h('div', { class: 'card', style: { marginBottom: '.8rem' } });
+    aLead.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '.5rem', marginBottom: '.4rem' } },
+      h('h3', { style: { margin: 0 } }, '📥 Auto-lead from inbound WhatsApp'),
+      h('span', { class: 'muted', style: { fontSize: '.75rem' } }, '— controls what happens when a number messages you')
+    ));
+    aLead.appendChild(h('p', { class: 'muted', style: { fontSize: '.82rem', marginTop: '.2rem', marginBottom: '.7rem' } },
+      'OFF → inbound messages are still saved to the WhatsApp chat thread, but no lead is created. ',
+      'ON → a fresh lead is auto-created for any unknown number (current behaviour). ',
+      'When OFF, use the 🎯 "Save as lead" button on a chat to convert it manually.'));
+    const aForm = h('form', { class: 'form-grid', style: { marginTop: '.4rem' }, onsubmit: async ev => {
+      ev.preventDefault();
+      const fd = new FormData(ev.target);
+      try {
+        await api('api_wb_settings_save', {
+          autolead_on: !!fd.get('autolead_on'),
+          autolead_source: fd.get('autolead_source') || 'WhatsApp',
+          default_country_code: fd.get('default_country_code') || '91',
+          default_user_id: fd.get('default_user_id') || '',
+          default_status_id: fd.get('default_status_id') || ''
+        });
+        toast('Auto-lead settings saved', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    }});
+    const _alField = (label, inp) => h('div', { class: 'f-row' }, h('label', {}, label), inp);
+    aForm.appendChild(h('div', { class: 'f-row full' },
+      h('label', {}, 'Convert new messages to leads'),
+      h('label', { class: 'qual-toggle' },
+        h('input', { type: 'checkbox', name: 'autolead_on', checked: s.autolead_on ? 'checked' : null }),
+        ' Enabled — turn OFF to stop auto-creating leads from inbound messages')
+    ));
+    aForm.appendChild(_alField('Lead source label',
+      h('input', { name: 'autolead_source', value: s.autolead_source || 'WhatsApp', placeholder: 'WhatsApp' })));
+    aForm.appendChild(_alField('Default country code (for 10-digit numbers)',
+      h('input', { name: 'default_country_code', value: s.default_country_code || '91', placeholder: '91' })));
+    const _users = (window.CRM && CRM.cache && CRM.cache.users) || [];
+    const _statuses = (window.CRM && CRM.cache && CRM.cache.statuses) || [];
+    aForm.appendChild(_alField('Default assignee for new WhatsApp leads',
+      h('select', { name: 'default_user_id' },
+        h('option', { value: '' }, '— Use assignment rules —'),
+        ..._users.map(u => h('option', { value: u.id, selected: String(s.default_user_id || '') === String(u.id) ? 'selected' : null }, u.name))
+      )
+    ));
+    aForm.appendChild(_alField('Default status for new WhatsApp leads',
+      h('select', { name: 'default_status_id' },
+        h('option', { value: '' }, '— First status —'),
+        ..._statuses.map(st => h('option', { value: st.id, selected: String(s.default_status_id || '') === String(st.id) ? 'selected' : null }, st.name))
+      )
+    ));
+    aForm.appendChild(h('div', { class: 'f-row full', style: { marginTop: '.6rem' } },
+      h('button', { type: 'submit', class: 'btn primary' }, '💾 Save auto-lead settings')
+    ));
+    aLead.appendChild(aForm);
+    wrap.appendChild(aLead);
+  }
+
   if (embOn) {
     // ============ EMBEDDED SIGNIN MODE ============
     // Already connected → don't show the Connect button again, just an
@@ -8001,6 +8063,10 @@ async function wbChat() {
         threadMeta.lead_name ? h('span', { class: 'muted', style: { fontSize: '.78rem' } }, phone) : null
       ),
       buildAgentPicker(phone, threadMeta),
+      // WA_CONVERT_LEAD_v1 (Celeste) — 🎯 "Save as lead" button. Only shown
+      // when the current chat isn't already linked to a lead. Opens a small
+      // modal pre-filled with tenant defaults; saves via api_wb_thread_convertToLead.
+      (!threadMeta.lead_id ? h('button', { class: 'btn sm primary', title: 'Convert this WhatsApp chat into a CRM lead', style: { background: '#16a34a', borderColor: '#16a34a', color: '#fff' }, onclick: () => _wbOpenConvertToLeadModal(phone, threadMeta) }, '🎯 Save as lead') : null),
       h('button', { class: 'btn sm ghost', title: 'Refresh this thread', onclick: () => renderActiveThread(true) }, '↻')
     );
     right.appendChild(head);
@@ -8036,6 +8102,77 @@ async function wbChat() {
   }, 4000);
 
   return wrap;
+}
+
+/* WA_CONVERT_LEAD_v1 (Celeste, 2026-05-24) — modal that pre-fills tenant
+   defaults from api_wb_settings_get and lets the user adjust before saving. */
+async function _wbOpenConvertToLeadModal(phone, threadMeta) {
+  let s = {};
+  try { s = await api('api_wb_settings_get'); } catch (_) { s = {}; }
+  const users = (window.CRM && CRM.cache && CRM.cache.users) || [];
+  const statuses = (window.CRM && CRM.cache && CRM.cache.statuses) || [];
+
+  const nameInp   = h('input', { value: (threadMeta && threadMeta.lead_name) || phone, placeholder: phone, style: { width: '100%' } });
+  const sourceInp = h('input', { value: s.autolead_source || 'WhatsApp', placeholder: 'WhatsApp', style: { width: '100%' } });
+  const ownerSel  = h('select', { style: { width: '100%' } },
+    h('option', { value: '' }, '— Use assignment rules —'),
+    ...users.map(u => h('option', { value: u.id, selected: String(s.default_user_id || '') === String(u.id) ? 'selected' : null }, u.name))
+  );
+  const statusSel = h('select', { style: { width: '100%' } },
+    h('option', { value: '' }, '— First status —'),
+    ...statuses.map(st => h('option', { value: st.id, selected: String(s.default_status_id || '') === String(st.id) ? 'selected' : null }, st.name))
+  );
+  const notesInp  = h('textarea', { rows: 3, placeholder: 'Internal notes (optional)', style: { width: '100%' } });
+
+  const m = h('div', { class: 'modal-bd' });
+  const card = h('div', { class: 'modal', style: { maxWidth: '520px' } },
+    h('div', { class: 'modal-head' },
+      h('h3', {}, '🎯 Save WhatsApp chat as lead'),
+      h('button', { class: 'btn icon', onclick: () => m.remove() }, '✕')
+    ),
+    h('p', { class: 'muted', style: { fontSize: '.85rem', marginTop: 0, padding: '0 1rem' } },
+      'Creates a CRM lead for ', h('b', {}, phone),
+      ' and links the existing chat history to it. Defaults come from your WhatsApp auto-lead settings; tweak below before saving.'),
+    h('div', { style: { display: 'grid', gridTemplateColumns: '1fr', gap: '.5rem', padding: '0 1rem' } },
+      h('div', {}, h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Lead name'), nameInp),
+      h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.5rem' } },
+        h('div', {}, h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Assigned to'), ownerSel),
+        h('div', {}, h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Status'), statusSel)
+      ),
+      h('div', {}, h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Lead source'), sourceInp),
+      h('div', {}, h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Notes (optional)'), notesInp)
+    ),
+    h('div', { class: 'actions', style: { display: 'flex', justifyContent: 'flex-end', gap: '.5rem', padding: '1rem', marginTop: '0.5rem' } },
+      h('button', { class: 'btn', onclick: () => m.remove() }, 'Cancel'),
+      h('button', { class: 'btn primary', style: { background: '#16a34a', borderColor: '#16a34a' }, onclick: async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true; btn.textContent = '⏳ Saving…';
+        try {
+          const r = await api('api_wb_thread_convertToLead', {
+            phone, name: nameInp.value.trim() || phone,
+            user_id: ownerSel.value, status_id: statusSel.value,
+            source: sourceInp.value.trim() || 'WhatsApp',
+            notes: notesInp.value.trim()
+          });
+          if (r.already_linked) {
+            toast('Already a lead — opened it', 'info');
+          } else {
+            toast('✓ Lead created' + (r.messages_backfilled ? ' (' + r.messages_backfilled + ' message' + (r.messages_backfilled === 1 ? '' : 's') + ' linked)' : ''), 'ok');
+          }
+          m.remove();
+          if (typeof lastThreadsFingerprint !== 'undefined') lastThreadsFingerprint = '';
+          if (typeof renderThreadList === 'function') renderThreadList();
+          if (typeof renderActiveThread === 'function') setTimeout(() => renderActiveThread(true), 400);
+        } catch (e) {
+          toast(e.message, 'err');
+          btn.disabled = false; btn.textContent = '🎯 Save as lead';
+        }
+      } }, '🎯 Save as lead')
+    )
+  );
+  m.appendChild(card);
+  document.body.appendChild(m);
+  setTimeout(() => nameInp.focus(), 50);
 }
 
 // ---------- Auto-assign rules ----------
