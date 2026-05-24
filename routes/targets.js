@@ -151,8 +151,13 @@ async function api_targets_dashboard(token, month, userId) {
   if (wantUid != null && !['admin', 'manager', 'team_leader'].includes(me.role) && Number(wantUid) !== Number(me.id)) {
     throw new Error('Forbidden');
   }
-  // Default scope for non-admins is themselves; admins default to org-wide
-  const scopeUid = wantUid != null ? wantUid : (me.role === 'admin' ? null : me.id);
+  // CEL_TARGET_MGR_SCOPE_v1 — admins + managers + team_leaders default to
+  // org-wide when they don't pick a specific user. The existing inScope filter
+  // below still applies the right visibility (admin sees all leads; managers/
+  // team_leaders see only their visible tree via getVisibleUserIds). Before
+  // this fix, managers picking "🏢 Org-wide" silently fell back to their own
+  // user_id, so company-wide / team rollup never showed.
+  const scopeUid = wantUid != null ? wantUid : (['admin', 'manager', 'team_leader'].includes(me.role) ? null : me.id);
 
   // ---- Pull the target row (org-wide or per-user) -------------------
   const allTargets = await db.getAll('monthly_targets');
