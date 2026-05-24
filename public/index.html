@@ -127,9 +127,22 @@
     (function(){
       try {
         var ua = navigator.userAgent || '';
+        // Direct UA match — iPhone, iPod, or iPad (iPadOS <13).
         var isIOS = /iPad|iPhone|iPod/.test(ua) && !window.MSStream;
-        // iPadOS 13+ lies about being a Mac with touch.
-        if (!isIOS && /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) isIOS = true;
+        // CELESTE_IOS_PWA_v3 — iPadOS 13+ identifies as Macintosh. To distinguish
+        // from real Macs (which can also report maxTouchPoints > 0 via Touch Bar,
+        // trackpad quirks, or browser extensions), require a touch-first signal:
+        //   * pointer:coarse  → finger-input device, not a mouse
+        //   * hover:none      → no cursor hover (no mouse plugged in)
+        // Real Macs always have pointer:fine + hover:hover. iPads default to
+        // coarse + no-hover (unless an Apple Magic Keyboard with trackpad is
+        // attached, in which case the banner won't show — acceptable trade-off).
+        if (!isIOS && /Macintosh/.test(ua) && navigator.maxTouchPoints > 2) {
+          var mm = window.matchMedia;
+          var coarse  = mm && mm('(pointer: coarse)').matches;
+          var noHover = mm && mm('(hover: none)').matches;
+          if (coarse && noHover) isIOS = true;
+        }
         var isStandalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches;
         if (!isStandalone && navigator.standalone === true) isStandalone = true;
         var dismissed = false;
