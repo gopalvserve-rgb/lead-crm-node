@@ -30,6 +30,7 @@ const routes = {
   users:       require('./routes/users'),
   leads:       require('./routes/leads'),
   admin:       require('./routes/admin'),
+  recordingHealth:  require('./routes/recordingHealth'),
   customFields:require('./routes/customFields'),
   tags:        require('./routes/tags'),
   tat:         require('./routes/tat'),
