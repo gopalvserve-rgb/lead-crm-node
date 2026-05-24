@@ -12704,6 +12704,83 @@ async function adminRules() {
     ));
     wrap.appendChild(adCard);
 
+    /* CELESTE_CALL_LEAD_v1 — Call → Lead policy card. Two independent
+       toggle pairs (Show in CRM / Add as lead) for Inbound + Outbound.
+       Plus min-duration gate and default-status picker. Reads/writes the
+       backend configs via api_call_settings_get / api_call_settings_save. */
+    try {
+      const cs = await api('api_call_settings_get');
+      const _statuses = (window.CRM && CRM.cache && CRM.cache.statuses) || [];
+      const clCard = h('div', { class: 'card', style: { marginBottom: '1rem' } });
+      clCard.appendChild(h('h4', { style: { marginTop: 0 } }, '📞 Call → Lead policy'));
+      clCard.appendChild(h('p', { class: 'muted' },
+        'Control what the app does when a call happens on the rep\'s phone. ',
+        h('b', {}, 'Show in CRM'), ' logs the call to Recent Calls / Call Activity. ',
+        h('b', {}, 'Add as lead'), ' auto-creates a CRM lead if the number isn\'t already a lead. ',
+        'Existing leads never get duplicated — the call just attaches to them.'));
+
+      function _toggleRow(labelText, configKey, currentVal, helpText) {
+        return h('label', { class: 'toggle-row', style: { display: 'flex', alignItems: 'center', gap: '.5rem', margin: '.4rem 0' } },
+          h('input', { type: 'checkbox', checked: String(currentVal) === '1' ? 'checked' : null,
+            onchange: async ev => {
+              try {
+                await api('api_call_settings_save', { [configKey]: ev.target.checked });
+                toast(ev.target.checked ? labelText + ' ON' : labelText + ' OFF');
+              } catch (e) { toast(e.message, 'err'); ev.target.checked = !ev.target.checked; }
+            }
+          }),
+          h('span', {}, h('b', {}, labelText),
+            helpText ? h('span', { class: 'muted', style: { fontSize: '.78rem', marginLeft: '.4rem' } }, '— ' + helpText) : null)
+        );
+      }
+
+      // Inbound block
+      clCard.appendChild(h('div', { style: { borderTop: '1px dashed #cbd5e1', paddingTop: '.6rem', marginTop: '.6rem' } },
+        h('div', { style: { fontWeight: '600', marginBottom: '.3rem', color: '#0E4F8A' } }, '📥 Incoming calls'),
+        _toggleRow('Show in CRM',  'CALLS_LOG_INBOUND',      cs.CALLS_LOG_INBOUND,      'log the call so it appears in Recent Calls / Call Activity'),
+        _toggleRow('Add as lead',  'CALLS_AUTOLEAD_INBOUND', cs.CALLS_AUTOLEAD_INBOUND, 'auto-create a CRM lead from inbound calls from unknown numbers')
+      ));
+
+      // Outbound block
+      clCard.appendChild(h('div', { style: { borderTop: '1px dashed #cbd5e1', paddingTop: '.6rem', marginTop: '.6rem' } },
+        h('div', { style: { fontWeight: '600', marginBottom: '.3rem', color: '#0E4F8A' } }, '📤 Outgoing calls'),
+        _toggleRow('Show in CRM',  'CALLS_LOG_OUTBOUND',      cs.CALLS_LOG_OUTBOUND,      'log dialed calls so they appear in Recent Calls / Call Activity'),
+        _toggleRow('Add as lead',  'CALLS_AUTOLEAD_OUTBOUND', cs.CALLS_AUTOLEAD_OUTBOUND, 'auto-create a CRM lead from outbound calls to unknown numbers (off by default)')
+      ));
+
+      // Advanced — min seconds + default status
+      const advWrap = h('div', { style: { borderTop: '1px dashed #cbd5e1', paddingTop: '.6rem', marginTop: '.6rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '.6rem' } });
+      const minInp = h('input', { type: 'number', min: '0', max: '120', value: String(Number(cs.CALLS_AUTOLEAD_MIN_SECONDS) || 5), style: { width: '100%' } });
+      const stSel  = h('select', { style: { width: '100%' } },
+        h('option', { value: '0' }, '— Use "New" status —'),
+        ..._statuses.map(s => h('option', { value: s.id, selected: String(cs.CALLS_AUTOLEAD_STATUS_ID || '0') === String(s.id) ? 'selected' : null }, s.name))
+      );
+      advWrap.appendChild(h('div', {},
+        h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Min call duration (seconds) — skip auto-create below this'),
+        minInp
+      ));
+      advWrap.appendChild(h('div', {},
+        h('label', { style: { fontSize: '.78rem', color: '#475569' } }, 'Default status for auto-created leads'),
+        stSel
+      ));
+      clCard.appendChild(advWrap);
+
+      const saveBtn = h('button', { class: 'btn primary', style: { marginTop: '.8rem' },
+        onclick: async () => {
+          try {
+            await api('api_call_settings_save', {
+              CALLS_AUTOLEAD_MIN_SECONDS: Number(minInp.value) || 0,
+              CALLS_AUTOLEAD_STATUS_ID: Number(stSel.value) || 0
+            });
+            toast('Saved');
+          } catch (e) { toast(e.message, 'err'); }
+        }
+      }, '💾 Save advanced settings');
+      clCard.appendChild(saveBtn);
+
+      wrap.appendChild(clCard);
+    } catch (e) { console.warn('[call-lead settings] load failed:', e.message); }
+
     // ---- AI call summary / transcription toggle ----
     const aiOn = String(cfg.AI_TRANSCRIPTION_ENABLED == null ? '0' : cfg.AI_TRANSCRIPTION_ENABLED) === '1';
     const aiCard = h('div', { class: 'card', style: { marginBottom: '1rem' } });

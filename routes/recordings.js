@@ -61,17 +61,30 @@ async function api_call_logEvent(token, payload) {
   const me = await authUser(token);
   const p = payload || {};
   const lead = await _findLeadByPhone(p.phone);
-  await db.insert('call_events', {
-    lead_id: lead ? lead.id : null,
-    user_id: me.id,
-    phone: p.phone || '',
-    direction: p.direction || (p.event === 'incoming_ringing' ? 'in' : 'out'),
-    event: p.event || 'unknown',
-    duration_s: Number(p.duration_s) || 0,
-    recording_id: p.recording_id || null,
-    created_at: db.nowIso()
-  });
-  return { ok: true, lead_id: lead ? lead.id : null };
+  const direction = p.direction || (p.event === 'incoming_ringing' ? 'in' : 'out');
+
+  // CELESTE_CALL_LEAD_v1: tenant-configurable Show-in-CRM toggle.
+  // When OFF, skip the call_events insert so the call doesn't appear in
+  // Recent Calls / Call Activity. Lead lookup still runs (so the caller
+  // returns lead_id when the SPA needs it for popup UI).
+  const isInbound  = direction === 'in' || direction === 'missed';
+  const isOutbound = direction === 'out';
+  const showIn   = String(await db.getConfig('CALLS_LOG_INBOUND',  '1')) === '1';
+  const showOut  = String(await db.getConfig('CALLS_LOG_OUTBOUND', '1')) === '1';
+  const allowLog = (isInbound && showIn) || (isOutbound && showOut) || (!isInbound && !isOutbound);
+  if (allowLog) {
+    await db.insert('call_events', {
+      lead_id: lead ? lead.id : null,
+      user_id: me.id,
+      phone: p.phone || '',
+      direction: direction,
+      event: p.event || 'unknown',
+      duration_s: Number(p.duration_s) || 0,
+      recording_id: p.recording_id || null,
+      created_at: db.nowIso()
+    });
+  }
+  return { ok: true, lead_id: lead ? lead.id : null, logged: allowLog };
 }
 
 /** List recordings for a lead (newest first). Returns metadata only, not bytes. */
@@ -312,23 +325,39 @@ async function api_call_handleEnded(token, payload) {
   let createdLeadId = null;
   let createdFollowupId = null;
 
-  // Auto-create lead: answered inbound, ≥5s, no existing match
-  if (direction === 'in' && duration >= 5 && !lead) {
+  // CELESTE_CALL_LEAD_v1: tenant-configurable Add-as-lead toggle (per-direction).
+  //   CALLS_AUTOLEAD_INBOUND   '1'/'0' (default '1') — inbound answered → create lead
+  //   CALLS_AUTOLEAD_OUTBOUND  '1'/'0' (default '0') — outbound dialed → create lead
+  //   CALLS_AUTOLEAD_MIN_SECONDS  default '5' — skip leads under N seconds (misdial filter)
+  //   CALLS_AUTOLEAD_STATUS_ID    default 0 — explicit status id, else falls back to "New"
+  const _autoIn   = String(await db.getConfig('CALLS_AUTOLEAD_INBOUND',  '1')) === '1';
+  const _autoOut  = String(await db.getConfig('CALLS_AUTOLEAD_OUTBOUND', '0')) === '1';
+  const _autoMin  = Number(await db.getConfig('CALLS_AUTOLEAD_MIN_SECONDS', '5')) || 0;
+  const _autoStId = Number(await db.getConfig('CALLS_AUTOLEAD_STATUS_ID', '0')) || 0;
+  const _isIn  = direction === 'in';
+  const _isOut = direction === 'out';
+  const _allowCreate = !lead && duration >= _autoMin &&
+                       ((_isIn && _autoIn) || (_isOut && _autoOut));
+  if (_allowCreate) {
     try {
       const _newStatusId = await (async () => {
+        if (_autoStId) {
+          try { const f = await db.findById('statuses', _autoStId); if (f) return f.id; } catch (_) {}
+        }
         const s = await db.findOneBy('statuses', 'name', 'New');
         return s ? s.id : null;
       })();
       const phoneClean = String(p.phone).replace(/^'/, '').trim();
+      const sourceLabel = _isIn ? 'Inbound Call' : 'Outbound Call';
       createdLeadId = await db.insert('leads', {
         name:        phoneClean,                  // placeholder, rep edits
         phone:       phoneClean,
         whatsapp:    phoneClean,
-        source:      'Inbound Call',
+        source:      sourceLabel,
         source_ref:  'auto-created from caller-id',
         status_id:   _newStatusId,
         assigned_to: me.id,
-        notes:       'Auto-created from inbound call · ' +
+        notes:       'Auto-created from ' + sourceLabel.toLowerCase() + ' · ' +
                      Math.round(duration) + 's · ' +
                      new Date(p.started_at || Date.now()).toLocaleString('en-IN'),
         created_by:  me.id,
@@ -339,7 +368,7 @@ async function api_call_handleEnded(token, payload) {
       // First remark for context
       await db.insert('remarks', {
         lead_id: createdLeadId, user_id: me.id,
-        remark: '📞 Inbound call · ' + Math.round(duration) + 's · auto-created lead',
+        remark: '📞 ' + sourceLabel + ' · ' + Math.round(duration) + 's · auto-created lead',
         status_id: _newStatusId
       });
     } catch (e) { console.warn('[caller-id] auto-create lead failed:', e.message); }
@@ -906,8 +935,53 @@ async function api_recordings_filenamesPresent(token, payload) {
   }
 }
 
+
+/* CELESTE_CALL_LEAD_v1 — admin-facing settings APIs for the call→lead controls.
+   GET returns current values + sensible defaults. SAVE persists each key
+   individually (string-cast booleans to '1'/'0' so the same _cfg reader path
+   works for both Show and Auto-lead gates).
+*/
+async function api_call_settings_get(token) {
+  await authUser(token);
+  const keys = [
+    'CALLS_LOG_INBOUND', 'CALLS_LOG_OUTBOUND',
+    'CALLS_AUTOLEAD_INBOUND', 'CALLS_AUTOLEAD_OUTBOUND',
+    'CALLS_AUTOLEAD_MIN_SECONDS', 'CALLS_AUTOLEAD_STATUS_ID'
+  ];
+  const defaults = { CALLS_LOG_INBOUND: '1', CALLS_LOG_OUTBOUND: '1',
+    CALLS_AUTOLEAD_INBOUND: '1', CALLS_AUTOLEAD_OUTBOUND: '0',
+    CALLS_AUTOLEAD_MIN_SECONDS: '5', CALLS_AUTOLEAD_STATUS_ID: '0' };
+  const out = {};
+  for (const k of keys) {
+    out[k] = await db.getConfig(k, defaults[k]);
+  }
+  return out;
+}
+
+async function api_call_settings_save(token, payload) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const p = payload || {};
+  const boolKeys = ['CALLS_LOG_INBOUND', 'CALLS_LOG_OUTBOUND',
+                    'CALLS_AUTOLEAD_INBOUND', 'CALLS_AUTOLEAD_OUTBOUND'];
+  for (const k of boolKeys) {
+    if (Object.prototype.hasOwnProperty.call(p, k)) {
+      await db.setConfig(k, p[k] ? '1' : '0');
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'CALLS_AUTOLEAD_MIN_SECONDS')) {
+    const n = Math.max(0, Math.min(120, Number(p.CALLS_AUTOLEAD_MIN_SECONDS) || 0));
+    await db.setConfig('CALLS_AUTOLEAD_MIN_SECONDS', String(n));
+  }
+  if (Object.prototype.hasOwnProperty.call(p, 'CALLS_AUTOLEAD_STATUS_ID')) {
+    await db.setConfig('CALLS_AUTOLEAD_STATUS_ID', String(Number(p.CALLS_AUTOLEAD_STATUS_ID) || 0));
+  }
+  return { ok: true };
+}
+
 module.exports = {
   api_call_logEvent, api_call_events_pending, api_call_events_convertToLeads,
+  api_call_settings_get, api_call_settings_save,
   api_call_hasRecentEvent,
   api_call_lookup,
   api_call_handleEnded,
