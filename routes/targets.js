@@ -159,15 +159,47 @@ async function api_targets_dashboard(token, month, userId) {
   // user_id, so company-wide / team rollup never showed.
   const scopeUid = wantUid != null ? wantUid : (['admin', 'manager', 'team_leader'].includes(me.role) ? null : me.id);
 
-  // ---- Pull the target row (org-wide or per-user) -------------------
+  // ---- Pull the target row(s) ---------------------------------------
+  // CEL_TARGET_SUM_v1: org-wide view now auto-sums every team member's per-user
+  // target instead of looking for a single user_id=NULL row. So admin/manager
+  // see the true rollup target without maintaining a separate org-level row.
+  //
+  //   scopeUid != null  →  single matching per-user row
+  //   scopeUid == null  →  SUM target_revenue/_leads/_sales across all users
+  //                         in the viewer's visibility scope:
+  //                          - admin     → every user in the tenant
+  //                          - manager   → users from getVisibleUserIds(me)
+  //                          - team_lead → users from getVisibleUserIds(me)
   const allTargets = await db.getAll('monthly_targets');
-  const target = allTargets.find(t =>
-    String(t.month) === m.month &&
-    (scopeUid == null ? (t.user_id == null) : Number(t.user_id) === Number(scopeUid))
-  ) || null;
-  const targetRevenue = target ? Number(target.target_revenue) || 0 : 0;
-  const targetLeads   = target ? Number(target.target_leads)   || 0 : 0;
-  const targetSales   = target ? Number(target.target_sales)   || 0 : 0;
+  let targetRevenue = 0, targetLeads = 0, targetSales = 0;
+  if (scopeUid != null) {
+    const target = allTargets.find(t =>
+      String(t.month) === m.month && Number(t.user_id) === Number(scopeUid)
+    ) || null;
+    targetRevenue = target ? Number(target.target_revenue) || 0 : 0;
+    targetLeads   = target ? Number(target.target_leads)   || 0 : 0;
+    targetSales   = target ? Number(target.target_sales)   || 0 : 0;
+  } else {
+    // Org-wide: figure out which users are in scope, then sum their targets.
+    // Admin sees everyone; manager/team_leader see their visible tree.
+    let inScopeUserIds;
+    if (me.role === 'admin') {
+      const allUsers = await db.getAll('users').catch(() => []);
+      inScopeUserIds = allUsers.map(u => Number(u.id)).filter(Boolean);
+    } else {
+      // visible is already computed above via getVisibleUserIds(me)
+      inScopeUserIds = (visible || []).map(Number).filter(Boolean);
+    }
+    const scopeSet = new Set(inScopeUserIds);
+    for (const t of allTargets) {
+      if (String(t.month) !== m.month) continue;
+      if (t.user_id == null) continue;            // skip legacy org-wide row
+      if (!scopeSet.has(Number(t.user_id))) continue;
+      targetRevenue += Number(t.target_revenue) || 0;
+      targetLeads   += Number(t.target_leads)   || 0;
+      targetSales   += Number(t.target_sales)   || 0;
+    }
+  }
 
   // ---- Pull the activity tables --------------------------------------
   const allLeads     = await db.getAll('leads');
