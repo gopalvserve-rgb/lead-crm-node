@@ -681,7 +681,10 @@ function renderShell() {
   // collapsed — users only see top-level section headers until they click
   // one open, mirroring the Zoho sidebar pattern.
   const expandedKey = 'crm_nav_expanded_v1';
-  const expanded = new Set((localStorage.getItem(expandedKey) || '').split(',').filter(Boolean));
+  // NAV_GROUPS_COLLAPSED_v1 — wipe persisted expansion (legacy users)
+  // and start with empty set. In-session toggles don't save anymore.
+  try { localStorage.removeItem(expandedKey); } catch (_) {}
+  const expanded = new Set();
   const _saveExpanded = () => localStorage.setItem(expandedKey, [...expanded].join(','));
 
   NAV_GROUPS.forEach(group => {
@@ -698,8 +701,9 @@ function renderShell() {
     // Auto-collapse the group whose active item lives — that one starts
     // open so the user sees where they are. Otherwise default = collapsed
     // unless the user has previously toggled it open.
-    const groupHasActive = group.items.some(i => i.id === (location.hash.replace('#/', '') || 'dashboard'));
-    const isCollapsed = !(expanded.has(group.label) || groupHasActive);
+    // NAV_GROUPS_COLLAPSED_v1 — start every group COLLAPSED on every page
+    // load/refresh. User explicitly asked for this.
+    const isCollapsed = true;
     const groupEl = h('div', { class: 'nav-group' + (isCollapsed ? ' collapsed' : '') });
     const headBtn = h('button', {
       class: 'nav-group-head',
