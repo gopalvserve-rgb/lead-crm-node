@@ -54,6 +54,16 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         requestPermissions();
+
+        // PERM_ONBOARDING_v1: launch Runo-style permission onboarding on first run
+        try {
+            if (PermissionOnboardingActivity.shouldShow(this)) {
+                startActivity(new Intent(this, PermissionOnboardingActivity.class));
+            }
+        } catch (Exception e) { android.util.Log.w("LeadCRM", "PermissionOnboarding launch failed: " + e.getMessage()); }
+
+        // FG_SVC_v1: always-on foreground service keeps app alive on Vivo/Oppo
+        try { CallTrackingForegroundService.start(this); } catch (Exception e) {}
         registerCallReceiver();
         getBridge().getWebView().addJavascriptInterface(new LeadCRMBridge(), "LeadCRMNative");
         handleSharedIntent(getIntent());
@@ -531,4 +541,12 @@ public class MainActivity extends BridgeActivity {
             out.writeBytes("\r\n");
         }
     }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // FG_SVC_v2: safety net — restart FG service if user swiped notif
+        try { CallTrackingForegroundService.start(this); } catch (Exception e) {}
+    }
+
 }
