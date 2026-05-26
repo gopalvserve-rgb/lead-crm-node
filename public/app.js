@@ -14293,22 +14293,50 @@ async function checkInOut(which) {
     toast('❌ Cannot mark attendance — this device does not support GPS / geolocation.', 'err');
     return;
   }
+  // CEL_ATT_LOC_RETRY_v1 — two-stage GPS lookup.
+  // Stage 1: high-accuracy GPS (best precision, slower indoors).
+  // Stage 2: if Stage 1 TIMES OUT or returns POSITION_UNAVAILABLE,
+  //   automatically retry with low-accuracy (WiFi / cell tower) which is
+  //   typically instant. PERMISSION_DENIED skips the retry — user must fix it.
   if (typeof toast === 'function') toast('📍 Getting your location…', 'info');
-  navigator.geolocation.getCurrentPosition(
-    p => call(p.coords.latitude, p.coords.longitude),
-    (err) => {
-      const reason = err && err.code === err.PERMISSION_DENIED
-        ? 'Location permission DENIED.\n\nGo to Settings → Apps → CRM → Permissions → Location → Allow → reopen the app and try again.'
-        : err && err.code === err.POSITION_UNAVAILABLE
-          ? 'Location unavailable (no GPS signal).\n\nGo outside or near a window, wait 10 seconds, then try again.'
-          : err && err.code === err.TIMEOUT
-            ? 'Location lookup timed out.\n\nMake sure GPS is ON in your phone settings, then try again.'
-            : 'Could not get location: ' + (err && err.message ? err.message : 'unknown');
-      console.warn('[attendance] geolocation failed — check-in BLOCKED:', err);
-      alert('❌ Cannot mark attendance — location is required.\n\n' + reason);
-    },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-  );
+
+  const _tryGetLocation = (highAccuracy, timeoutMs, maxAgeMs) => new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      pos => resolve(pos),
+      err => reject(err),
+      { enableHighAccuracy: highAccuracy, timeout: timeoutMs, maximumAge: maxAgeMs }
+    );
+  });
+
+  // Stage 1 — try precise GPS first (20s, accept up to 1-min-old cached fix)
+  _tryGetLocation(true, 20000, 60 * 1000)
+    .then(p => call(p.coords.latitude, p.coords.longitude))
+    .catch(async err1 => {
+      // PERMISSION_DENIED is terminal — don't bother with stage 2
+      if (err1 && err1.code === err1.PERMISSION_DENIED) {
+        const reason = 'Location permission DENIED.\n\nGo to Settings → Apps → CRM → Permissions → Location → Allow → reopen the app and try again.';
+        console.warn('[attendance] permission denied — check-in BLOCKED');
+        alert('❌ Cannot mark attendance — location is required.\n\n' + reason);
+        return;
+      }
+      // Stage 2 — fallback to WiFi/cell triangulation (low accuracy, fast).
+      // Accept positions up to 5 min old. Plenty for attendance — we just
+      // need to know they're at the same place, not their exact GPS fix.
+      console.warn('[attendance] stage-1 GPS failed:', err1, '— retrying low-accuracy');
+      if (typeof toast === 'function') toast('📡 Retrying with WiFi location…', 'info');
+      try {
+        const p = await _tryGetLocation(false, 20000, 5 * 60 * 1000);
+        call(p.coords.latitude, p.coords.longitude);
+      } catch (err2) {
+        const reason = err2 && err2.code === err2.POSITION_UNAVAILABLE
+          ? 'Location unavailable (no GPS / WiFi signal).\n\nGo outside or near a window, wait 10 seconds, then try again.'
+          : err2 && err2.code === err2.TIMEOUT
+            ? 'Location lookup timed out (tried both GPS and WiFi).\n\nMake sure Location is ON in your phone settings, then try again.'
+            : 'Could not get location: ' + (err2 && err2.message ? err2.message : 'unknown');
+        console.warn('[attendance] stage-2 also failed — check-in BLOCKED:', err2);
+        alert('❌ Cannot mark attendance — location is required.\n\n' + reason);
+      }
+    });
 }
 
 /* ---------------- 30-minute location-ping loop --------------------------
