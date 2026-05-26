@@ -13149,7 +13149,11 @@ async function adminSmtp() {
     const to = (toInput.value || '').trim();
     if (!to) { toInput.focus(); result.innerHTML = '<span style="color:#b91c1c">⚠️ Recipient email required</span>'; return; }
     const get = name => { const el = form.querySelector('[name="' + name + '"]'); return el ? el.value : ''; };
-    const payload = { to, host: get('SMTP_HOST'), port: get('SMTP_PORT'), secure: get('SMTP_SECURE'), user: get('SMTP_USER'), pass: get('SMTP_PASSWORD'), from: get('EMAIL_NOTIFY_FROM') };
+    // SMTP_TEST_v2 — getConfig redacts SMTP_PASSWORD to bullet chars on reload.
+    // If the user hasn't touched the field, send '' so the backend falls back to saved cfg.
+    const rawPass = get('SMTP_PASSWORD');
+    const looksRedacted = /^•+$/.test(rawPass) || /^\*+$/.test(rawPass);
+    const payload = { to, host: get('SMTP_HOST'), port: get('SMTP_PORT'), secure: get('SMTP_SECURE'), user: get('SMTP_USER'), pass: looksRedacted ? '' : rawPass, from: get('EMAIL_NOTIFY_FROM') };
     testBtn.disabled = true; const origLabel = testBtn.textContent; testBtn.textContent = '⏳ Sending…';
     result.innerHTML = '<span style="color:#475569">Connecting to SMTP server…</span>';
     try {
