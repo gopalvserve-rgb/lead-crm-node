@@ -1684,17 +1684,32 @@ function renderLeadsTable(rows) {
   tbl.innerHTML = '';
   tbl.append(thead, tbody);
 
-  $$('select[data-lead-status]', tbl).forEach(sel =>
+  $$('select[data-lead-status]', tbl).forEach(sel => {
+    // Remember the original value so we can revert if the user cancels the FU prompt
+    sel.dataset.origValue = sel.value;
     sel.addEventListener('change', async () => {
+      const leadId = Number(sel.dataset.leadStatus);
+      const newStatusId = Number(sel.value);
+      const origValue = sel.dataset.origValue;
       try {
-        await api('api_leads_update', Number(sel.dataset.leadStatus), { status_id: Number(sel.value) });
-        toast('Status updated');
-        const opt = CRM.cache.statuses.find(s => Number(s.id) === Number(sel.value));
+        // Find the lead row to check existing follow-up date
+        const leadRow = (CRM.cache.leadsRows || []).find(l => Number(l.id) === leadId);
+        const fuRes = await _ensureFollowupForStatusChange(newStatusId, leadRow);
+        if (!fuRes.ok) { sel.value = origValue; return; }
+        const patch = { status_id: newStatusId };
+        if (fuRes.patch) Object.assign(patch, fuRes.patch);
+        await api('api_leads_update', leadId, patch);
+        toast('Status updated' + (fuRes.patch ? ' + follow-up set' : ''));
+        sel.dataset.origValue = String(newStatusId);
+        const opt = CRM.cache.statuses.find(s => Number(s.id) === newStatusId);
         if (opt) sel.style.setProperty('--status-color', opt.color || '#6b7280');
         loadLeads();
-      } catch (e) { toast(e.message, 'err'); }
-    })
-  );
+      } catch (e) {
+        toast(e.message, 'err');
+        sel.value = origValue;
+      }
+    });
+  });
 
   // Mobile card view
   renderLeadsMobile(rows);
@@ -4944,10 +4959,17 @@ VIEWS.kanban = async (view) => {
         if (!leadId) return;
         const newStatusId = Number(col.dataset.statusId);
         try {
-          await api('api_leads_update', leadId, { status_id: newStatusId });
-          toast('Status updated');
+          // CEL_FU_REQUIRED_v1 — prompt for follow-up if required by status
+          let leadRow = null;
+          for (const k of kanban) { const f = (k.leads || []).find(x => Number(x.id) === leadId); if (f) { leadRow = f; break; } }
+          const fuRes = await _ensureFollowupForStatusChange(newStatusId, leadRow);
+          if (!fuRes.ok) { render(); return; }
+          const patch = { status_id: newStatusId };
+          if (fuRes.patch) Object.assign(patch, fuRes.patch);
+          await api('api_leads_update', leadId, patch);
+          toast('Status updated' + (fuRes.patch ? ' + follow-up set' : ''));
           render();
-        } catch (e) { toast(e.message, 'err'); }
+        } catch (e) { toast(e.message, 'err'); render(); }
       });
 
       // Filter the leads for this column.
@@ -18737,4 +18759,61 @@ function downloadCallActivityCsv() {
   a.click();
 }
 /* end CALL_ACTIVITY_v1 */
+
+// ========================================================================
+// CEL_FU_REQUIRED_v1 — prompt for next_followup_at when changing to certain
+// statuses. Server enforces too (single source of truth), but pre-prompting
+// gives a much smoother UX than waiting for the error toast.
+// ========================================================================
+const _FU_REQUIRED_STATUSES_DEFAULT = ['follow up','visit done','visit schedule','re-visit','not pick'];
+async function _ensureFollowupForStatusChange(newStatusId, currentLead) {
+  // Returns: { ok: true, patch?: { next_followup_at } }   on success
+  //          { ok: false }                                if user cancelled
+  if (!newStatusId) return { ok: true };
+  const statuses = (CRM && CRM.cache && CRM.cache.statuses) || [];
+  const status = statuses.find(s => Number(s.id) === Number(newStatusId));
+  if (!status) return { ok: true };
+  const required = (window.LEAD_FU_REQUIRED_STATUSES || _FU_REQUIRED_STATUSES_DEFAULT)
+    .map(s => String(s || '').trim().toLowerCase());
+  if (!required.includes(String(status.name || '').toLowerCase())) return { ok: true };
+  // Already has a future follow-up? No prompt needed.
+  const existing = currentLead && currentLead.next_followup_at;
+  if (existing && new Date(existing) > new Date()) return { ok: true };
+  // Build a tiny prompt modal with a datetime-local input
+  return new Promise(resolve => {
+    const back = h('div', { class: 'modal-backdrop',
+      onclick: ev => { if (ev.target.classList.contains('modal-backdrop')) { back.remove(); resolve({ ok: false }); } }
+    });
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const def = tomorrow.toISOString().slice(0, 16);
+    const dtInp = h('input', { type: 'datetime-local', value: def, style: { width: '100%', padding: '.5rem', fontSize: '1rem' } });
+    const card = h('div', { class: 'modal', style: { maxWidth: '420px' } },
+      h('div', { class: 'modal-head' },
+        h('h3', {}, '📅 Set next follow-up'),
+        h('button', { class: 'x', onclick: () => { back.remove(); resolve({ ok: false }); } }, '✕')
+      ),
+      h('div', { class: 'modal-body' },
+        h('p', { class: 'muted', style: { marginTop: 0 } },
+          'Status "', h('b', {}, status.name), '" requires a next follow-up date. Pick when you will next contact this lead.'),
+        dtInp,
+        h('div', { style: { display: 'flex', gap: '.5rem', justifyContent: 'flex-end', marginTop: '1rem' } },
+          h('button', { class: 'btn ghost', onclick: () => { back.remove(); resolve({ ok: false }); } }, 'Cancel'),
+          h('button', { class: 'btn primary', onclick: () => {
+            const v = dtInp.value;
+            if (!v) { dtInp.focus(); return; }
+            if (new Date(v) <= new Date()) {
+              if (typeof toast === 'function') toast('Pick a future date/time', 'err');
+              return;
+            }
+            back.remove();
+            resolve({ ok: true, patch: { next_followup_at: v.replace('T', ' ') + ':00' } });
+          } }, '✓ Set follow-up')
+        )
+      )
+    );
+    back.appendChild(card);
+    document.body.appendChild(back);
+    setTimeout(() => dtInp.focus(), 50);
+  });
+}
 

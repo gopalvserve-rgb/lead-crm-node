@@ -1037,6 +1037,33 @@ async function api_leads_update(token, id, patch) {
   const assigneeChanged = patch.assigned_to && Number(patch.assigned_to) !== Number(lead.assigned_to);
   if (statusChanged) allowed.last_status_change_at = db.nowIso();
 
+  // CEL_FU_REQUIRED_v1 — certain statuses MUST have a future next_followup_at.
+  // Configurable via tenant config LEAD_FU_REQUIRED_STATUSES (CSV of status names,
+  // case-insensitive). Defaults to the 5 statuses requested by the customer.
+  if (statusChanged) {
+    try {
+      const cfgRaw = await db.getConfig('LEAD_FU_REQUIRED_STATUSES', 'Follow Up,Visit Done,Visit Schedule,Re-visit,Not Pick');
+      const required = String(cfgRaw || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      if (required.length) {
+        const newStatus = await db.findById('statuses', patch.status_id);
+        const newName = newStatus ? String(newStatus.name || '').toLowerCase() : '';
+        if (required.includes(newName)) {
+          const fuRaw = ('next_followup_at' in patch && patch.next_followup_at)
+            ? patch.next_followup_at
+            : lead.next_followup_at;
+          const fuOk = fuRaw && !isNaN(new Date(fuRaw).getTime()) && new Date(fuRaw) > new Date();
+          if (!fuOk) {
+            throw new Error('Next follow-up date is required when status is "' + (newStatus ? newStatus.name : '?') + '". Please pick a future date and save again.');
+          }
+        }
+      }
+    } catch (e) {
+      if (e && e.message && e.message.includes('Next follow-up date is required')) throw e;
+      // For other errors (e.g., config lookup failure), don't block the save.
+      console.warn('[leads_update] FU_REQUIRED check failed:', e.message);
+    }
+  }
+
   // Block a rep from scheduling two follow-ups at the same minute. Run
   // BEFORE the lead update so a clash leaves the row untouched.
   if ('next_followup_at' in patch && patch.next_followup_at) {
