@@ -450,8 +450,17 @@ async function api_leads_list(token, filters) {
   const statusCount = {};
   rows.forEach(l => { const sid = Number(l.status_id) || 0; statusCount[sid] = (statusCount[sid] || 0) + 1; });
 
+  // CEL_EXPORT_PAGESIZE_v1 (2026-05-28): accept `limit` as an alias for
+  // page_size (the Export CSV / Excel path sends `limit`), AND let the
+  // caller opt out of the 500-row UI cap by sending `page_size >= 1000`
+  // (or `export_all: true`). The hard ceiling is bumped to 100k which is
+  // already what the SPA's exportCSV() requests.
   const page = Number(filters.page || 1);
-  const pageSize = Math.min(Number(filters.page_size || 100), 500);
+  const _rawPS = Number(filters.page_size || filters.limit || 100);
+  const _wantsAll = filters.export_all === true || _rawPS >= 1000;
+  const pageSize = _wantsAll
+    ? Math.min(Math.max(_rawPS, 1), 100000)
+    : Math.min(_rawPS, 500);
   rows = rows.slice((page - 1) * pageSize, page * pageSize);
 
   const remarks = await db.getAll('remarks');

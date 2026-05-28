@@ -2283,7 +2283,7 @@ async function exportCSV() {
   toast('Fetching all leads…', 'info');
   let rows = [];
   try {
-    const res = await api('api_leads_list', { limit: 100000, offset: 0 });
+    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true });
     rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
   } catch (e) {
     rows = CRM.cache.lastLeads || [];
