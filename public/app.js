@@ -18127,32 +18127,6 @@ function _initStickyWidget() {
     if (pin.minimized) rangeBar.style.display = 'none';
     panel.appendChild(rangeBar);
 
-    // DASH_STICKY_v3 — tab strip
-    const tabBar = document.createElement('div');
-    tabBar.style.cssText = 'padding:.25rem .4rem;background:#fff;border-bottom:1px solid #e2e8f0;display:flex;gap:.25rem;flex-wrap:wrap;overflow-x:auto;';
-    if (pin.minimized) tabBar.style.display = 'none';
-    pin.types.forEach((t, i) => {
-      const isAct = (pin.activeIdx || 0) === i;
-      const tLabel = (((CATALOG[t] && CATALOG[t].title) || t).split('·').pop().trim()).slice(0, 18);
-      const tab = document.createElement('button');
-      tab.style.cssText = 'background:' + (isAct ? '#fde68a' : '#f1f5f9') + ';color:' + (isAct ? '#78350f' : '#475569') + ';border:1px solid ' + (isAct ? '#f59e0b' : '#cbd5e1') + ';border-radius:14px;padding:.15rem .55rem;font-size:.72rem;cursor:pointer;display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap;font-weight:' + (isAct ? '600' : '500') + ';';
-      const span = document.createElement('span'); span.textContent = tLabel; tab.appendChild(span);
-      if (pin.types.length > 1) {
-        const x = document.createElement('span'); x.textContent = '×';
-        x.style.cssText = 'color:#64748b;font-weight:700;font-size:.9rem;margin-left:.15rem;line-height:.7;';
-        x.onclick = (e) => { e.stopPropagation(); pin.types.splice(i, 1); if (pin.activeIdx >= pin.types.length) pin.activeIdx = Math.max(0, pin.types.length - 1); _save(state); renderPin(idx); };
-        tab.appendChild(x);
-      }
-      tab.onclick = () => { pin.activeIdx = i; _save(state); renderPin(idx); };
-      tabBar.appendChild(tab);
-    });
-    const plusBtn = document.createElement('button');
-    plusBtn.textContent = '+'; plusBtn.title = 'Add another widget to this pin';
-    plusBtn.style.cssText = 'background:#dcfce7;color:#166534;border:1px dashed #86efac;border-radius:14px;padding:.15rem .55rem;font-size:.78rem;cursor:pointer;font-weight:700;';
-    plusBtn.onclick = () => { state.pendingTargetPin = idx; openPicker(); };
-    tabBar.appendChild(plusBtn);
-    panel.appendChild(tabBar);
-
     const body = document.createElement('div');
     body.id = 'sticky-body-' + idx;
     body.style.cssText = 'flex:1;overflow:auto;padding:.55rem .65rem;';
@@ -18189,19 +18163,67 @@ function _initStickyWidget() {
     if (!pin || pin.minimized) return;
     const body = document.getElementById('sticky-body-' + idx);
     if (!body) return;
-    if (!body.dataset.everLoaded) body.innerHTML = '<div style="text-align:center;padding:1rem;color:#64748b;">Loading…</div>';
-    try {
-      const summary = await api('api_reports_summary', _rangeToFilters(pin));
-      body.innerHTML = '';
-      _renderWidget(body, pin.types[pin.activeIdx || 0], summary);
-      const stamp = document.createElement('div');
-      stamp.style.cssText = 'font-size:.68rem;text-align:right;margin-top:.3rem;color:#94a3b8;';
-      stamp.textContent = 'Updated ' + new Date().toLocaleTimeString();
-      body.appendChild(stamp);
-      body.dataset.everLoaded = '1';
-    } catch (e) {
-      body.innerHTML = '<div style="color:#b91c1c;font-size:.8rem;">' + (e.message || e) + '</div>';
+    if (body.dataset.everLoaded !== '1') body.innerHTML = '<div style="text-align:center;padding:1rem;color:#64748b;">Loading…</div>';
+    let summary;
+    try { summary = await api('api_reports_summary', _rangeToFilters(pin)); }
+    catch (e) { body.innerHTML = '<div style="color:#b91c1c;font-size:.8rem;">' + (e.message || e) + '</div>'; return; }
+
+    body.innerHTML = '';
+    // DASH_STICKY_v3.1 — stacked: render every widget as its own sub-section
+    for (let i = 0; i < pin.types.length; i++) {
+      const curType = pin.types[i];
+      const def = CATALOG[curType] || { title: curType };
+      const section = document.createElement('div');
+      section.style.cssText = 'border:1px solid #e2e8f0;border-radius:6px;margin-bottom:.55rem;background:#fff;overflow:hidden;';
+      const sh = document.createElement('div');
+      sh.style.cssText = 'display:flex;align-items:center;gap:.35rem;padding:.3rem .55rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;font-size:.78rem;font-weight:600;color:#475569;';
+      const title = document.createElement('span');
+      title.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      title.textContent = def.title;
+      sh.appendChild(title);
+      if (pin.types.length > 1) {
+        if (i > 0) {
+          const up = document.createElement('button');
+          up.textContent = '\u25b2'; up.title = 'Move up';
+          up.style.cssText = 'background:transparent;border:none;cursor:pointer;font-size:.7rem;color:#64748b;padding:0 .25rem;';
+          up.onclick = () => { const t = pin.types[i-1]; pin.types[i-1] = pin.types[i]; pin.types[i] = t; _save(state); renderPin(idx); };
+          sh.appendChild(up);
+        }
+        if (i < pin.types.length - 1) {
+          const dn = document.createElement('button');
+          dn.textContent = '\u25bc'; dn.title = 'Move down';
+          dn.style.cssText = 'background:transparent;border:none;cursor:pointer;font-size:.7rem;color:#64748b;padding:0 .25rem;';
+          dn.onclick = () => { const t = pin.types[i+1]; pin.types[i+1] = pin.types[i]; pin.types[i] = t; _save(state); renderPin(idx); };
+          sh.appendChild(dn);
+        }
+        const rm = document.createElement('button');
+        rm.textContent = '\u00d7'; rm.title = 'Remove from pin';
+        rm.style.cssText = 'background:transparent;border:none;cursor:pointer;font-size:.95rem;color:#b91c1c;padding:0 .25rem;font-weight:700;';
+        rm.onclick = () => { pin.types.splice(i, 1); _save(state); renderPin(idx); };
+        sh.appendChild(rm);
+      }
+      section.appendChild(sh);
+      const sb = document.createElement('div');
+      sb.style.cssText = 'padding:.5rem .6rem;';
+      section.appendChild(sb);
+      body.appendChild(section);
+      try { _renderWidget(sb, curType, summary); }
+      catch (e) { sb.innerHTML = '<div style="color:#b91c1c;font-size:.78rem;">Render error: ' + (e.message || e) + '</div>'; }
     }
+    // + Add another widget button
+    const addRow = document.createElement('div');
+    addRow.style.cssText = 'text-align:center;margin:.4rem 0;';
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ Add another widget below';
+    addBtn.style.cssText = 'background:#dcfce7;color:#166534;border:1px dashed #86efac;border-radius:6px;padding:.4rem .8rem;font-size:.8rem;cursor:pointer;font-weight:600;';
+    addBtn.onclick = () => { state.pendingTargetPin = idx; openPicker(); };
+    addRow.appendChild(addBtn);
+    body.appendChild(addRow);
+    const stamp = document.createElement('div');
+    stamp.style.cssText = 'font-size:.68rem;text-align:right;margin-top:.3rem;color:#94a3b8;';
+    stamp.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    body.appendChild(stamp);
+    body.dataset.everLoaded = '1';
   }
 
   function _renderWidget(body, type, summary) {
