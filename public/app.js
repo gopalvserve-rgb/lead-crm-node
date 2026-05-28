@@ -17888,10 +17888,309 @@ function _copilotMsg(role, text) {
 
 // Boot the FAB. Polls until CRM.user is hydrated.
 (function bootCopilot() {
+
+// DASH_STICKY_PORT_v1 — pinned floating dashboard widget(s).
+// Self-contained version for Celeste / Stockbox (no WIDGET_LIBRARY dependency).
+// Tenant can pin up to 4 widgets as floating draggable+resizable cards.
+// Each pin has its own date-range filter (Today / Yesterday / 7d / 30d / Custom).
+// Desktop-only — hidden on Capacitor APK + phone-width browsers.
+function _initStickyWidget() {
+  if (document.getElementById('sticky-fab')) return;
+  // Bail on mobile/APK — drag/resize is desktop UX only
+  try {
+    if (window.Capacitor) return;
+    if (typeof window.innerWidth === 'number' && window.innerWidth < 900) return;
+    if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 1100) return;
+  } catch (_) {}
+
+  const MAX_PINS = 4;
+  const STORAGE_KEY = 'crm_sticky_v2';
+  const _load = () => { try { const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); return s && Array.isArray(s.pins) ? s : { pins: [] }; } catch (_) { return { pins: [] }; } };
+  const _save = (s) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch (_) {} };
+  let state = _load();
+  const panels = {}, timers = {};
+
+  // Inline widget catalog — uses only api_reports_summary which both
+  // Celeste and Stockbox already have.
+  const CATALOG = {
+    kpi_total:      { title: 'KPI · Total leads', group: 'KPI' },
+    kpi_new:        { title: 'KPI · New', group: 'KPI' },
+    kpi_won:        { title: 'KPI · Won', group: 'KPI' },
+    kpi_lost:       { title: 'KPI · Lost', group: 'KPI' },
+    leads_by_user:  { title: 'Leads by user (leaderboard)', group: 'Team' },
+    chart_status:   { title: 'Leads by status', group: 'Charts' },
+    chart_source:   { title: 'Leads by source', group: 'Charts' },
+    chart_product:  { title: 'Leads by product', group: 'Charts' }
+  };
+
+  // -------- Floating launcher --------
+  const fab = document.createElement('button');
+  fab.id = 'sticky-fab';
+  fab.style.cssText = 'position:fixed;bottom:78px;right:24px;width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);color:#fff;font-size:1.15rem;cursor:pointer;border:none;box-shadow:0 4px 12px rgba(245,158,11,.35);z-index:9988;display:flex;align-items:center;justify-content:center;font-weight:700;';
+  document.body.appendChild(fab);
+  fab.onclick = () => openPicker();
+  function _refreshFabLabel() {
+    fab.textContent = state.pins.length ? '\u{1f4cc}' + state.pins.length : '\u{1f4cc}';
+    fab.title = state.pins.length ? state.pins.length + '/' + MAX_PINS + ' pinned' : 'Pin dashboard widgets (up to ' + MAX_PINS + ')';
+  }
+  _refreshFabLabel();
+
+  // Date ranges
+  const RANGE_OPTIONS = [
+    { id: 'all', label: 'All time' },
+    { id: 'today', label: 'Today' },
+    { id: 'yest', label: 'Yesterday' },
+    { id: 'w7', label: 'Last 7 days' },
+    { id: 'm30', label: 'Last 30 days' },
+    { id: 'mtd', label: 'This month' },
+    { id: 'custom', label: 'Custom range…' }
+  ];
+  function _ymd(d) { const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0'); return y + '-' + m + '-' + dd; }
+  function _rangeToFilters(pin) {
+    const r = pin.range || 'all';
+    if (r === 'all') return {};
+    const now = new Date();
+    if (r === 'today') return { from: _ymd(now), to: _ymd(now) };
+    if (r === 'yest') { const d = new Date(now); d.setDate(d.getDate() - 1); return { from: _ymd(d), to: _ymd(d) }; }
+    if (r === 'w7') { const d = new Date(now); d.setDate(d.getDate() - 6); return { from: _ymd(d), to: _ymd(now) }; }
+    if (r === 'm30') { const d = new Date(now); d.setDate(d.getDate() - 29); return { from: _ymd(d), to: _ymd(now) }; }
+    if (r === 'mtd') { const d = new Date(now.getFullYear(), now.getMonth(), 1); return { from: _ymd(d), to: _ymd(now) }; }
+    if (r === 'custom') return { from: pin.customFrom || '', to: pin.customTo || '' };
+    return {};
+  }
+
+  // -------- Picker modal --------
+  function openPicker() {
+    const groups = {};
+    Object.entries(CATALOG).forEach(([key, def]) => { (groups[def.group] = groups[def.group] || []).push({ key, def }); });
+    const back = document.createElement('div');
+    back.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.4);z-index:9995;display:flex;align-items:center;justify-content:center;';
+    back.onclick = (e) => { if (e.target === back) back.remove(); };
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#fff;border-radius:10px;max-width:640px;width:92%;max-height:85vh;overflow-y:auto;padding:1rem 1.2rem;box-shadow:0 12px 32px rgba(0,0,0,.25);';
+    card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;"><h3 style="margin:0;font-size:1.05rem;">\u{1f4cc} Pinned widgets (' + state.pins.length + '/' + MAX_PINS + ')</h3><button id="stk-close" style="background:transparent;border:none;font-size:1.1rem;cursor:pointer;">✕</button></div><p style="color:#64748b;font-size:.85rem;margin:0 0 .6rem;">Pin up to ' + MAX_PINS + ' widgets to keep visible on every page. Drag header to move, drag bottom-right corner to resize, pick a date range on each card.</p>';
+    if (state.pins.length) {
+      const ex = document.createElement('div');
+      ex.innerHTML = '<h4 style="margin:.6rem 0 .25rem;font-size:.85rem;color:#16a34a;">✓ Already pinned — click to remove</h4>';
+      const exWrap = document.createElement('div');
+      exWrap.style.cssText = 'display:flex;flex-direction:column;gap:.3rem;';
+      state.pins.forEach((p, idx) => {
+        const def = CATALOG[p.type] || { title: p.type };
+        const btn = document.createElement('button');
+        btn.textContent = '\u{1f5d1} Remove · ' + def.title;
+        btn.style.cssText = 'text-align:left;padding:.5rem .7rem;font-size:.84rem;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;cursor:pointer;';
+        btn.onclick = () => { back.remove(); removePin(idx); };
+        exWrap.appendChild(btn);
+      });
+      ex.appendChild(exWrap);
+      card.appendChild(ex);
+    }
+    if (state.pins.length >= MAX_PINS) {
+      const warn = document.createElement('div');
+      warn.style.cssText = 'margin:.7rem 0;padding:.7rem;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;color:#7f1d1d;font-size:.84rem;';
+      warn.textContent = '⚠ You’ve hit the ' + MAX_PINS + '-pin maximum. Remove one above to add a new pin.';
+      card.appendChild(warn);
+    } else {
+      Object.keys(groups).sort().forEach(g => {
+        const gh = document.createElement('h4');
+        gh.style.cssText = 'margin:.7rem 0 .25rem;font-size:.85rem;color:#64748b;';
+        gh.textContent = g;
+        card.appendChild(gh);
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:.4rem;';
+        groups[g].forEach(({ key, def }) => {
+          const btn = document.createElement('button');
+          btn.textContent = def.title;
+          btn.style.cssText = 'text-align:left;padding:.55rem .7rem;font-size:.85rem;white-space:normal;background:#f8fafc;color:#0f172a;border:1px solid #cbd5e1;border-radius:6px;cursor:pointer;';
+          btn.onclick = () => { back.remove(); addPin(key); };
+          grid.appendChild(btn);
+        });
+        card.appendChild(grid);
+      });
+    }
+    back.appendChild(card);
+    document.body.appendChild(back);
+    card.querySelector('#stk-close').onclick = () => back.remove();
+  }
+
+  // -------- Pin add / remove --------
+  function addPin(type) {
+    if (state.pins.length >= MAX_PINS) return;
+    const offset = state.pins.length * 20;
+    const w = 380, h = 320;
+    state.pins.push({
+      type, range: 'all', minimized: false,
+      x: Math.max(20, window.innerWidth - w - 40) - offset,
+      y: 120 + offset, w, h
+    });
+    _save(state);
+    _refreshFabLabel();
+    renderPin(state.pins.length - 1);
+  }
+  function removePin(idx) {
+    if (timers[idx]) { clearInterval(timers[idx]); delete timers[idx]; }
+    if (panels[idx]) { try { panels[idx].remove(); } catch (_) {} delete panels[idx]; }
+    state.pins.splice(idx, 1);
+    _save(state);
+    _refreshFabLabel();
+    Object.keys(panels).forEach(k => { try { panels[k].remove(); } catch (_) {} delete panels[k]; });
+    Object.keys(timers).forEach(k => { clearInterval(timers[k]); delete timers[k]; });
+    state.pins.forEach((_, i) => renderPin(i));
+  }
+
+  // -------- Render one pin --------
+  function renderPin(idx) {
+    const pin = state.pins[idx];
+    if (!pin) return;
+    if (panels[idx]) { try { panels[idx].remove(); } catch (_) {} }
+    const def = CATALOG[pin.type] || { title: pin.type };
+    const panel = document.createElement('div');
+    panel.style.cssText = 'position:fixed;left:' + pin.x + 'px;top:' + pin.y + 'px;width:' + pin.w + 'px;height:' + (pin.minimized ? '40px' : pin.h + 'px') + ';background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.18);z-index:9987;display:flex;flex-direction:column;overflow:hidden;min-width:280px;min-height:40px;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding:.35rem .55rem;background:linear-gradient(135deg,#fef3c7,#fde68a);color:#78350f;display:flex;align-items:center;gap:.35rem;cursor:move;font-size:.82rem;font-weight:600;user-select:none;';
+    header.innerHTML = '<span>\u{1f4cc}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + def.title + '</span>';
+    const mkBtn = (txt, title, fn) => { const b = document.createElement('button'); b.textContent = txt; b.title = title; b.style.cssText = 'background:transparent;border:none;cursor:pointer;font-size:1rem;color:#78350f;padding:0 .25rem;'; b.onclick = (e) => { e.stopPropagation(); fn(); }; return b; };
+    header.appendChild(mkBtn('↻', 'Refresh', () => refreshData(idx)));
+    header.appendChild(mkBtn(pin.minimized ? '▢' : '_', pin.minimized ? 'Restore' : 'Minimize', () => { pin.minimized = !pin.minimized; _save(state); renderPin(idx); }));
+    header.appendChild(mkBtn('✕', 'Unpin', () => removePin(idx)));
+    panel.appendChild(header);
+
+    const rangeBar = document.createElement('div');
+    rangeBar.style.cssText = 'padding:.3rem .55rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:.35rem;font-size:.75rem;';
+    rangeBar.innerHTML = '<span style="color:#64748b;">\u{1f4c5}</span>';
+    const sel = document.createElement('select');
+    sel.style.cssText = 'flex:1;padding:.2rem .3rem;border:1px solid #cbd5e1;border-radius:4px;font-size:.75rem;background:#fff;';
+    RANGE_OPTIONS.forEach(o => { const opt = document.createElement('option'); opt.value = o.id; opt.textContent = o.label; if (pin.range === o.id) opt.selected = true; sel.appendChild(opt); });
+    sel.onchange = () => {
+      pin.range = sel.value;
+      if (pin.range === 'custom') {
+        const today = _ymd(new Date());
+        const ago = _ymd(new Date(Date.now() - 7 * 86400000));
+        const cf = prompt('From date (YYYY-MM-DD)', pin.customFrom || ago);
+        if (cf == null) { sel.value = 'all'; pin.range = 'all'; _save(state); return; }
+        const ct = prompt('To date (YYYY-MM-DD)', pin.customTo || today);
+        if (ct == null) { sel.value = 'all'; pin.range = 'all'; _save(state); return; }
+        pin.customFrom = cf; pin.customTo = ct;
+      }
+      _save(state);
+      const b = document.getElementById('sticky-body-' + idx); if (b) delete b.dataset.everLoaded;
+      refreshData(idx);
+    };
+    rangeBar.appendChild(sel);
+    if (pin.minimized) rangeBar.style.display = 'none';
+    panel.appendChild(rangeBar);
+
+    const body = document.createElement('div');
+    body.id = 'sticky-body-' + idx;
+    body.style.cssText = 'flex:1;overflow:auto;padding:.55rem .65rem;';
+    if (pin.minimized) body.style.display = 'none';
+    panel.appendChild(body);
+
+    const resize = document.createElement('div');
+    resize.style.cssText = 'position:absolute;right:2px;bottom:2px;width:14px;height:14px;cursor:nwse-resize;background:linear-gradient(135deg,transparent 50%,#94a3b8 50%);border-radius:0 0 8px 0;';
+    panel.appendChild(resize);
+
+    document.body.appendChild(panel);
+    panels[idx] = panel;
+
+    // Drag + resize
+    let drag = null, rsz = null;
+    header.addEventListener('mousedown', (e) => { if (e.target.tagName === 'BUTTON') return; drag = { sx: e.clientX, sy: e.clientY, ox: pin.x, oy: pin.y }; e.preventDefault(); });
+    resize.addEventListener('mousedown', (e) => { rsz = { sx: e.clientX, sy: e.clientY, ow: pin.w, oh: pin.h }; e.preventDefault(); e.stopPropagation(); });
+    function onMove(e) {
+      if (drag) { const dx = e.clientX - drag.sx, dy = e.clientY - drag.sy; pin.x = Math.max(0, Math.min(window.innerWidth - 60, drag.ox + dx)); pin.y = Math.max(0, Math.min(window.innerHeight - 40, drag.oy + dy)); panel.style.left = pin.x + 'px'; panel.style.top = pin.y + 'px'; }
+      else if (rsz) { const dw = e.clientX - rsz.sx, dh = e.clientY - rsz.sy; pin.w = Math.max(280, rsz.ow + dw); pin.h = Math.max(120, rsz.oh + dh); panel.style.width = pin.w + 'px'; panel.style.height = pin.h + 'px'; }
+    }
+    function onUp() { if (drag || rsz) _save(state); drag = null; rsz = null; }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+
+    refreshData(idx);
+    if (timers[idx]) clearInterval(timers[idx]);
+    timers[idx] = setInterval(() => { const cur = state.pins[idx]; if (cur && !cur.minimized && document.visibilityState !== 'hidden') refreshData(idx); }, 60000);
+  }
+
+  // -------- Render widget content --------
+  async function refreshData(idx) {
+    const pin = state.pins[idx];
+    if (!pin || pin.minimized) return;
+    const body = document.getElementById('sticky-body-' + idx);
+    if (!body) return;
+    if (!body.dataset.everLoaded) body.innerHTML = '<div style="text-align:center;padding:1rem;color:#64748b;">Loading…</div>';
+    try {
+      const summary = await api('api_reports_summary', _rangeToFilters(pin));
+      body.innerHTML = '';
+      _renderWidget(body, pin.type, summary);
+      const stamp = document.createElement('div');
+      stamp.style.cssText = 'font-size:.68rem;text-align:right;margin-top:.3rem;color:#94a3b8;';
+      stamp.textContent = 'Updated ' + new Date().toLocaleTimeString();
+      body.appendChild(stamp);
+      body.dataset.everLoaded = '1';
+    } catch (e) {
+      body.innerHTML = '<div style="color:#b91c1c;font-size:.8rem;">' + (e.message || e) + '</div>';
+    }
+  }
+
+  function _renderWidget(body, type, summary) {
+    if (!summary) { body.innerHTML = '<div style="color:#64748b;text-align:center;padding:.8rem;">No data</div>'; return; }
+    const t = summary.totals || {};
+    function _kpi(label, val, color) {
+      const w = document.createElement('div');
+      w.style.cssText = 'text-align:center;padding:1.2rem .5rem;';
+      w.innerHTML = '<div style="font-size:.78rem;color:#64748b;margin-bottom:.3rem;">' + label + '</div><div style="font-size:2.2rem;font-weight:700;color:' + (color || '#0f172a') + ';">' + (val == null ? 0 : val) + '</div>';
+      body.appendChild(w);
+    }
+    if (type === 'kpi_total') return _kpi('Total leads', t.total, '#4f46e5');
+    if (type === 'kpi_new')   return _kpi('New leads', t.new_leads, '#0369a1');
+    if (type === 'kpi_won')   return _kpi('Won', t.won, '#15803d');
+    if (type === 'kpi_lost')  return _kpi('Lost', t.lost, '#b91c1c');
+    if (type === 'leads_by_user') {
+      const rows = (summary.by_user || []).slice().sort((a, b) => (Number(b.total) || 0) - (Number(a.total) || 0));
+      if (!rows.length) { body.innerHTML = '<div style="color:#64748b;text-align:center;padding:.8rem;">No leads in scope</div>'; return; }
+      const tbl = document.createElement('table');
+      tbl.style.cssText = 'width:100%;font-size:.82rem;border-collapse:collapse;';
+      tbl.innerHTML = '<thead><tr><th style="text-align:left;padding:.25rem .35rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">User</th><th style="text-align:right;padding:.25rem .35rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">Total</th><th style="text-align:right;padding:.25rem .35rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;">New</th><th style="text-align:right;padding:.25rem .35rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;color:#15803d;">Won</th><th style="text-align:right;padding:.25rem .35rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;color:#b91c1c;">Lost</th></tr></thead>';
+      const tb = document.createElement('tbody');
+      rows.forEach(u => {
+        const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.title = 'Open ' + (u.name || '') + '’s leads';
+        tr.onclick = () => { location.hash = '#/leads?assigned_to=' + encodeURIComponent(u.id || ''); };
+        tr.innerHTML = '<td style="padding:.22rem .35rem;border-bottom:1px solid #f1f5f9;">' + (u.name || '—') + '</td><td style="padding:.22rem .35rem;border-bottom:1px solid #f1f5f9;text-align:right;font-weight:700;">' + (u.total || 0) + '</td><td style="padding:.22rem .35rem;border-bottom:1px solid #f1f5f9;text-align:right;color:#0369a1;">' + (u.new_leads || 0) + '</td><td style="padding:.22rem .35rem;border-bottom:1px solid #f1f5f9;text-align:right;color:#15803d;font-weight:600;">' + (u.won || 0) + '</td><td style="padding:.22rem .35rem;border-bottom:1px solid #f1f5f9;text-align:right;color:#b91c1c;">' + (u.lost || 0) + '</td>';
+        tb.appendChild(tr);
+      });
+      tbl.appendChild(tb);
+      body.appendChild(tbl);
+      return;
+    }
+    function _bars(arr, labelKey, valKey, color) {
+      if (!arr || !arr.length) { body.innerHTML = '<div style="color:#64748b;text-align:center;padding:.8rem;">No data</div>'; return; }
+      const max = Math.max(1, ...arr.map(r => Number(r[valKey]) || 0));
+      const wrap = document.createElement('div');
+      arr.slice(0, 12).forEach(r => {
+        const row = document.createElement('div');
+        row.style.cssText = 'margin:.25rem 0;';
+        row.innerHTML = '<div style="display:flex;justify-content:space-between;font-size:.78rem;margin-bottom:2px;"><span>' + (r[labelKey] || '—') + '</span><span style="font-weight:600;">' + (r[valKey] || 0) + '</span></div><div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;"><div style="width:' + Math.round((Number(r[valKey]) || 0) / max * 100) + '%;height:100%;background:' + color + ';"></div></div>';
+        wrap.appendChild(row);
+      });
+      body.appendChild(wrap);
+    }
+    if (type === 'chart_status')  return _bars(summary.by_status || [], 'status', 'c', '#4f46e5');
+    if (type === 'chart_source')  return _bars(summary.by_source || [], 'source', 'c', '#10b981');
+    if (type === 'chart_product') return _bars(summary.by_product || [], 'product', 'c', '#f59e0b');
+    body.innerHTML = '<div style="color:#64748b;">Unknown widget</div>';
+  }
+
+  // Auto-restore
+  state.pins.forEach((_, i) => renderPin(i));
+  window._toggleStickyWidget = () => openPicker();
+}
+
   function start() {
     let n = 0;
     const t = setInterval(() => {
-      if (typeof CRM !== 'undefined' && CRM.user) { _initCrmCopilot(); clearInterval(t); }
+      if (typeof CRM !== 'undefined' && CRM.user) { _initCrmCopilot(); try { _initStickyWidget(); } catch(e){} clearInterval(t); }
       else if (++n > 120) clearInterval(t);
     }, 500);
   }
