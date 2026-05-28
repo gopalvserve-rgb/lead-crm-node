@@ -17905,7 +17905,20 @@ function _initStickyWidget() {
 
   const MAX_PINS = 4;
   const STORAGE_KEY = 'crm_sticky_v2';
-  const _load = () => { try { const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); return s && Array.isArray(s.pins) ? s : { pins: [] }; } catch (_) { return { pins: [] }; } };
+  const _load = () => {
+    try {
+      const s = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      if (!s || !Array.isArray(s.pins)) return { pins: [] };
+      // DASH_STICKY_v3 — auto-migrate old single-type pin shape to types[]
+      s.pins = s.pins.map(p => {
+        if (p.types && Array.isArray(p.types)) return p;
+        return { types: p.type ? [p.type] : [], activeIdx: 0,
+          range: p.range || 'all', customFrom: p.customFrom, customTo: p.customTo,
+          x: p.x, y: p.y, w: p.w, h: p.h, minimized: !!p.minimized };
+      }).filter(p => p.types.length);
+      return s;
+    } catch (_) { return { pins: [] }; }
+  };
   const _save = (s) => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch (_) {} };
   let state = _load();
   const panels = {}, timers = {};
@@ -17971,19 +17984,38 @@ function _initStickyWidget() {
     card.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;"><h3 style="margin:0;font-size:1.05rem;">\u{1f4cc} Pinned widgets (' + state.pins.length + '/' + MAX_PINS + ')</h3><button id="stk-close" style="background:transparent;border:none;font-size:1.1rem;cursor:pointer;">✕</button></div><p style="color:#64748b;font-size:.85rem;margin:0 0 .6rem;">Pin up to ' + MAX_PINS + ' widgets to keep visible on every page. Drag header to move, drag bottom-right corner to resize, pick a date range on each card.</p>';
     if (state.pins.length) {
       const ex = document.createElement('div');
-      ex.innerHTML = '<h4 style="margin:.6rem 0 .25rem;font-size:.85rem;color:#16a34a;">✓ Already pinned — click to remove</h4>';
+      ex.innerHTML = '<h4 style="margin:.6rem 0 .25rem;font-size:.85rem;color:#16a34a;">✓ Currently pinned · + adds widget · 🗑 removes pin</h4>';
       const exWrap = document.createElement('div');
       exWrap.style.cssText = 'display:flex;flex-direction:column;gap:.3rem;';
       state.pins.forEach((p, idx) => {
-        const def = CATALOG[p.type] || { title: p.type };
-        const btn = document.createElement('button');
-        btn.textContent = '\u{1f5d1} Remove · ' + def.title;
-        btn.style.cssText = 'text-align:left;padding:.5rem .7rem;font-size:.84rem;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:6px;cursor:pointer;';
-        btn.onclick = () => { back.remove(); removePin(idx); };
-        exWrap.appendChild(btn);
+        const labels = (p.types || []).map(t => (CATALOG[t] && CATALOG[t].title) || t).join(' · ');
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:.3rem;align-items:center;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:.45rem .6rem;';
+        const lbl = document.createElement('div');
+        lbl.style.cssText = 'flex:1;font-size:.82rem;color:#14532d;';
+        lbl.textContent = 'Pin ' + (idx + 1) + ': ' + labels + ' (' + p.types.length + ')';
+        row.appendChild(lbl);
+        const addB = document.createElement('button');
+        addB.textContent = '+ Add';
+        addB.style.cssText = 'background:#dcfce7;color:#166534;border:1px solid #86efac;border-radius:5px;padding:.25rem .5rem;font-size:.75rem;cursor:pointer;';
+        addB.onclick = () => { state.pendingTargetPin = idx; back.remove(); openPicker(); };
+        row.appendChild(addB);
+        const rmB = document.createElement('button');
+        rmB.textContent = '🗑';
+        rmB.style.cssText = 'background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;border-radius:5px;padding:.25rem .5rem;font-size:.75rem;cursor:pointer;';
+        rmB.onclick = () => { back.remove(); removePin(idx); };
+        row.appendChild(rmB);
+        exWrap.appendChild(row);
       });
       ex.appendChild(exWrap);
       card.appendChild(ex);
+      if (state.pendingTargetPin != null && state.pins[state.pendingTargetPin]) {
+        const banner = document.createElement('div');
+        banner.style.cssText = 'margin:.55rem 0;padding:.55rem .7rem;background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;font-size:.84rem;color:#78350f;';
+        banner.innerHTML = '➕ Adding a widget to Pin ' + (state.pendingTargetPin + 1) + ' · <a href="#" style="color:#7c2d12;">Cancel — add as new pin</a>';
+        banner.querySelector('a').onclick = (e) => { e.preventDefault(); state.pendingTargetPin = null; back.remove(); openPicker(); };
+        card.appendChild(banner);
+      }
     }
     if (state.pins.length >= MAX_PINS) {
       const warn = document.createElement('div');
@@ -18015,11 +18047,24 @@ function _initStickyWidget() {
 
   // -------- Pin add / remove --------
   function addPin(type) {
+    // DASH_STICKY_v3 — add to existing pin if pendingTargetPin set
+    if (state.pendingTargetPin != null && state.pins[state.pendingTargetPin]) {
+      const tgt = state.pins[state.pendingTargetPin];
+      const MAX_W = 6;
+      if (tgt.types.length >= MAX_W) { try { toast && toast('Max ' + MAX_W + ' widgets per pin', 'err'); } catch(_){} state.pendingTargetPin = null; return; }
+      tgt.types.push(type);
+      tgt.activeIdx = tgt.types.length - 1;
+      const idx = state.pendingTargetPin;
+      state.pendingTargetPin = null;
+      _save(state);
+      renderPin(idx);
+      return;
+    }
     if (state.pins.length >= MAX_PINS) return;
     const offset = state.pins.length * 20;
     const w = 380, h = 320;
     state.pins.push({
-      type, range: 'all', minimized: false,
+      types: [type], activeIdx: 0, range: 'all', minimized: false,
       x: Math.max(20, window.innerWidth - w - 40) - offset,
       y: 120 + offset, w, h
     });
@@ -18043,7 +18088,8 @@ function _initStickyWidget() {
     const pin = state.pins[idx];
     if (!pin) return;
     if (panels[idx]) { try { panels[idx].remove(); } catch (_) {} }
-    const def = CATALOG[pin.type] || { title: pin.type };
+    const curType = pin.types[pin.activeIdx || 0];
+    const def = CATALOG[curType] || { title: curType };
     const panel = document.createElement('div');
     panel.style.cssText = 'position:fixed;left:' + pin.x + 'px;top:' + pin.y + 'px;width:' + pin.w + 'px;height:' + (pin.minimized ? '40px' : pin.h + 'px') + ';background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.18);z-index:9987;display:flex;flex-direction:column;overflow:hidden;min-width:280px;min-height:40px;';
 
@@ -18080,6 +18126,32 @@ function _initStickyWidget() {
     rangeBar.appendChild(sel);
     if (pin.minimized) rangeBar.style.display = 'none';
     panel.appendChild(rangeBar);
+
+    // DASH_STICKY_v3 — tab strip
+    const tabBar = document.createElement('div');
+    tabBar.style.cssText = 'padding:.25rem .4rem;background:#fff;border-bottom:1px solid #e2e8f0;display:flex;gap:.25rem;flex-wrap:wrap;overflow-x:auto;';
+    if (pin.minimized) tabBar.style.display = 'none';
+    pin.types.forEach((t, i) => {
+      const isAct = (pin.activeIdx || 0) === i;
+      const tLabel = (((CATALOG[t] && CATALOG[t].title) || t).split('·').pop().trim()).slice(0, 18);
+      const tab = document.createElement('button');
+      tab.style.cssText = 'background:' + (isAct ? '#fde68a' : '#f1f5f9') + ';color:' + (isAct ? '#78350f' : '#475569') + ';border:1px solid ' + (isAct ? '#f59e0b' : '#cbd5e1') + ';border-radius:14px;padding:.15rem .55rem;font-size:.72rem;cursor:pointer;display:inline-flex;align-items:center;gap:.25rem;white-space:nowrap;font-weight:' + (isAct ? '600' : '500') + ';';
+      const span = document.createElement('span'); span.textContent = tLabel; tab.appendChild(span);
+      if (pin.types.length > 1) {
+        const x = document.createElement('span'); x.textContent = '×';
+        x.style.cssText = 'color:#64748b;font-weight:700;font-size:.9rem;margin-left:.15rem;line-height:.7;';
+        x.onclick = (e) => { e.stopPropagation(); pin.types.splice(i, 1); if (pin.activeIdx >= pin.types.length) pin.activeIdx = Math.max(0, pin.types.length - 1); _save(state); renderPin(idx); };
+        tab.appendChild(x);
+      }
+      tab.onclick = () => { pin.activeIdx = i; _save(state); renderPin(idx); };
+      tabBar.appendChild(tab);
+    });
+    const plusBtn = document.createElement('button');
+    plusBtn.textContent = '+'; plusBtn.title = 'Add another widget to this pin';
+    plusBtn.style.cssText = 'background:#dcfce7;color:#166534;border:1px dashed #86efac;border-radius:14px;padding:.15rem .55rem;font-size:.78rem;cursor:pointer;font-weight:700;';
+    plusBtn.onclick = () => { state.pendingTargetPin = idx; openPicker(); };
+    tabBar.appendChild(plusBtn);
+    panel.appendChild(tabBar);
 
     const body = document.createElement('div');
     body.id = 'sticky-body-' + idx;
@@ -18121,7 +18193,7 @@ function _initStickyWidget() {
     try {
       const summary = await api('api_reports_summary', _rangeToFilters(pin));
       body.innerHTML = '';
-      _renderWidget(body, pin.type, summary);
+      _renderWidget(body, pin.types[pin.activeIdx || 0], summary);
       const stamp = document.createElement('div');
       stamp.style.cssText = 'font-size:.68rem;text-align:right;margin-top:.3rem;color:#94a3b8;';
       stamp.textContent = 'Updated ' + new Date().toLocaleTimeString();
