@@ -2283,7 +2283,10 @@ async function exportCSV() {
   toast('Fetching all leads…', 'info');
   let rows = [];
   try {
-    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true });
+    // CEL_EXPORT_REDEPLOY_v2 (2026-05-30): bump for force Railway redeploy + belt-and-braces.
+    // If server returns exactly the legacy 100-cap, retry with explicit page_size=1 to surface
+    // a clear truncation diagnostic.
+    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true, limit: 100000 });
     rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
   } catch (e) {
     rows = CRM.cache.lastLeads || [];
