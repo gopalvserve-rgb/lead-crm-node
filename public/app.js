@@ -2273,6 +2273,47 @@ async function deleteAllDuplicates() {
 }
 
 /* --- CSV export / upload --- */
+
+// CEL_LEADS_XLSX_v1.1 (2026-05-31): build the same filter payload loadLeads
+// uses, but with no pagination - so the export honours every active filter
+// (status, source, assigned, tags, date range, follow-up, qualified,
+// duplicate, search). If the user has ticked rows the export narrows even
+// further to just those lead_ids. This fixes the report that the download
+// blindly grabs every lead in the account regardless of the toolbar filters.
+function _currentLeadsExportFilters() {
+  const _statusIds = (CRM.prefs.filters.status_ids || []).map(String);
+  const _sources   = (CRM.prefs.filters.sources    || []).map(String);
+  const _assigned  = (CRM.prefs.filters.assigned_tos || []).map(String);
+  const _tags      = (CRM.prefs.filters.tags       || []);
+  const f = {
+    q:           $('#f-q')?.value || undefined,
+    status_ids:  _statusIds.length ? _statusIds : undefined,
+    status_id:   (_statusIds.length === 1) ? _statusIds[0] : undefined,
+    sources:     _sources.length ? _sources : undefined,
+    source:      (_sources.length === 1) ? _sources[0] : undefined,
+    assigned_tos: _assigned.length ? _assigned : undefined,
+    assigned_to:  (_assigned.length === 1) ? _assigned[0] : undefined,
+    tags:        _tags.length ? _tags : undefined,
+    from:        $('#f-from')?.value || undefined,
+    to:          $('#f-to')?.value || undefined,
+    followup:    $('#f-followup')?.value || undefined,
+    qualified:   $('#f-qualified')?.value || undefined,
+    duplicate:   $('#f-duplicate')?.value || undefined,
+    sort:        $('#f-sort')?.value || undefined,
+    page:        1,
+    page_size:   100000,
+    export_all:  true,
+    limit:       100000
+  };
+  // If the user has selected specific leads via the row checkboxes,
+  // narrow the export to just those ids.
+  try {
+    const sel = (typeof selectedIds === 'function') ? selectedIds() : [];
+    if (sel && sel.length) f.lead_ids = sel;
+  } catch (_) {}
+  return f;
+}
+
 async function exportCSV() {
   /* CEL_LEAD_EXPORT_v1 (2026-05-23) — fixes:
        1. Fetches ALL leads from the server (was only exporting visible page)
@@ -2287,7 +2328,10 @@ async function exportCSV() {
     // CEL_EXPORT_REDEPLOY_v2 (2026-05-30): bump for force Railway redeploy + belt-and-braces.
     // If server returns exactly the legacy 100-cap, retry with explicit page_size=1 to surface
     // a clear truncation diagnostic.
-    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true, limit: 100000 });
+    const _ef = _currentLeadsExportFilters();
+    const _selN = (_ef.lead_ids || []).length;
+    if (_selN) toast('Exporting ' + _selN + ' selected leads…', 'info');
+    const res = await api('api_leads_list', _ef);
     rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
   } catch (e) {
     rows = CRM.cache.lastLeads || [];
@@ -2389,7 +2433,10 @@ async function exportLeadsXLSX() {
   toast('Fetching all leads…', 'info');
   let rows = [];
   try {
-    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true, limit: 100000 });
+    const _ef = _currentLeadsExportFilters();
+    const _selN = (_ef.lead_ids || []).length;
+    if (_selN) toast('Exporting ' + _selN + ' selected leads…', 'info');
+    const res = await api('api_leads_list', _ef);
     rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
   } catch (e) {
     rows = CRM.cache.lastLeads || [];

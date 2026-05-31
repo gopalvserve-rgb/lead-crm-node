@@ -352,6 +352,15 @@ async function api_leads_list(token, filters) {
   if (filters.product_id)    rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
   if (filters.assigned_to)   rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
   if (_assignedTos.length)   rows = rows.filter(l => _assignedTos.map(Number).includes(Number(l.assigned_to)));
+  // CEL_LEADS_XLSX_v1.1 (2026-05-31): explicit lead_ids filter so the
+  // export buttons can narrow to checkbox-selected rows only.
+  if (Array.isArray(filters.lead_ids) && filters.lead_ids.length) {
+    const wantedIds = filters.lead_ids.map(x => Number(x)).filter(x => x > 0);
+    if (wantedIds.length) {
+      const set = new Set(wantedIds);
+      rows = rows.filter(l => set.has(Number(l.id)));
+    }
+  }
   // Tag filter — leads.tags is a free-form CSV string. Match if the
   // lead's tags column case-insensitively contains ANY of the selected
   // tags. Empty array = no filter.
