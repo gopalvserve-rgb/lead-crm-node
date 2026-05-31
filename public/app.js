@@ -1249,6 +1249,7 @@ VIEWS.leads = async (view) => {
     h('button', { class: 'btn ghost', onclick: openColumnChooser, title: 'Columns' }, '☰'),
     h('button', { class: 'btn ghost', onclick: openBulkUpload, title: 'Upload CSV' }, '⬆️'),
     h('button', { class: 'btn ghost', onclick: exportCSV, title: 'Export CSV' }, '⬇️'),
+    h('button', { class: 'btn ghost', onclick: exportLeadsXLSX, title: 'Export filtered leads as Excel (XLSX)' }, '📊'),
     (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
       ? h('button', { class: 'btn ghost danger', onclick: deleteAllDuplicates, title: 'Delete every lead marked DUP' }, '🗑️ Dedupe')
       : null,
@@ -2378,6 +2379,86 @@ async function exportCSV() {
   a.click();
   URL.revokeObjectURL(a.href);
   toast(`Exported ${rows.length} lead${rows.length === 1 ? '' : 's'} • ${headers.length} columns`, 'ok');
+}
+
+// CEL_LEADS_XLSX_v1 (2026-05-31): real XLSX export from the Leads page,
+// piggybacking on the same uncapped api_leads_list path that exportCSV
+// uses. Honours the same filters as the visible list and the same
+// export_all=true / page_size=100k uncap on the backend.
+async function exportLeadsXLSX() {
+  toast('Fetching all leads…', 'info');
+  let rows = [];
+  try {
+    const res = await api('api_leads_list', { page_size: 100000, page: 1, export_all: true, limit: 100000 });
+    rows = res.leads || res.rows || (Array.isArray(res) ? res : []);
+  } catch (e) {
+    rows = CRM.cache.lastLeads || [];
+    if (!rows.length) return toast('Export failed: ' + e.message, 'err');
+  }
+  if (!rows.length) return toast('No leads to export', 'warn');
+
+  let XLSX;
+  try { XLSX = await ensureXLSX(); }
+  catch (e) { return toast('Could not load the Excel library — fall back to CSV (⬇️).', 'err'); }
+
+  // Same column shape as the CSV path for consistency.
+  const usersById = {};
+  (CRM.cache.users || []).forEach(u => { usersById[Number(u.id)] = u; });
+  function assigneeEmail(r) {
+    const u = usersById[Number(r.assigned_to)];
+    return (u && (u.email || u.name)) || r.assigned_name || '';
+  }
+  function createdByName(r) {
+    const u = usersById[Number(r.created_by)];
+    return (u && u.name) || '';
+  }
+  const fixedCols = [
+    'id','name','phone','alt_phone','whatsapp','email','status','source','source_ref',
+    'product','assigned_to','created_by','address','city','state','pincode','country','company',
+    'value','currency','qualified','tags','next_followup_at','notes','created_at',
+    'last_status_change_at','gclid','gad_campaignid','utm_source','utm_medium',
+    'utm_campaign','utm_term','utm_content','latest_remark'
+  ];
+  const cfKeys = [];
+  const seen = new Set();
+  rows.forEach(r => {
+    let ex = r.extra;
+    if (!ex && r.extra_json) { try { ex = JSON.parse(r.extra_json); } catch (_) { ex = {}; } }
+    if (ex && typeof ex === 'object') Object.keys(ex).forEach(k => { if (!seen.has(k)) { seen.add(k); cfKeys.push(k); } });
+  });
+
+  const out = rows.map(r => {
+    let ex = r.extra;
+    if (!ex && r.extra_json) { try { ex = JSON.parse(r.extra_json); } catch (_) { ex = {}; } }
+    const row = {};
+    fixedCols.forEach(c => {
+      if (c === 'assigned_to')   row[c] = assigneeEmail(r);
+      else if (c === 'created_by') row[c] = createdByName(r);
+      else if (c === 'latest_remark') row[c] = r.recent_remark || '';
+      else row[c] = r[c] == null ? '' : r[c];
+    });
+    cfKeys.forEach(k => row['cf_' + k] = ex && ex[k] != null ? ex[k] : '');
+    return row;
+  });
+
+  const ws = XLSX.utils.json_to_sheet(out);
+  const colWidths = [];
+  if (out.length) {
+    Object.keys(out[0]).forEach((header, i) => {
+      let max = String(header).length;
+      out.forEach(rr => {
+        const v = rr[header] == null ? '' : String(rr[header]);
+        if (v.length > max) max = v.length;
+      });
+      colWidths[i] = { wch: Math.min(Math.max(max + 2, 10), 50) };
+    });
+  }
+  ws['!cols'] = colWidths;
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Leads');
+  const stamp = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, 'leads-' + stamp + '.xlsx');
+  toast('✅ Exported ' + out.length + ' leads to leads-' + stamp + '.xlsx', 'ok');
 }
 
 function openBulkUpload() {
