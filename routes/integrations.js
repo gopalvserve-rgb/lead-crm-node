@@ -571,20 +571,67 @@ function _adaptLeadSourcePayload(source, body) {
 
   // ââ IndiaMART ââââââââââââââââââââââââââââââââââââââââââââââ
   if (norm === 'indiamart') {
+    // INDIAMART_PAYLOAD_UNWRAP_v1 + INDIAMART_FULL_MAP_v1 (2026-06-03) — ported from smartcrm-saas.
+    // Real IndiaMART production push wraps the lead as
+    // { CODE: 200, STATUS: 'SUCCESS', RESPONSE: { SENDER_NAME, ... } }
+    // — RESPONSE is an OBJECT, not an array. Older batch APIs use an array.
+    // Accept all three shapes: array-RESPONSE, object-RESPONSE, or flat.
     const arr = Array.isArray(body.RESPONSE) ? body.RESPONSE
-              : Array.isArray(body.response)  ? body.response
+              : Array.isArray(body.response) ? body.response
+              : (body.RESPONSE && typeof body.RESPONSE === 'object') ? [body.RESPONSE]
+              : (body.response && typeof body.response === 'object') ? [body.response]
               : [body];
+    const _imNormPhone = (raw) => {
+      if (!raw) return '';
+      let s = String(raw).replace(/[\s\-()]/g, '');
+      if (s.startsWith('+')) s = s.slice(1);
+      if (s.length >= 11 && s.startsWith('0')) s = s.slice(1);
+      return s.replace(/[^0-9]/g, '');
+    };
+    const _imJoinAddr = (r) => {
+      const parts = [
+        r.SENDER_ADDRESS || r.sender_address,
+        r.SENDER_CITY    || r.sender_city,
+        r.SENDER_STATE   || r.sender_state,
+        r.SENDER_PINCODE || r.sender_pincode,
+        r.SENDER_COUNTRY_ISO || r.sender_country_iso || r.SENDER_COUNTRY
+      ].filter(x => x && String(x).trim());
+      return parts.join(', ');
+    };
+    const _imNotes = (r) => {
+      const bits = [];
+      const subj = r.SUBJECT || r.subject;
+      const prod = r.QUERY_PRODUCT_NAME || r.query_product_name || r.QUERY_MCAT_NAME;
+      const msg  = r.QUERY_MESSAGE || r.query_message;
+      if (subj) bits.push('Subject: ' + subj);
+      if (prod) bits.push('Product: ' + prod);
+      if (msg)  bits.push(msg);
+      return bits.join('\n');
+    };
     return arr.map(r => ({
-      name:       pick(r, ['SENDER_NAME',    'sender_name',    'name',    'NAME']),
-      phone:      pick(r, ['SENDER_MOBILE',  'sender_mobile',  'mobile',  'MOBILE', 'phone']),
-      email:      pick(r, ['SENDER_EMAIL',   'sender_email',   'email',   'EMAIL']),
+      name:       pick(r, ['SENDER_NAME', 'sender_name', 'name', 'NAME']),
+      phone:      _imNormPhone(pick(r, ['SENDER_MOBILE', 'sender_mobile', 'mobile', 'MOBILE', 'phone', 'SENDER_PHONE', 'sender_phone'])),
+      email:      pick(r, ['SENDER_EMAIL', 'sender_email', 'email', 'EMAIL']),
       company:    pick(r, ['SENDER_COMPANY', 'sender_company', 'company']),
-      city:       pick(r, ['SENDER_CITY',    'sender_city',    'city']),
-      state:      pick(r, ['SENDER_STATE',   'sender_state',   'state']),
-      address:    pick(r, ['SENDER_ADDRESS', 'sender_address', 'address']),
-      notes:      pick(r, ['QUERY_MESSAGE',  'query_message',  'message', 'SUBJECT', 'subject']),
+      city:       pick(r, ['SENDER_CITY', 'sender_city', 'city']),
+      state:      pick(r, ['SENDER_STATE', 'sender_state', 'state']),
+      address:    _imJoinAddr(r),
+      notes:      _imNotes(r),
       source:     'IndiaMART',
-      source_ref: pick(r, ['UNIQUE_QUERY_ID', 'unique_query_id', 'query_id'])
+      source_ref: pick(r, ['UNIQUE_QUERY_ID', 'unique_query_id', 'query_id']),
+      custom_fields: {
+        indiamart_subject:        r.SUBJECT || r.subject || '',
+        indiamart_query_time:     r.QUERY_TIME || r.query_time || '',
+        indiamart_query_type:     r.QUERY_TYPE || r.query_type || '',
+        indiamart_mcat:           r.QUERY_MCAT_NAME || r.query_mcat_name || '',
+        indiamart_product:        r.QUERY_PRODUCT_NAME || r.query_product_name || '',
+        indiamart_pincode:        r.SENDER_PINCODE || r.sender_pincode || '',
+        indiamart_country:        r.SENDER_COUNTRY_ISO || r.sender_country_iso || '',
+        indiamart_landline:       _imNormPhone(r.SENDER_PHONE || r.sender_phone || ''),
+        indiamart_mobile_alt:     _imNormPhone(r.SENDER_MOBILE_ALT || r.sender_mobile_alt || ''),
+        indiamart_email_alt:      r.SENDER_EMAIL_ALT || r.sender_email_alt || '',
+        indiamart_call_duration:  r.CALL_DURATION || r.call_duration || ''
+      }
     }));
   }
 
@@ -941,7 +988,17 @@ async function leadSourceWebhook(req, res) {
       return res.status(401).json({ error: 'Invalid API key' });
     }
     const source = String(req.params.source || 'generic').toLowerCase();
-    const body   = req.body || {};
+    let body   = req.body || {};
+
+    // INDIAMART_PAYLOAD_UNWRAP_v1.2 (2026-06-03): IndiaMART real-time Push
+    // wraps every lead as { CODE, STATUS, RESPONSE:{...} }. Unwrap before
+    // either mapper (custom or default) runs.
+    if (source === 'indiamart' && body && typeof body === 'object'
+        && body.RESPONSE && typeof body.RESPONSE === 'object'
+        && !Array.isArray(body.RESPONSE)
+        && !body.SENDER_NAME && !body.SENDER_MOBILE) {
+      body = { ...body.RESPONSE, _wrapped_code: body.CODE, _wrapped_status: body.STATUS };
+    }
 
     // Log raw hit for admin diagnostics
     try {
