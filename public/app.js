@@ -19006,14 +19006,52 @@ window.openUserHierarchyModal = openUserHierarchyModal;
 
 
 
-/* CALL_ACTIVITY_v1 — full feature ported from smartcrm-saas */
-function _caSecsToHuman(s) {
-  s = Number(s) || 0;
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-  if (h) return h + 'h ' + m + 'm';
-  if (m) return m + 'm ' + sec + 's';
-  return sec + 's';
+/* CALL_ACTIVITY_v1 — full feature ported from smartcrm-saas (BULK_AUDIT_HISTORY_v1 + CA_FILTERS_v1 + CALL_ACTIVITY_UNKNOWN_v1) */
+// BULK_AUDIT_HISTORY_v1 — reusable Bulk AI Audit toolbar (used by Call Activity + Recordings settings page)
+function _buildBulkAuditBar(opts) {
+  // Admins + managers only — same gate the Call Insights page uses.
+  if (!['admin','manager'].includes((CRM.user || {}).role)) return null;
+  const onDone = opts && opts.onDone;
+  const bar = h('div', { class: 'card', style: { padding: '.7rem .9rem', margin: '0 0 1rem', display: 'flex', flexWrap: 'wrap', gap: '.5rem', alignItems: 'center', background: '#f1f5f9' } },
+    h('span', { style: { fontWeight: 600 } }, '🤖 Bulk AI Audit'),
+    h('span', { class: 'muted', style: { fontSize: '.82rem' } }, 'Queue many recordings at once.')
+  );
+  const scopeSel = h('select', { class: 'input', style: { maxWidth: '220px' } },
+    h('option', { value: 'unprocessed', selected: 'selected' }, 'All unaudited recordings'),
+    h('option', { value: 'failed' }, 'Previously failed only'),
+    h('option', { value: 'all' }, 'Force re-audit ALL (last 2000)')
+  );
+  const userSel = h('select', { class: 'input', style: { maxWidth: '180px' } },
+    h('option', { value: '' }, 'All reps'),
+    ...((CRM.cache.users || []).map(u => h('option', { value: u.id }, u.name)))
+  );
+  const limitInp = h('input', { class: 'input', type: 'number', min: 1, max: 2000, value: 500, style: { width: '90px' }, title: 'Max number of recordings to process' });
+  const runBtn = h('button', { class: 'btn primary' }, '🚀 Run audit');
+  runBtn.onclick = async () => {
+    const scope = scopeSel.value;
+    if (scope === 'all' && !confirm('Re-audit ALL recordings? This wipes existing summaries and re-runs Gemini on every recording. Can be expensive.')) return;
+    runBtn.disabled = true; runBtn.textContent = '⏳ Queueing…';
+    try {
+      const r = await api('api_recording_bulkAudit', {
+        scope,
+        limit: Number(limitInp.value) || 500,
+        user_id: userSel.value ? Number(userSel.value) : null
+      });
+      if (typeof toast === 'function') toast('✅ Queued ' + r.queued + ' recordings — AI processing in background', 'ok');
+      if (typeof onDone === 'function') setTimeout(onDone, 8000);
+    } catch (e) {
+      if (typeof toast === 'function') toast('⚠ ' + e.message, 'err');
+    } finally {
+      runBtn.disabled = false; runBtn.textContent = '🚀 Run audit';
+    }
+  };
+  bar.appendChild(scopeSel);
+  bar.appendChild(userSel);
+  bar.appendChild(limitInp);
+  bar.appendChild(runBtn);
+  return bar;
 }
+window._buildBulkAuditBar = _buildBulkAuditBar;
 
 VIEWS.callactivity = async (view) => {
   await ensureChartJs();
@@ -19025,10 +19063,12 @@ VIEWS.callactivity = async (view) => {
   const from30 = new Date(today.getTime() - 30 * 86400 * 1000);
   const isoDate = d => d.toISOString().slice(0, 10);
 
+  const _caFrom = h('input', { type: 'date', id: 'ca-from', value: isoDate(from30) });
+  const _caTo   = h('input', { type: 'date', id: 'ca-to',   value: isoDate(today) });
   const toolbar = h('div', { class: 'toolbar' },
-    h('input', { type: 'date', id: 'ca-from', value: isoDate(from30) }),
+    _caFrom,
     h('span', {}, 'to'),
-    h('input', { type: 'date', id: 'ca-to',   value: isoDate(today) }),
+    _caTo,
     h('select', { id: 'ca-user' },
       h('option', { value: '' }, 'All users'),
       ...users.map(u => h('option', { value: String(u.id) }, u.name))
@@ -19037,6 +19077,9 @@ VIEWS.callactivity = async (view) => {
     h('button', { class: 'btn', onclick: () => downloadCallActivityCsv() }, '⬇️ CSV')
   );
   view.appendChild(toolbar);
+  setTimeout(() => { try { window._attachDatePresets && window._attachDatePresets(_caFrom, _caTo, { key: 'callactivity', apply: () => { try { loadCallActivity(); } catch (_) {} } }); } catch (_) {} }, 0);
+  // BULK_AUDIT_HISTORY_v1 — Bulk AI Audit toolbar (admin/manager only).
+  { const bar = _buildBulkAuditBar({ onDone: () => { try { loadCallActivity(); } catch(_) {} } }); if (bar) view.appendChild(bar); }
 
   view.appendChild(h('div', { id: 'ca-cards', class: 'cards' }));
   view.appendChild(h('div', { class: 'chart-grid' },
@@ -19071,6 +19114,17 @@ VIEWS.callactivity = async (view) => {
 
   await loadCallActivity();
 };
+
+function _caSecsToHuman(s) {
+  s = Number(s) || 0;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h) return h + 'h ' + m + 'm';
+  if (m) return m + 'm ' + sec + 's';
+  return sec + 's';
+}
+
+window._caData = null;
+
 async function loadCallActivity() {
   const from = $('#ca-from')?.value;
   const to   = $('#ca-to')?.value;
@@ -19091,6 +19145,7 @@ async function loadCallActivity() {
     if (cards) cards.innerHTML = '<div class="error-box">' + esc(e.message) + '</div>';
   }
 }
+
 function _renderCallActivity(r) {
   const s = r.summary || {};
   const cards = $('#ca-cards');
@@ -19104,10 +19159,11 @@ function _renderCallActivity(r) {
       if (sub) c.appendChild(h('div', { class: 'kpi-sub' }, sub));
       return c;
     };
-    cards.appendChild(mk('📞 Total calls',   s.total_calls || 0));
-    cards.appendChild(mk('📥 Incoming',      s.incoming || 0));
-    cards.appendChild(mk('📤 Outgoing',      s.outgoing || 0));
-    cards.appendChild(mk('❌ Missed',        s.missed || 0));
+    /* CALL_UNIQUE_v1 — KPI subtitles show distinct phone counts */
+    cards.appendChild(mk('📞 Total calls', s.total_calls || 0, '#️⃣ ' + (s.unique_total || 0) + ' unique numbers'));
+    cards.appendChild(mk('📥 Incoming',    s.incoming || 0,    '#️⃣ ' + (s.unique_incoming || 0) + ' unique callers'));
+    cards.appendChild(mk('📤 Outgoing',    s.outgoing || 0,    '#️⃣ ' + (s.unique_outgoing || 0) + ' unique dialled'));
+    cards.appendChild(mk('❌ Missed',      s.missed || 0,      '#️⃣ ' + (s.unique_missed || 0) + ' unique missed'));
     cards.appendChild(mk('🗣️ Total talk',    _caSecsToHuman(s.total_talk_s), 'sum of recorded durations'));
     cards.appendChild(mk('⏱️ Avg call',       _caSecsToHuman(s.avg_talk_s), 'mean of non-zero calls'));
     cards.appendChild(mk('👥 Active users',  s.total_users || 0));
@@ -19126,6 +19182,7 @@ function _renderCallActivity(r) {
       t.innerHTML = '<thead><tr>' +
         '<th>Rep</th><th>Manager</th>' +
         '<th>Total</th><th>In</th><th>Out</th><th>Missed</th>' +
+        /* CALL_UNIQUE_v1 */ '<th title="Distinct phone numbers contacted by this rep">Unique #s</th>' +
         '<th>Talk</th><th>Avg call</th><th>Avg gap</th><th>Last call</th>' +
         '</tr></thead><tbody>' +
         rows.map(r => '<tr>' +
@@ -19135,6 +19192,7 @@ function _renderCallActivity(r) {
           '<td>' + (r.in_calls || 0) + '</td>' +
           '<td>' + (r.out_calls || 0) + '</td>' +
           '<td>' + (r.missed_calls || 0) + '</td>' +
+          /* CALL_UNIQUE_v1 */ '<td><b>' + (r.unique_phones || 0) + '</b>' + (r.unique_out ? ' <span class="muted" style="font-size:.78em">(' + r.unique_out + ' out)</span>' : '') + '</td>' +
           '<td>' + _caSecsToHuman(r.talk_s) + '</td>' +
           '<td>' + _caSecsToHuman(r.avg_talk_s) + '</td>' +
           '<td>' + _caSecsToHuman(r.avg_gap_s) + '</td>' +
@@ -19208,22 +19266,85 @@ function _renderCallActivity(r) {
   // Recent calls table
   _caRenderRecent(r.recentCalls || []);
 }
-function _caRenderRecent(rows) {
+
+
+function _caRenderRecent(rowsAll) {
   const el = document.getElementById('ca-recent');
   if (!el) return;
-  if (!rows || !rows.length) { el.innerHTML = '<div class="muted">No calls in this window.</div>'; return; }
+  const allRows = rowsAll || [];
+  // CA_FILTERS_v1 - cache full list so chip clicks re-filter w/o reload.
+  window._caAllRecent = allRows;
+  window._caFilter = window._caFilter || { direction: '', duration: '' };
+  const fState = window._caFilter;
+
+  function _isMissed(r) {
+    // CALL_ACTIVITY_UNKNOWN_v1 — recordings whose direction couldn't be confirmed.
+    if (r.direction === 'unknown') return false;
+    return r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing');
+  }
+  function _matchDir(r) {
+    if (!fState.direction) return true;
+    if (fState.direction === 'missed') return _isMissed(r);
+    if (fState.direction === 'in')     return r.direction === 'in'  && !_isMissed(r);
+    if (fState.direction === 'out')    return r.direction === 'out';
+    return true;
+  }
+  function _matchDur(r) {
+    if (!fState.duration) return true;
+    const d = Number(r.rec_duration || r.duration_s) || 0;
+    if (fState.duration === 'zero')    return d === 0;
+    if (fState.duration === 'u30')     return d > 0 && d < 30;
+    if (fState.duration === '30_120')  return d >= 30 && d < 120;
+    if (fState.duration === '120_300') return d >= 120 && d < 300;
+    if (fState.duration === 'gte300')  return d >= 300;
+    return true;
+  }
+  const rows = allRows.filter(r => _matchDir(r) && _matchDur(r));
+
   window._caSelectedIds = window._caSelectedIds || new Set();
-  // Toolbar — bulk-convert affordance, ALWAYS visible so users
-  // discover it. Button is disabled until they tick at least one row.
   const unlinkedCount = rows.filter(r => !r.lead_id).length;
+
+  function _chipBtn(label, group, value) {
+    const on = fState[group] === value;
+    return h('button', { class: 'btn',
+      style: {
+        padding: '.28rem .65rem', fontSize: '.78rem',
+        border: '1px solid ' + (on ? '#4f46e5' : '#cbd5e1'),
+        borderRadius: '999px', background: on ? '#4f46e5' : '#fff',
+        color: on ? '#fff' : '#0f172a', fontWeight: on ? '600' : '500', cursor: 'pointer'
+      },
+      onclick: () => { fState[group] = on ? '' : value; _caRenderRecent(allRows); }
+    }, label);
+  }
+  const fbar = h('div', { id: 'ca-recent-filterbar', style: { display: 'flex', gap: '.35rem', alignItems: 'center', flexWrap: 'wrap', padding: '.45rem .55rem', background: '#fff', border: '1px solid #e2e8f0', borderRadius: '10px', marginBottom: '.4rem' } },
+    h('span', { style: { fontWeight: 600, fontSize: '.82rem', marginRight: '.2rem' } }, '\uD83D\uDD0E Filter:'),
+    h('span', { class: 'muted', style: { fontSize: '.76rem', marginRight: '.15rem' } }, 'Direction'),
+    _chipBtn('\uD83D\uDCF2 Incoming', 'direction', 'in'),
+    _chipBtn('\uD83D\uDCDE Outgoing', 'direction', 'out'),
+    _chipBtn('\u274C Missed', 'direction', 'missed'),
+    h('span', { style: { width: '1px', height: '20px', background: '#cbd5e1', margin: '0 .25rem' } }),
+    h('span', { class: 'muted', style: { fontSize: '.76rem', marginRight: '.15rem' } }, 'Duration'),
+    _chipBtn('No-answer (0s)', 'duration', 'zero'),
+    _chipBtn('< 30s',     'duration', 'u30'),
+    _chipBtn('30s-2m',    'duration', '30_120'),
+    _chipBtn('2-5m',      'duration', '120_300'),
+    _chipBtn('5m+',       'duration', 'gte300'),
+    h('span', { style: { flex: 1 } }),
+    h('span', { class: 'muted', style: { fontSize: '.76rem' } }, rows.length + ' / ' + allRows.length + ' calls'),
+    (fState.direction || fState.duration)
+      ? h('button', { class: 'btn sm ghost', style: { color: '#dc2626' },
+          onclick: () => { window._caFilter = { direction: '', duration: '' }; _caRenderRecent(allRows); } }, '\u2716 Clear')
+      : null
+  );
+
   const tb = h('div', { id: 'ca-recent-toolbar', style: { display: 'flex', gap: '.4rem', flexWrap: 'wrap', alignItems: 'center', padding: '.5rem .35rem', background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: '8px', marginBottom: '.5rem' } },
     h('span', { style: { fontWeight: 600, fontSize: '.85rem', marginRight: '.4rem' } },
       'Bulk actions:'),
     h('span', { class: 'muted', style: { fontSize: '.78rem' } },
       unlinkedCount + ' unlinked call(s) below'),
     h('span', { style: { flex: 1 } }),
-    h('button', { class: 'btn sm', onclick: () => { window._caSelectedIds = new Set(rows.filter(r => !r.lead_id).map(r => r.id)); _caRenderRecent(rows); } }, '\u2611\uFE0F Select all unlinked'),
-    h('button', { class: 'btn sm ghost', onclick: () => { window._caSelectedIds = new Set(); _caRenderRecent(rows); } }, 'Clear'),
+    h('button', { class: 'btn sm', onclick: () => { window._caSelectedIds = new Set(rows.filter(r => !r.lead_id).map(r => r.id)); _caRenderRecent(allRows); } }, '\u2611\uFE0F Select all unlinked'),
+    h('button', { class: 'btn sm ghost', onclick: () => { window._caSelectedIds = new Set(); _caRenderRecent(allRows); } }, 'Clear'),
     (function(){
       const b = h('button', { class: 'btn sm primary', onclick: () => _caBulkConvert(rows) },
         '\u2795 Add ' + window._caSelectedIds.size + ' as lead' + (window._caSelectedIds.size === 1 ? '' : 's'));
@@ -19232,7 +19353,9 @@ function _caRenderRecent(rows) {
     })()
   );
   el.innerHTML = '';
+  el.appendChild(fbar);
   el.appendChild(tb);
+  if (!rows.length) { el.appendChild(h('div', { class: 'muted', style: { padding: '.5rem' } }, 'No calls match the current filters.')); return; }
   const dirIcon = (r) => {
     if (r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing')) return '\u274C';
     if (r.direction === 'in')  return '\uD83D\uDCF2';
@@ -19247,8 +19370,10 @@ function _caRenderRecent(rows) {
     rows.map(r => {
       const dur = Number(r.rec_duration || r.duration_s) || 0;
       const when = new Date(r.created_at).toLocaleString('en-IN');
-      const direction = (r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing'))
-        ? 'Missed' : (r.direction === 'in' ? 'Incoming' : (r.direction === 'out' ? 'Outgoing' : (r.direction || '')));
+      const direction = (r.direction === 'unknown')
+        ? 'Unknown'
+        : ((r.direction === 'missed' || (r.direction === 'in' && !r.recording_id && r.event === 'incoming_ringing'))
+            ? 'Missed' : (r.direction === 'in' ? 'Incoming' : (r.direction === 'out' ? 'Outgoing' : (r.direction || ''))));
       const canSelect = !r.lead_id;
       const checked = window._caSelectedIds && window._caSelectedIds.has(r.id);
       return '<tr>' +
@@ -19284,6 +19409,7 @@ function _caRenderRecent(rows) {
     });
   });
 }
+
 async function _caBulkConvert(allRows) {
   const ids = Array.from(window._caSelectedIds || []);
   if (!ids.length) return toast('Select at least one call first', 'err');
@@ -19300,6 +19426,8 @@ async function _caBulkConvert(allRows) {
     toast(e.message, 'err');
   }
 }
+
+
 function downloadCallActivityCsv() {
   const r = window._caData;
   if (!r) return toast('Apply a filter first', 'err');
