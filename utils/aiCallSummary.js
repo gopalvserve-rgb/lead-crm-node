@@ -74,7 +74,13 @@ function _estimateCost(promptTokens, candidateTokens) {
 let fetch = global.fetch;
 if (!fetch) { try { fetch = require('node-fetch'); } catch (_) {} }
 
-function _key() {
+// CELESTE_GEMINI_KEY_SHARED_v1 — also honor key saved via Settings → AI Bot
+async function _key() {
+  // Prefer DB key (set via SPA), fall back to env, finally empty.
+  try {
+    const dbKey = await db.getConfig('GEMINI_API_KEY', '');
+    if (dbKey && String(dbKey).trim()) return String(dbKey).trim();
+  } catch (_) {}
   return process.env.GEMINI_API_KEY || '';
 }
 
@@ -152,7 +158,7 @@ Lead context:
  * action items + sentiment + suggest next status, all in one shot.
  */
 async function _callGemini(audioBytes, mimeType, meta) {
-  const key = _key();
+  const key = await _key();
   if (!key) throw new Error('GEMINI_API_KEY not set');
 
   const inline = audioBytes.length < 20 * 1024 * 1024;
@@ -292,7 +298,7 @@ async function processRecording(id) {
     return { ok: true, demo: true, id };
   }
 
-  if (!_key()) throw new Error('GEMINI_API_KEY not configured');
+  const _k = await _key(); if (!_k) throw new Error('GEMINI_API_KEY not configured (Set in Settings → AI Bot)');
   if (!rec.audio_bytes || rec.audio_bytes.length === 0) {
     throw new Error('Recording has no audio bytes');
   }
@@ -378,7 +384,7 @@ async function _tick() {
   // Set AI_TRANSCRIPTION_GLOBAL_OFF=0 on Railway env to re-enable.
   if (String(process.env.AI_TRANSCRIPTION_GLOBAL_OFF || '1') === '1') return;
   if (_processing) return;
-  if (!_key() && !demo.on) return; // No key + not demo — nothing to do
+  const _kCheck = await _key(); if (!_kCheck && !demo.on) return; // No key + not demo — nothing to do
   _processing = true;
   try {
     const { rows } = await db.query(
@@ -405,12 +411,12 @@ async function _tick() {
   }
 }
 
-function startWorker() {
+async function startWorker() {
   if (_workerTimer) return;
   // First tick after 30s (let server settle), then every 60s
   setTimeout(_tick, 30_000);
   _workerTimer = setInterval(_tick, 60_000);
-  console.log('[ai-summary] worker started — Gemini', _key() ? 'configured' : (demo.on ? 'demo-mock' : 'NOT configured'));
+  const _kInit = await _key(); console.log('[ai-summary] worker started — Gemini', _kInit ? 'configured' : (demo.on ? 'demo-mock' : 'NOT configured'));
 }
 
 module.exports = { processRecording, startWorker, GEMINI_MODEL };

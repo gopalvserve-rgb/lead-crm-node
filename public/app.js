@@ -17317,7 +17317,14 @@ async function _renderAiBotSettings(host) {
   catch (e) { host.appendChild(h('div', { class: 'error-box' }, e.message)); return; }
   const s = data.settings || {};
 
-  if (!data.global || !data.global.is_active) {
+  // Stale "global.is_active" check — only show when truly no key anywhere.
+  // The Gemini key card below shows authoritative status.
+  let _hasAnyKey = false;
+  try {
+    const _ksCheck = await api('api_aibot_geminiKey_get');
+    _hasAnyKey = !!(_ksCheck && _ksCheck.present);
+  } catch (_) {}
+  if (!_hasAnyKey && (!data.global || !data.global.is_active)) {
     host.appendChild(h('div', { style: { padding: '.6rem .8rem', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '6px', marginBottom: '.75rem', fontSize: '.85rem' } },
       '⚠ Gemini API key is not configured. Add ',
       h('code', {}, 'GEMINI_API_KEY'),
