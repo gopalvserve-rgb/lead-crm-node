@@ -62,6 +62,9 @@ const routes = {
   nurture:       require('./routes/nurture'),
   aiUsage:       require('./utils/aiUsage'),
     roles:         require('./routes/roles'),
+    // CELESTE_RE_PACK_v1 — Real Estate industry pack
+    rePack:        require('./routes/packs/_framework'),
+    realestate:    require('./routes/packs/realestate'),
 };
 const webhooks = require('./routes/webhooks');
 
@@ -938,6 +941,24 @@ async function bootstrap() {
       console.log(`[boot] admin user created: ${adminEmail} / ${adminPass}`);
     } else {
       console.log(`[boot] admin user exists (${adminEmail}) — skipping.`);
+    }
+
+    // CELESTE_RE_PACK_v1 — auto-install Real Estate industry pack on first boot.
+    // Single-tenant Celeste: pack is always-on so all RE features show in the
+    // SPA without a super-admin install step.
+    try {
+      const fw = require('./routes/packs/_framework');
+      const installed = await fw.listInstalledPacks();
+      const hasRE = installed.some(p => p.pack_id === 'realestate');
+      if (!hasRE) {
+        console.log('[boot] installing Real Estate industry pack...');
+        await fw.installPack('realestate', {});
+        console.log('[boot] Real Estate pack installed.');
+      } else {
+        console.log('[boot] Real Estate pack already installed.');
+      }
+    } catch (e) {
+      console.warn('[boot] RE pack auto-install skipped:', e.message);
     }
 
     const statusCount = (await db.getAll('statuses')).length;
