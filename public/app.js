@@ -17324,6 +17324,52 @@ async function _renderAiBotSettings(host) {
       ' to your env, paste it in Settings, or set up the Central AI proxy (smartcrm-saas). '
     ));
   }
+  // ---- Gemini API Key card (admin/manager only) ----
+  if (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager')) {
+    try {
+      const ks = await api('api_aibot_geminiKey_get');
+      const kcard = h('div', { class: 'card', style: { marginBottom: '.75rem', border: ks.present ? '2px solid #10b981' : '2px solid #f59e0b' } });
+      kcard.appendChild(h('h3', { style: { marginTop: 0 } }, '🔑 Gemini API Key'));
+      kcard.appendChild(h('div', { class: 'muted', style: { fontSize: '.82rem', marginBottom: '.5rem' } },
+        ks.present
+          ? ('Key is configured (' + (ks.source === 'config_db' ? 'saved in CRM' : 'Railway env') + '): ' + (ks.masked || ''))
+          : 'No Gemini API key configured. AI Bot and AI Call Audit will not work without it.'
+      ));
+      if (ks.note) kcard.appendChild(h('div', { class: 'muted', style: { fontSize: '.78rem', marginBottom: '.5rem', color: '#92400e' } }, ks.note));
+      const keyInp = h('input', { type: 'password', placeholder: 'AIza... or AQ.Ab8...', style: { width: '100%', padding: '.5rem', fontSize: '.9rem', fontFamily: 'monospace' } });
+      kcard.appendChild(keyInp);
+      const btnRow = h('div', { style: { marginTop: '.6rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' } });
+      const saveBtn = h('button', { class: 'btn primary', onclick: async () => {
+        const k = (keyInp.value || '').trim();
+        if (!k) { alert('Paste the Gemini API key first'); return; }
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
+        try {
+          await api('api_aibot_geminiKey_save', { key: k });
+          alert('✅ Saved. AI Bot is now active.');
+          _renderAiBotSettings(host.parentNode || host);
+        } catch (e) {
+          alert('Save failed: ' + e.message);
+          saveBtn.disabled = false; saveBtn.textContent = '💾 Save Gemini Key';
+        }
+      } }, '💾 Save Gemini Key');
+      btnRow.appendChild(saveBtn);
+      if (ks.is_db_set) {
+        btnRow.appendChild(h('button', { class: 'btn ghost', onclick: async () => {
+          if (!confirm('Clear the saved Gemini key from this CRM? (Railway env key, if set, will be used instead.)')) return;
+          try { await api('api_aibot_geminiKey_clear'); alert('Cleared.'); _renderAiBotSettings(host.parentNode || host); }
+          catch (e) { alert('Clear failed: ' + e.message); }
+        } }, '🗑 Clear saved key'));
+      }
+      kcard.appendChild(btnRow);
+      kcard.appendChild(h('div', { class: 'muted', style: { fontSize: '.75rem', marginTop: '.5rem' } },
+        'Get a free key at aistudio.google.com/apikey — paid plans are not required.'));
+      host.appendChild(kcard);
+    } catch (e) {
+      host.appendChild(h('div', { class: 'card', style: { marginBottom: '.75rem', background: '#fee2e2' } },
+        'Could not load Gemini key status: ' + e.message));
+    }
+  }
+
   // Diagnose button — runs the bot self-check + shows the AI proxy status
   if (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager')) {
     host.appendChild(h('div', { style: { marginBottom: '.6rem', display: 'flex', justifyContent: 'flex-end' } },

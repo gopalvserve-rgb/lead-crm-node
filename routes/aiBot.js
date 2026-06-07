@@ -2008,8 +2008,9 @@ async function api_aibot_geminiKey_save(token, payload) {
   const key = String((payload && payload.key) || '').trim();
   if (!key) throw new Error('Key is required (or use api_aibot_geminiKey_clear to remove)');
   // Light sanity check — Gemini keys start with 'AIza' and are ~40 chars.
-  if (!/^AIza[\w-]{20,}$/.test(key) && key.length < 20) {
-    throw new Error('That does not look like a valid Gemini API key. Get one at aistudio.google.com/apikey');
+  // Accept legacy AIza... and new AQ.Ab... formats; just require min length
+  if (key.length < 20) {
+    throw new Error('That does not look like a valid Gemini API key (too short). Get one at aistudio.google.com/apikey');
   }
   await db.setConfig('GEMINI_API_KEY', key);
   // Invalidate the in-process settings cache so the next reply uses the new key.
