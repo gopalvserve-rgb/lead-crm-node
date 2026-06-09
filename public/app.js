@@ -10847,7 +10847,8 @@ async function adminWebhookLogs() {
 // CRM fields. Reads last received payload + saved mapping, lets the
 // admin add/edit rows, saves to lead_source_mapping table.
 async function openSourceMappingModal(sourceId) {
-  const backdrop = h('div', { class: 'modal-backdrop', onclick: (ev) => { if (ev.target === backdrop) backdrop.remove(); } });
+  /* CEL_MODAL_STICKY_v1 — close only via Close button */
+  const backdrop = h('div', { class: 'modal-backdrop' });
   const modal = h('div', { class: 'modal modal-lg' });
   const close = () => backdrop.remove();
   modal.appendChild(h('div', { class: 'modal-head' },
@@ -10957,7 +10958,8 @@ function _openWebhookLogDetails(row) {
   // this app (confirmDialog, recording details, bot flow modals etc.).
   // Earlier this used a non-existent .modal-overlay class, which made the
   // detail view invisible. Click on the dark backdrop closes the modal.
-  const backdrop = h('div', { class: 'modal-backdrop', onclick: (ev) => { if (ev.target === backdrop) backdrop.remove(); } });
+  /* CEL_MODAL_STICKY_v1 — close only via Close button */
+  const backdrop = h('div', { class: 'modal-backdrop' });
   const modal = h('div', { class: 'modal modal-lg' });
   const closeBtn = h('button', { class: 'btn sm', onclick: () => backdrop.remove() }, '\u2715');
   modal.appendChild(h('div', { class: 'modal-head' },
@@ -12834,7 +12836,7 @@ async function adminCustomFields() {
 
 /** Open a modal to edit an existing custom field. */
 function editCustomField(field) {
-  const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target === modal) modal.remove(); } },
+  /* CEL_MODAL_STICKY_v1 — close only via Close button */ const modal = h('div', { class: 'modal-backdrop' },
     h('div', { class: 'modal' },
       h('div', { class: 'modal-head' },
         h('h3', {}, '✏️ Edit custom field: ' + field.label),
@@ -13794,7 +13796,7 @@ VIEWS.tasks = async (view) => {
     );
   }
   function _showEmpTasks(g) {
-    const modal = h('div', { class: 'modal-backdrop', onclick: ev => { if (ev.target === modal) modal.remove(); } });
+    /* CEL_MODAL_STICKY_v1 — close only via Close button */ const modal = h('div', { class: 'modal-backdrop' });
     const card = h('div', { class: 'modal', style: { maxWidth: '880px', maxHeight: '85vh', overflow: 'auto' } });
     card.appendChild(h('div', { class: 'modal-head' },
       h('h3', {}, '👤 ' + (g.user.name || 'Employee') + ' — ' + g.done + ' done, ' + g.open + ' open'),
@@ -13904,7 +13906,7 @@ VIEWS.tasks = async (view) => {
     const t = rows.find(r => Number(r.id) === Number(id));
     if (!t) { toast('Task not found', 'err'); return; }
     const backdrop = h('div', { class: 'modal-backdrop' });
-    backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+    /* CEL_MODAL_STICKY_v1 — close only via Close button (backdrop click intentionally NOT bound) */
     backdrop.appendChild(h('div', { class: 'modal' },
       h('h3', {}, '📋 ' + t.title),
       h('table', { style:{ width:'100%' } },
@@ -16765,7 +16767,7 @@ function popupNewLeads(leads) {
   if (_newLeadPopupShown) return;
   _newLeadPopupShown = true;
   const close = () => { modal.remove(); _newLeadPopupShown = false; };
-  const modal = h('div', { class: 'modal-backdrop popup-new-lead', onclick: ev => { if (ev.target === modal) close(); } },
+  /* CEL_MODAL_STICKY_v1 — close only via Close button */ const modal = h('div', { class: 'modal-backdrop popup-new-lead' },
     h('div', { class: 'modal' },
       h('div', { class: 'modal-head' },
         h('h3', {}, '🎯 ' + (leads.length === 1 ? 'New lead' : leads.length + ' new leads')),
