@@ -13897,11 +13897,15 @@ VIEWS.tasks = async (view) => {
     );
   }
   async function openTaskDetail(id) {
+    /* CEL_TASK_VIEW_FIX_v1 — was using class 'modal' as outer wrapper without a
+       'modal-backdrop'. Without the backdrop the modal had no fixed positioning,
+       so it rendered below the page and the user saw nothing. Wrap in backdrop. */
     const rows = await api('api_tasks_list', {});
     const t = rows.find(r => Number(r.id) === Number(id));
     if (!t) { toast('Task not found', 'err'); return; }
-    const modal = h('div', { class: 'modal' });
-    modal.appendChild(h('div', { class: 'modal-content' },
+    const backdrop = h('div', { class: 'modal-backdrop' });
+    backdrop.onclick = (ev) => { if (ev.target === backdrop) backdrop.remove(); };
+    backdrop.appendChild(h('div', { class: 'modal' },
       h('h3', {}, '📋 ' + t.title),
       h('table', { style:{ width:'100%' } },
         h('tbody', {},
@@ -13916,11 +13920,11 @@ VIEWS.tasks = async (view) => {
       ),
       h('h4', { style:{ marginTop:'.8rem' } }, 'Description'),
       h('div', { style:{ background:'#f8fafc', padding:'.6rem .8rem', borderRadius:'6px', whiteSpace:'pre-wrap' } }, t.description || h('span',{class:'muted'},'(no description)')),
-      h('div', { class: 'modal-actions', style:{ marginTop:'.8rem', display:'flex', justifyContent:'flex-end' } },
-        h('button', { class: 'btn ghost', onclick: () => modal.remove() }, 'Close')
+      h('div', { class: 'actions', style:{ marginTop:'.8rem' } },
+        h('button', { class: 'btn ghost', onclick: () => backdrop.remove() }, 'Close')
       )
     ));
-    document.body.appendChild(modal);
+    document.body.appendChild(backdrop);
   }
 
   async function renderTodayTasks() {
