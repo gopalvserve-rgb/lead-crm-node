@@ -3651,13 +3651,33 @@ function field(name, label, value, opts = {}) {
 function selectField(name, label, value, options, opts = {}) {
   const selAttrs = { name };
   if (opts.id) selAttrs.id = opts.id;
-  const sel = h('select', selAttrs,
-    ...options.map(o => {
-      const v = typeof o === 'object' ? o.value : o;
-      const t = typeof o === 'object' ? o.label : o;
-      return h('option', { value: v, selected: String(value) === String(v) ? 'selected' : null }, t);
-    })
-  );
+
+  // Preserve the lead's current value even when the option set no longer
+  // contains it. WITHOUT THIS GUARD, an admin deleting/renaming a source
+  // (e.g. "Website") leaves every existing lead's source dropdown silently
+  // defaulted to the FIRST option — and the very next Save then overwrites
+  // the DB value to whatever happened to be first in the list (e.g.
+  // "WhatsApp"). That's a data-corruption bug, not a display bug, and it
+  // hits Source / Status / Product / Assignee identically.
+  //
+  // Fix: if `value` doesn't match any option, prepend a sentinel option
+  // that holds the actual value so the dropdown shows it as selected.
+  // Labelled "(legacy)" so the rep knows it's been removed from the
+  // active list — picking any other option commits to the new one.
+  const _valStr = (value === '' || value == null) ? '' : String(value);
+  const _hasMatch = _valStr === '' || options.some(o => {
+    const v = typeof o === 'object' ? o.value : o;
+    return String(v) === _valStr;
+  });
+  const _optionEls = options.map(o => {
+    const v = typeof o === 'object' ? o.value : o;
+    const t = typeof o === 'object' ? o.label : o;
+    return h('option', { value: v, selected: _valStr === String(v) ? 'selected' : null }, t);
+  });
+  if (!_hasMatch) {
+    _optionEls.unshift(h('option', { value: _valStr, selected: 'selected' }, _valStr + ' (legacy)'));
+  }
+  const sel = h('select', selAttrs, ..._optionEls);
   return h('div', { class: opts.full ? 'f-row full' : 'f-row' }, h('label', {}, label), sel);
 }
 function selectOpts(id, items, value) {
@@ -4143,19 +4163,41 @@ function actionTimelineBlock(leadId) {
     // when checking "what was the last thing that happened?"
     const sorted = [...rows].reverse();
     const ul = h('ul', { class: 'timeline timeline-rich' });
+    // Resolve status / user IDs to display names against CRM.cache so the
+    // timeline shows "Hot → Negotiation" / "Varsha → Sandeep" instead of
+    // the raw "#2 → #9" / "User #20 → #11" that confused reps trying to
+    // work out who reassigned a lead. Falls back to '#<id>' when the
+    // referenced row has been deleted/renumbered so historical rows still
+    // round-trip safely.
+    const _tlStatusCache = (CRM.cache && CRM.cache.statuses) || [];
+    const _tlUsersCache  = (CRM.cache && CRM.cache.users)    || [];
+    const _tlStatusName = (id) => {
+      if (id == null || id === '') return '?';
+      const s = _tlStatusCache.find(x => Number(x.id) === Number(id));
+      return s ? s.name : ('#' + id);
+    };
+    const _tlUserName = (id) => {
+      if (id == null || id === '') return 'Unassigned';
+      const u = _tlUsersCache.find(x => Number(x.id) === Number(id));
+      return u ? u.name : ('#' + id);
+    };
     sorted.forEach(r => {
       const c = cfg[r.action_type] || { icon: '•', label: r.action_type, color: '#94a3b8' };
       const m = r.meta || {};
       // Compose a sub-line based on action type
       let sub = null;
       if (r.action_type === 'status_change') {
-        sub = m.to_status_id || m.from_status_id ? ('Status #' + (m.from_status_id || '?') + ' → #' + (m.to_status_id || '?')) : null;
+        sub = (m.to_status_id || m.from_status_id)
+          ? (_tlStatusName(m.from_status_id) + ' → ' + _tlStatusName(m.to_status_id))
+          : null;
       } else if (r.action_type === 'remark') {
         sub = m.remark || null;
       } else if (r.action_type === 'followup_set') {
         sub = m.due_at ? ('Due ' + fmtDate(m.due_at)) : null;
       } else if (r.action_type === 'assigned') {
-        sub = (m.from && m.to) ? ('User #' + m.from + ' → #' + m.to) : null;
+        sub = (m.from || m.to)
+          ? (_tlUserName(m.from) + ' → ' + _tlUserName(m.to))
+          : null;
       } else if (r.action_type === 'whatsapp_out') {
         sub = (m.template ? '[Template: ' + m.template + '] ' : '') + (m.preview || '');
         if (m.error) sub += ' ⚠ ' + m.error;
