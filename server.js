@@ -1392,6 +1392,18 @@ try {
   console.warn('[nurture] worker failed to start:', e.message);
 }
 
+// ---- CEL_RETENTION_v1 — daily cleanup of recordings + logs ----
+// Drops rows older than RETENTION_DAYS (default 30) from
+// lead_recordings, call_events, lead_actions, wa_activity_log,
+// automation_log and webhook_log. Admin can adjust via the Storage
+// & Retention settings tab; manual run via api_admin_dataRetentionRun.
+try {
+  const _retention = require('./utils/dataRetention');
+  if (_retention && typeof _retention.start === 'function') _retention.start();
+} catch (e) {
+  console.warn('[retention] worker failed to start:', e.message);
+}
+
 app.listen(PORT, HOST, () => {
     console.log('================================================');
     console.log(`Lead CRM running on http://${HOST}:${PORT}`);

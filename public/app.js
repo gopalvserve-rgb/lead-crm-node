@@ -4224,6 +4224,9 @@ function actionTimelineBlock(leadId) {
       ));
     });
     wrap.appendChild(ul);
+    // CEL_RETENTION_v1 — storage notice at the bottom of the timeline
+    // so the rep knows the activity log is NOT kept forever.
+    wrap.appendChild(_storageNotice('activity'));
   }).catch(() => { wrap.style.display = 'none'; });
   return wrap;
 }
@@ -4236,14 +4239,39 @@ function recordingsBlock(leadId) {
     list.innerHTML = '';
     if (!rows || rows.length === 0) {
       list.appendChild(aiSummaryPlaceholder());
-      return;
+    } else {
+      rows.forEach(r => list.appendChild(renderRecordingItem(r)));
     }
-    rows.forEach(r => list.appendChild(renderRecordingItem(r)));
+    // CEL_RETENTION_v1 — show storage location + retention so reps know
+    // recordings are NOT kept forever. Backed by utils/dataRetention.js
+    // which deletes lead_recordings rows older than RETENTION_DAYS.
+    wrap.appendChild(_storageNotice('recordings'));
   }).catch(e => {
     list.innerHTML = '';
     list.appendChild(h('li', { class: 'muted' }, 'Could not load: ' + e.message));
   });
   return wrap;
+}
+
+/**
+ * CEL_RETENTION_v1 — small footer note describing where this kind of
+ * data lives and when it expires. Called at the bottom of the
+ * recordings block + activity-timeline block. Reads RETENTION_DAYS
+ * from the cached admin config the SPA loads at boot; falls back to 30.
+ */
+function _storageNotice(kind) {
+  const days = Number((CRM.cache && CRM.cache.config && CRM.cache.config.RETENTION_DAYS) || 30) || 30;
+  const where = {
+    recordings: 'Stored inline in PostgreSQL (lead_recordings.audio_bytes — no external file store).',
+    activity:   'Stored in PostgreSQL (lead_actions table — single source of truth).',
+    calls:      'Stored in PostgreSQL (call_events table).'
+  }[kind] || 'Stored in PostgreSQL.';
+  return h('div', {
+    class: 'storage-notice muted',
+    style: { fontSize: '.72rem', padding: '.45rem .6rem', marginTop: '.4rem', borderTop: '1px dashed var(--border-light, #e5e7eb)' }
+  },
+    '🗄️ ' + where + ' Auto-deleted after ' + days + ' days.'
+  );
 }
 
 // Placeholder shown when a lead has no recordings yet — gives users a

@@ -390,6 +390,44 @@ async function api_admin_sourceMapping_save(token, source, mapping) {
   return _sourceMapping.api_admin_sourceMapping_save(token, source, mapping);
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// CEL_RETENTION_v1 — Data retention admin endpoints
+//
+// Backed by utils/dataRetention.js which deletes rows older than
+// RETENTION_DAYS (default 30) from lead_recordings, call_events,
+// lead_actions, wa_activity_log, automation_log, webhook_log.
+// All three RPCs are admin-only — non-admins get an error.
+// ─────────────────────────────────────────────────────────────────────────
+async function api_admin_dataRetentionStatus(token) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  return require('../utils/dataRetention').getStatus();
+}
+
+async function api_admin_dataRetentionRun(token, opts) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  // force=true bypasses the RETENTION_ENABLED toggle so the admin can
+  // always trigger a manual run for testing, even if the daily worker
+  // is disabled.
+  const o = opts || {};
+  return require('../utils/dataRetention').runCleanup({ force: true, days: o.days });
+}
+
+async function api_admin_dataRetentionSet(token, settings) {
+  const me = await authUser(token);
+  if (me.role !== 'admin') throw new Error('Admin only');
+  const s = settings || {};
+  if (s.days != null) {
+    const n = Math.max(1, Math.min(3650, Math.floor(Number(s.days) || 30)));
+    await db.setConfig('RETENTION_DAYS', String(n));
+  }
+  if (s.enabled != null) {
+    await db.setConfig('RETENTION_ENABLED', s.enabled ? '1' : '0');
+  }
+  return { ok: true };
+}
+
 module.exports = {
   api_company_info,
   api_admin_getConfig, api_admin_config,
@@ -405,5 +443,6 @@ module.exports = {
   api_admin_webhookLogs_list,
   api_admin_webhookLogs_get,
   api_admin_webhookLogs_backfillSources,
-  api_admin_sourceMapping_get, api_admin_sourceMapping_save
+  api_admin_sourceMapping_get, api_admin_sourceMapping_save,
+  api_admin_dataRetentionStatus, api_admin_dataRetentionRun, api_admin_dataRetentionSet
 };
