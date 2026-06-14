@@ -73,6 +73,32 @@ async function api_call_logEvent(token, payload) {
   const showOut  = String(await db.getConfig('CALLS_LOG_OUTBOUND', '1')) === '1';
   const allowLog = (isInbound && showIn) || (isOutbound && showOut) || (!isInbound && !isOutbound);
   if (allowLog) {
+    // CEL_CALL_DEDUP_v1 — Idempotency guard. The mobile plugin fires
+    // every call event through THREE parallel paths (Capacitor emit +
+    // intent→WebView RPC + direct HTTP POST) for reliability, but two
+    // of those paths land here. Combined with Android OEM dialers
+    // emitting transient RINGING→IDLE→RINGING flickers, one physical
+    // call ended up producing 2-4 rows including contradictory
+    // direction labels (incoming + outgoing + missed for a single
+    // inbound call). Soft dedup: if an identical (user, phone, event,
+    // direction) row landed within the last 12s, skip this insert.
+    // 12s comfortably covers the slowest network round-trip between
+    // the two write paths while still allowing back-to-back legitimate
+    // calls in different states (a rep dialing the same lead twice
+    // within seconds will use different events so they don't collapse).
+    const dupCheck = await db.query(
+      `SELECT id FROM call_events
+        WHERE user_id = $1
+          AND phone = $2
+          AND event = $3
+          AND direction = $4
+          AND created_at > NOW() - INTERVAL '12 seconds'
+        LIMIT 1`,
+      [me.id, p.phone || '', p.event || 'unknown', direction]
+    );
+    if (dupCheck && dupCheck.rows && dupCheck.rows.length > 0) {
+      return { ok: true, lead_id: lead ? lead.id : null, logged: false, deduped: true };
+    }
     await db.insert('call_events', {
       lead_id: lead ? lead.id : null,
       user_id: me.id,

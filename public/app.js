@@ -16262,11 +16262,15 @@ window.onLeadCRMCallEvent = function (event, number) {
     );
     const lead = matchByNumber || ctxLead;
 
-    // Log every call into the timeline (best-effort)
-    if (digits) {
-      const direction = (event === 'incoming_ringing') ? 'in' : 'out';
-      api('api_call_logEvent', { phone: number, direction, event }).catch(() => {});
-    }
+    // CEL_CALL_DEDUP_v1 — Do NOT log to the server from here.
+    // PhoneStateReceiver.kt's HTTP path (postNativeAsync → /api/call_event_native)
+    // already writes the event with the correct direction. Logging again from
+    // the WebView path produced contradictory rows: this side blindly inferred
+    // 'direction = out' for any non-incoming_ringing event, so an answered
+    // incoming call landed as both 'in' (HTTP path) AND 'out' (this path) →
+    // one physical call appearing as Incoming + Outgoing in the timeline.
+    // The HTTP path is the single source of truth now. This handler is kept
+    // ONLY for in-app UI side-effects (popup, lead resume).
 
     if (event === 'incoming_ringing' && !matchByNumber && digits) {
       promptSaveAsLead(number);

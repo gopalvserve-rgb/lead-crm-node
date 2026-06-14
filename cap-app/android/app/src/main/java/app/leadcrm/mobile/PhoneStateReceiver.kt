@@ -47,6 +47,32 @@ class PhoneStateReceiver : BroadcastReceiver() {
         private var lastNumber: String = ""
         private var ringStartMs: Long = 0
         private var offhookStartMs: Long = 0
+
+        // CEL_CALL_DEDUP_v1 — extra state for fixing the multi-row bug.
+        //
+        // outgoingCallTime: set when Android fires NEW_OUTGOING_CALL. Used
+        //   at OFFHOOK→IDLE to decide direction. If we saw NEW_OUTGOING_CALL
+        //   AFTER the last RINGING (or no RINGING at all), this was an
+        //   outgoing call — was previously hardcoded as direction="in"
+        //   which mislabelled outbound calls.
+        //
+        // lastFireKey + lastFireMs: signature of the last event we fired,
+        //   plus timestamp. Used to suppress duplicate broadcasts that
+        //   some OEM dialers (Xiaomi MIUI, Realme RealmeUI, Vivo Funtouch)
+        //   emit when a single physical state change is reported twice
+        //   in quick succession.
+        //
+        // MIN_RING_FOR_MISSED_MS: the RINGING→IDLE-without-OFFHOOK path
+        //   used to log a "missed" call. But OEMs sometimes flicker
+        //   RINGING for <500 ms before transitioning to OFFHOOK on the
+        //   second subscriber — that flicker isn't a missed call, it's
+        //   a state-machine quirk. Require the RINGING to have lasted
+        //   at least this long before we believe it.
+        private var outgoingCallTime: Long = 0
+        private var lastFireKey: String = ""
+        private var lastFireMs: Long = 0
+        private const val DEDUP_WINDOW_MS = 1500L
+        private const val MIN_RING_FOR_MISSED_MS = 2000L
     }
 
     override fun onReceive(ctx: Context, intent: Intent) {
@@ -55,6 +81,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
         if (action == "android.intent.action.NEW_OUTGOING_CALL") {
             val n = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: ""
             if (n.isNotEmpty()) lastNumber = n
+            outgoingCallTime = System.currentTimeMillis()
             return
         }
 
@@ -68,7 +95,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
             TelephonyManager.EXTRA_STATE_RINGING -> {
                 ringStartMs = now
                 lastNumber = number
-                if (number.isNotEmpty()) {
+                if (number.isNotEmpty() && shouldFire("incoming_ringing", number, now)) {
                     Log.i(TAG, "RINGING from $number → fire incoming_ringing")
                     safeCapacitor { CallerIdPlugin.instance?.emitRinging(number) }
                     sendCallEvent(ctx, "incoming_ringing", number, missed = false, durationSec = 0)
@@ -80,27 +107,62 @@ class PhoneStateReceiver : BroadcastReceiver() {
             }
             TelephonyManager.EXTRA_STATE_IDLE -> {
                 if (lastState == TelephonyManager.EXTRA_STATE_RINGING) {
-                    // RINGING → IDLE without OFFHOOK = missed call
-                    Log.i(TAG, "MISSED call from $lastNumber → fire call_ended (missed)")
-                    safeCapacitor { CallerIdPlugin.instance?.emitEnded(lastNumber, 0, missed = true) }
-                    sendCallEvent(ctx, "call_ended", lastNumber, missed = true, durationSec = 0)
-                    postNativeAsync(ctx, "call_ended", lastNumber, direction = "missed", missed = true, durationSec = 0)
+                    // RINGING → IDLE without OFFHOOK *could* be a missed call,
+                    // but only if RINGING lasted long enough to be real. OEM
+                    // state flicker (<2s) is not a missed call.
+                    val ringDur = now - ringStartMs
+                    if (ringDur >= MIN_RING_FOR_MISSED_MS &&
+                        shouldFire("call_ended_missed", lastNumber, now)) {
+                        Log.i(TAG, "MISSED call from $lastNumber (rang ${ringDur}ms) → fire call_ended (missed)")
+                        safeCapacitor { CallerIdPlugin.instance?.emitEnded(lastNumber, 0, missed = true) }
+                        sendCallEvent(ctx, "call_ended", lastNumber, missed = true, durationSec = 0)
+                        postNativeAsync(ctx, "call_ended", lastNumber, direction = "missed", missed = true, durationSec = 0)
+                    } else if (ringDur < MIN_RING_FOR_MISSED_MS) {
+                        Log.i(TAG, "RINGING→IDLE in ${ringDur}ms — OEM flicker, ignoring")
+                    }
                 } else if (lastState == TelephonyManager.EXTRA_STATE_OFFHOOK) {
                     val dur = (now - offhookStartMs) / 1000
-                    Log.i(TAG, "ENDED call with $lastNumber after ${dur}s → fire call_ended")
-                    safeCapacitor { CallerIdPlugin.instance?.emitEnded(lastNumber, dur, missed = false) }
-                    sendCallEvent(ctx, "call_ended", lastNumber, missed = false, durationSec = dur)
-                    // direction unknown at this layer — outbound calls flow through here too.
-                    // Fall back to 'in' for inbound completed (we know last RINGING happened
-                    // because OFFHOOK can only come after RINGING for inbound) — but to be
-                    // safe leave as null so the server's default kicks in.
-                    postNativeAsync(ctx, "call_ended", lastNumber, direction = "in", missed = false, durationSec = dur)
+                    // Decide direction from what we actually saw:
+                    //   - If we saw NEW_OUTGOING_CALL more recently than RINGING → outbound
+                    //   - If we saw RINGING for this call → inbound
+                    //   - Otherwise (no signal) → fall back to "in" but flag in log
+                    val ringRecent = ringStartMs > 0 && ringStartMs > outgoingCallTime
+                    val outgoingRecent = outgoingCallTime > 0 && outgoingCallTime > ringStartMs
+                    val direction = when {
+                        outgoingRecent -> "out"
+                        ringRecent     -> "in"
+                        else           -> "in"  // legacy fallback
+                    }
+                    if (shouldFire("call_ended_$direction", lastNumber, now)) {
+                        Log.i(TAG, "ENDED call with $lastNumber after ${dur}s (direction=$direction) → fire call_ended")
+                        safeCapacitor { CallerIdPlugin.instance?.emitEnded(lastNumber, dur, missed = false) }
+                        sendCallEvent(ctx, "call_ended", lastNumber, missed = false, durationSec = dur)
+                        postNativeAsync(ctx, "call_ended", lastNumber, direction = direction, missed = false, durationSec = dur)
+                    }
                 }
                 ringStartMs = 0
                 offhookStartMs = 0
+                outgoingCallTime = 0
             }
         }
         lastState = state
+    }
+
+    /**
+     * Native-side dedup gate. Returns true if this event should fire,
+     * false if it's a duplicate of one we fired within DEDUP_WINDOW_MS.
+     * Catches OEM-driven repeat broadcasts that bypass the
+     * lastState/ringStartMs guards above.
+     */
+    private fun shouldFire(eventKey: String, number: String, now: Long): Boolean {
+        val key = "$eventKey:$number"
+        if (key == lastFireKey && (now - lastFireMs) < DEDUP_WINDOW_MS) {
+            Log.i(TAG, "shouldFire: dup '$key' within ${now - lastFireMs}ms — skip")
+            return false
+        }
+        lastFireKey = key
+        lastFireMs = now
+        return true
     }
 
     private fun safeCapacitor(block: () -> Unit) {
