@@ -90,7 +90,8 @@ const SCHEMA = {
               'address', 'city', 'state', 'pincode', 'country', 'company',
               'value', 'currency', 'meta_json', 'extra_json',
               'budget_max', 'requirement_type', 'requirement_notes',
-              'project_stage_id', 'project_stage_started_at'],
+              'project_stage_id', 'project_stage_started_at',
+              'broker_id'],
     json: ['meta_json', 'extra_json']
   },
   project_stages: {

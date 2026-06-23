@@ -1019,6 +1019,13 @@ async function _ensureSchemaPhase3() {
   try { await db.query(`ALTER TABLE re_bookings ADD COLUMN IF NOT EXISTS discount_reason TEXT NOT NULL DEFAULT ''`); } catch (_) {}
   try { await db.query(`ALTER TABLE re_bookings ADD COLUMN IF NOT EXISTS salesperson_id INTEGER`); } catch (_) {}
   try { await db.query(`ALTER TABLE re_bookings ADD COLUMN IF NOT EXISTS salesperson_commission_pct NUMERIC(5,2) NOT NULL DEFAULT 0`); } catch (_) {}
+
+  // CEL_BROKER_FIELD_v1 — mark which channel partner brought the lead.
+  // Nullable FK; ON DELETE SET NULL so deleting a broker just clears
+  // the field on historic leads (we never want lead loss from broker
+  // cleanup). Added in _ensureSchema so it runs on every pack call.
+  try { await db.query(`ALTER TABLE leads ADD COLUMN IF NOT EXISTS broker_id INTEGER`); } catch (_) {}
+  try { await db.query(`CREATE INDEX IF NOT EXISTS leads_broker_id_idx ON leads(broker_id)`); } catch (_) {}
 }
 
 // ───── Buyer Requirements ─────

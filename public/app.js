@@ -3084,6 +3084,10 @@ async function openLeadModal(id) {
       }, '💬 My WhatsApp') : null,
       _digits ? h('button', { type: 'button', class: 'btn sm wa-cloud-btn', onclick: () => openInitiateChatModal(lead) }, '🟢 WA Template') : null,
       _digits ? h('button', { type: 'button', class: 'btn sm', onclick: () => sendCalendlyLink(lead) }, '📅 Send Calendly') : null,
+      // CEL_SITE_VISIT_v1 — opens the realestate-pack schedule modal.
+      // Always rendered; if the pack isn't installed the modal's save
+      // call will fail gracefully with a toast.
+      lead.id ? h('button', { type: 'button', class: 'btn sm', onclick: () => openScheduleVisitModal(lead.id, null, () => { try { modal.remove(); openLeadModal(lead.id); } catch (_) {} }), title: 'Schedule a property site visit for this lead' }, '🏠 Site Visit') : null,
       lead.email ? h('a', { class: 'btn sm', href: 'mailto:' + lead.email }, '✉ Email') : null
     ));
   }
@@ -3128,6 +3132,11 @@ async function openLeadModal(id) {
     selectField('product_id', 'Product', lead.product_id, [{ value: '', label: '—' }, ...products.map(p => ({ value: p.id, label: p.name }))]),
     selectField('status_id', 'Status', lead.status_id, statuses.map(s => ({ value: s.id, label: s.name })), { id: 'lead-status' }),
     selectField('assigned_to', 'Assigned To', lead.assigned_to, users.map(u => ({ value: u.id, label: u.name }))),
+    // CEL_BROKER_FIELD_v1 — Broker (channel partner) dropdown.
+    // Async-populated from api_re_channelPartners_list at the bottom
+    // of this function; renders empty if the realestate pack isn't
+    // active so the field is harmless on non-realestate tenants.
+    selectField('broker_id', '🏠 Broker / Channel Partner', lead.broker_id, [{ value: '', label: '— No broker —' }], { id: 'lead-broker' }),
     tagsInput(lead.tags, tagLibrary, isAdmin),
     field('next_followup_at', 'Next follow-up', isoToLocalDtInput(lead.next_followup_at), { type: 'datetime-local', id: 'lead-fu' }),
     field('city', 'City', lead.city),
@@ -3275,11 +3284,34 @@ async function openLeadModal(id) {
     });
   }
 
+  // CEL_BROKER_FIELD_v1 — populate broker dropdown from active partners.
+  // Fire-and-forget: if the realestate pack isn't installed the API throws
+  // and we just leave the dropdown empty.
+  (async () => {
+    try {
+      const partners = await api('api_re_channelPartners_list');
+      const sel = form.querySelector('select[name="broker_id"]');
+      if (!sel || !Array.isArray(partners)) return;
+      partners.filter(p => Number(p.is_active)).forEach(p => {
+        const opt = h('option', { value: p.id, selected: Number(lead.broker_id) === Number(p.id) ? 'selected' : null },
+          p.name + (p.commission_pct ? ' (' + p.commission_pct + '%)' : '')
+        );
+        sel.appendChild(opt);
+      });
+    } catch (_) { /* pack not installed — fine */ }
+  })();
+
   if (id) body.appendChild(projectStageBlock(id, lead));
   if (id) body.appendChild(matchingInventoryBlock(id));
   if (id) body.appendChild(actionTimelineBlock(id));
   if (id) body.appendChild(remarksBlock(remarks, id));
   if (id) body.appendChild(recordingsBlock(id));
+  // CEL_SITE_VISIT_v1 — mount the existing site-visits block (defined
+  // around line 20540) so each lead shows its site visits inline.
+  // The block self-hides if the realestate pack isn't installed.
+  if (id) {
+    try { body.appendChild(buildSiteVisitsBlock(id)); } catch (_) {}
+  }
   // Action row — Cancel / Save / [Duplicate & reassign for managers+]
   const actionsRow = h('div', { class: 'actions' });
   actionsRow.appendChild(h('button', { type: 'button', class: 'btn', onclick: () => modal.remove() }, 'Cancel'));
@@ -20326,7 +20358,12 @@ VIEWS.revisits = async (view) => {
 
 VIEWS.recpperf = async (view) => {
   view.innerHTML = '';
-  view.appendChild(h('h2', {}, '👥 Broker / Channel Partner Performance'));
+  // CEL_BROKER_CRUD_v1 — header with title + Add/Manage broker buttons.
+  view.appendChild(h('div', { style:{ display:'flex', alignItems:'center', gap:'.5rem', marginBottom:'.4rem', flexWrap:'wrap' } },
+    h('h2', { style:{ margin: 0, flex: 1 } }, '👥 Broker / Channel Partner Performance'),
+    h('button', { class:'btn primary', onclick: () => openBrokerEditModal(null, () => VIEWS.recpperf(view)) }, '+ Add Broker'),
+    h('button', { class:'btn', onclick: () => openManageBrokersModal(() => VIEWS.recpperf(view)) }, '⚙ Manage Brokers')
+  ));
 
   const fStart = h('input', { type:'date', value: new Date(Date.now() - 180*24*60*60*1000).toISOString().slice(0,10) });
   const fEnd   = h('input', { type:'date', value: new Date().toISOString().slice(0,10) });
@@ -20703,4 +20740,123 @@ function openRescheduleModal(visit, onDone) {
     } }, 'Save')
   ));
   m.appendChild(modal); document.body.appendChild(m);
+}
+
+
+/**
+ * CEL_BROKER_CRUD_v1 — Add / edit a channel partner (broker).
+ *
+ * existing = broker row OR null for new.
+ * onDone() called after save so the caller can refresh its view.
+ */
+async function openBrokerEditModal(existing, onDone) {
+  const ex = existing || { commission_pct: 0, is_active: 1 };
+  const m = h('div', { class:'modal-backdrop' });
+  const modal = h('div', { class:'modal' });
+  modal.appendChild(h('div', { class:'modal-head' },
+    h('h3', {}, ex.id ? '✎ Edit broker' : '+ Add broker'),
+    h('button', { class:'btn ghost', onclick: () => m.remove() }, '✕')
+  ));
+  const fName  = h('input', { type:'text', value: ex.name || '', placeholder:'Broker name *' });
+  const fPhone = h('input', { type:'text', value: ex.phone || '', placeholder:'Phone' });
+  const fEmail = h('input', { type:'email', value: ex.email || '', placeholder:'Email' });
+  const fCom   = h('input', { type:'number', step:'0.01', min:'0', max:'100', value: ex.commission_pct || 0, placeholder:'Commission %' });
+  const fAct   = h('input', { type:'checkbox' });
+  fAct.checked = Number(ex.is_active) !== 0;
+  const fNotes = h('textarea', { rows:2, placeholder:'Notes' }); fNotes.value = ex.notes || '';
+  modal.appendChild(h('div', { class:'modal-body' },
+    h('label', {}, 'Name *', fName),
+    h('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'.5rem' } },
+      h('label', {}, 'Phone', fPhone),
+      h('label', {}, 'Email', fEmail)
+    ),
+    h('div', { style:{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'.5rem' } },
+      h('label', {}, 'Commission %', fCom),
+      h('label', { style:{ display:'flex', alignItems:'center', gap:'.4rem', marginTop:'1.4rem' } }, fAct, 'Active')
+    ),
+    h('label', {}, 'Notes', fNotes)
+  ));
+  modal.appendChild(h('div', { class:'actions' },
+    h('button', { class:'btn', onclick: () => m.remove() }, 'Cancel'),
+    h('button', { class:'btn primary', onclick: async () => {
+      const name = fName.value.trim();
+      if (!name) { toast('Broker name required','err'); return; }
+      try {
+        await api('api_re_channelPartners_save', {
+          id: ex.id || undefined,
+          name,
+          phone: fPhone.value.trim(),
+          email: fEmail.value.trim(),
+          commission_pct: Number(fCom.value) || 0,
+          is_active: fAct.checked ? 1 : 0,
+          notes: fNotes.value
+        });
+        toast('Broker saved'); m.remove();
+        if (onDone) onDone();
+      } catch (e) { toast(e.message,'err'); }
+    } }, 'Save')
+  ));
+  m.appendChild(modal); document.body.appendChild(m);
+  setTimeout(() => fName.focus(), 80);
+}
+
+/**
+ * CEL_BROKER_CRUD_v1 — List + edit / deactivate brokers in one modal.
+ */
+async function openManageBrokersModal(onDone) {
+  const m = h('div', { class:'modal-backdrop' });
+  const modal = h('div', { class:'modal modal-lg' });
+  modal.appendChild(h('div', { class:'modal-head' },
+    h('h3', {}, '⚙ Manage Brokers'),
+    h('button', { class:'btn ghost', onclick: () => { m.remove(); if (onDone) onDone(); } }, '✕')
+  ));
+  const body = h('div', { class:'modal-body' });
+  modal.appendChild(body);
+  m.appendChild(modal); document.body.appendChild(m);
+
+  async function refresh() {
+    body.innerHTML = '<div class="muted" style="padding:1rem">Loading…</div>';
+    try {
+      const list = await api('api_re_channelPartners_list');
+      body.innerHTML = '';
+      body.appendChild(h('button', { class:'btn primary', style:{ marginBottom:'.5rem' }, onclick: () => openBrokerEditModal(null, refresh) }, '+ Add Broker'));
+      if (!list || !list.length) {
+        body.appendChild(h('div', { class:'muted', style:{ padding:'.5rem' } }, 'No brokers yet.'));
+        return;
+      }
+      const tbl = h('table', { class:'mini-table' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Name'),
+          h('th', {}, 'Phone'),
+          h('th', {}, 'Email'),
+          h('th', {}, 'Commission %'),
+          h('th', {}, 'Status'),
+          h('th', {}, '')
+        )),
+        h('tbody', {}, ...list.map(p => h('tr', {},
+          h('td', {}, h('strong', {}, p.name)),
+          h('td', {}, p.phone || '—'),
+          h('td', {}, p.email || '—'),
+          h('td', {}, String(p.commission_pct || 0) + '%'),
+          h('td', {}, Number(p.is_active) ? '✓ Active' : '— Inactive'),
+          h('td', {},
+            h('button', { class:'btn xs', onclick: () => openBrokerEditModal(p, refresh) }, '✎ Edit'),
+            ' ',
+            h('button', { class:'btn xs', onclick: async () => {
+              try {
+                await api('api_re_channelPartners_save', Object.assign({}, p, { is_active: Number(p.is_active) ? 0 : 1 }));
+                toast(Number(p.is_active) ? 'Deactivated' : 'Activated');
+                refresh();
+              } catch (e) { toast(e.message,'err'); }
+            } }, Number(p.is_active) ? '⏸ Deactivate' : '▶ Activate')
+          )
+        )))
+      );
+      body.appendChild(tbl);
+    } catch (e) {
+      body.innerHTML = '';
+      body.appendChild(h('div', { class:'muted', style:{ padding:'.5rem' } }, e.message));
+    }
+  }
+  refresh();
 }
