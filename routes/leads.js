@@ -702,6 +702,12 @@ async function api_leads_create(token, payload) {
     product_id: resolvedProductId,
     status_id: _statusId,
     assigned_to: _proposedAssignee || null,
+    // CEL_BROKER_FIELD_v1 — Real-estate broker (channel partner) FK.
+    // Empty string from the form select becomes NULL so Postgres INT
+    // accepts the value; otherwise coerced to Number.
+    broker_id: (p.broker_id === '' || p.broker_id == null)
+      ? null
+      : (Number(p.broker_id) || null),
     // Address block — accepted for migration imports; lead form already
     // captures city, the rest is opt-in.
     address: p.address || '',
@@ -1029,10 +1035,20 @@ async function api_leads_update(token, id, patch) {
    'value', 'currency', 'qualified',
    // Inventory match inputs (used by api_inventory_match)
    'budget_max', 'requirement_type', 'requirement_notes',
+   // CEL_BROKER_FIELD_v1 — Real-estate broker (channel partner) FK.
+   // Added to the update whitelist so the lead form can persist the
+   // dropdown value; coerced below from string-via-form to int/null.
+   'broker_id',
    // Attribution / Google Ads columns
    'gclid', 'gad_campaignid', 'utm_source', 'utm_medium',
    'utm_campaign', 'utm_term', 'utm_content']
     .forEach(k => { if (k in patch) allowed[k] = patch[k]; });
+  // The broker_id arrives as a string from the <select> value (e.g. "5"
+  // or "" for unset). Postgres INT rejects ""; coerce to int-or-null.
+  if ('broker_id' in allowed) {
+    const v = allowed.broker_id;
+    allowed.broker_id = (v === '' || v == null) ? null : (Number(v) || null);
+  }
   allowed.updated_at = db.nowIso();
   // Track who marked the lead as qualified, and when. Only update these
   // when the qualified flag actually changes (don't overwrite on no-op saves).
