@@ -3432,6 +3432,12 @@ async function openLeadModal(id) {
       product_id: Number(fd.get('product_id')) || null,
       status_id: Number(fd.get('status_id')) || null,
       assigned_to: Number(fd.get('assigned_to')) || null,
+      // CEL_BROKER_FIELD_v1 — was missing from this payload object, so the
+      // dropdown value never reached the server even though the column
+      // existed and the backend whitelist included it. Empty-string from
+      // the '— No broker —' option is sent as-is; the server coerces it
+      // to NULL because Postgres INT rejects ''.
+      broker_id: fd.get('broker_id') || null,
       tags: tagsValue,
       next_followup_at: localDtInputToIso(fd.get('next_followup_at')),
       city: fd.get('city'), notes: fd.get('notes'),
@@ -20653,25 +20659,37 @@ async function openScheduleVisitModal(leadId, existing, onDone) {
       h('label', { style:{ gridColumn:'span 2' } }, 'Notes', fNotes)
     )
   ));
+  // CEL_VISIT_DEDUP_v1 — capture the Save button so we can disable it
+  // during the await. Without this, a double-click on Save triggered
+  // two parallel api_re_visits_schedule calls → two INSERT rows in
+  // re_site_visits for one logical visit.
+  const saveBtn = h('button', { class:'btn primary', onclick: async () => {
+    if (!fWhen.value) { toast('Schedule date required','err'); return; }
+    if (saveBtn.disabled) return;          // belt-and-braces against re-entry
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      await api('api_re_visits_schedule', {
+        id: ex.id, lead_id: leadId,
+        project_id: fProj.value ? Number(fProj.value) : null,
+        unit_id: fUnit.value ? Number(fUnit.value) : null,
+        scheduled_at: fWhen.value,
+        assigned_to: fAssign.value ? Number(fAssign.value) : null,
+        pickup_location: fPickup.value, pickup_time: fPickupAt.value || null,
+        drop_location: fDrop.value, notes: fNotes.value
+      });
+      toast('Visit scheduled');
+      m.remove();
+      if (onDone) onDone();
+    } catch (e) {
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+      toast(e.message, 'err');
+    }
+  } }, 'Save');
   modal.appendChild(h('div', { class:'actions' },
     h('button', { class:'btn', onclick: () => m.remove() }, 'Cancel'),
-    h('button', { class:'btn primary', onclick: async () => {
-      if (!fWhen.value) { toast('Schedule date required','err'); return; }
-      try {
-        await api('api_re_visits_schedule', {
-          id: ex.id, lead_id: leadId,
-          project_id: fProj.value ? Number(fProj.value) : null,
-          unit_id: fUnit.value ? Number(fUnit.value) : null,
-          scheduled_at: fWhen.value,
-          assigned_to: fAssign.value ? Number(fAssign.value) : null,
-          pickup_location: fPickup.value, pickup_time: fPickupAt.value || null,
-          drop_location: fDrop.value, notes: fNotes.value
-        });
-        toast('Visit scheduled');
-        m.remove();
-        if (onDone) onDone();
-      } catch (e) { toast(e.message, 'err'); }
-    } }, 'Save')
+    saveBtn
   ));
   m.appendChild(modal);
   document.body.appendChild(m);
