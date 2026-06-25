@@ -3087,7 +3087,15 @@ async function openLeadModal(id) {
       // CEL_SITE_VISIT_v1 — opens the realestate-pack schedule modal.
       // Always rendered; if the pack isn't installed the modal's save
       // call will fail gracefully with a toast.
-      lead.id ? h('button', { type: 'button', class: 'btn sm', onclick: () => openScheduleVisitModal(lead.id, null, () => { try { modal.remove(); openLeadModal(lead.id); } catch (_) {} }), title: 'Schedule a property site visit for this lead' }, '🏠 Site Visit') : null,
+      lead.id ? h('button', { type: 'button', class: 'btn sm', onclick: () => openScheduleVisitModal(lead.id, null, () => {
+        // CEL_VISIT_REFRESH_v1 — refresh JUST the site-visits block inside
+        // the current lead modal. Closing+reopening the whole modal was
+        // perceived by users as the schedule window re-asking for input.
+        try {
+          const block = modal.querySelector('.site-visits-block');
+          if (block && typeof block._refresh === 'function') block._refresh();
+        } catch (_) {}
+      }), title: 'Schedule a property site visit for this lead' }, '🏠 Site Visit') : null,
       lead.email ? h('a', { class: 'btn sm', href: 'mailto:' + lead.email }, '✉ Email') : null
     ));
   }
@@ -20581,7 +20589,11 @@ async function openMatchesModal(reqId) {
 }
 
 function buildSiteVisitsBlock(leadId) {
-  const wrap = h('div', { style:{ marginTop:'1rem', borderTop:'1px solid #e5e7eb', paddingTop:'1rem' } },
+  // CEL_VISIT_REFRESH_v1 — class lets the Quick Actions Site Visit button
+  // find this block and call _refresh() instead of closing+reopening the
+  // whole lead modal (which the user perceived as the schedule window
+  // re-opening after save).
+  const wrap = h('div', { class:'site-visits-block', style:{ marginTop:'1rem', borderTop:'1px solid #e5e7eb', paddingTop:'1rem' } },
     h('h4', { style:{ margin:'0 0 .5rem 0' } }, '📅 Site Visits')
   );
   const inner = h('div', {}, h('div', { class:'muted' }, 'Loading…'));
@@ -20625,6 +20637,10 @@ function buildSiteVisitsBlock(leadId) {
       if (!/not active/i.test(String(e.message||''))) inner.appendChild(h('div', { class:'muted' }, e.message));
     }
   }
+  // CEL_VISIT_REFRESH_v1 — expose refresh() so external callers (like the
+  // Quick Actions Site Visit button) can re-render the list inline after
+  // they schedule a visit, without nuking the whole lead modal.
+  wrap._refresh = refresh;
   refresh();
   return wrap;
 }
