@@ -1184,6 +1184,31 @@ async function api_re_visits_schedule(token, payload) {
     [Number(p.lead_id), p.project_id || null, p.unit_id || null, p.scheduled_at,
      p.assigned_to || null, p.pickup_location || '', p.pickup_time || null,
      p.drop_location || '', p.notes || '', me.id]);
+
+  // CEL_VISIT_STATUS_v1 — Auto-advance the lead status to "Site Visit Fixed"
+  // (or equivalent) the first time a visit is scheduled. Only forward-
+  // progresses: if the lead is already past Site Visit Fixed (e.g. already
+  // Site Visit Done, Booked, Won), nothing changes — we never downgrade.
+  // Status name candidates handle tenants that renamed the seeded labels.
+  try {
+    const NAMES = ['Site Visit Fixed', 'Site Visit Schedule', 'Site Visit Scheduled', 'Visit Scheduled'];
+    let target = null;
+    for (const name of NAMES) {
+      const sr = await db.query('SELECT id, sort_order FROM statuses WHERE LOWER(name) = LOWER($1) LIMIT 1', [name]);
+      if (sr.rows.length) { target = sr.rows[0]; break; }
+    }
+    if (target) {
+      await db.query(
+        `UPDATE leads
+            SET status_id = $1, last_status_change_at = NOW(), updated_at = NOW()
+          WHERE id = $2
+            AND (SELECT COALESCE(sort_order, 0) FROM statuses WHERE id = leads.status_id) < $3`,
+        [target.id, Number(p.lead_id), target.sort_order]
+      );
+    }
+  } catch (e) {
+    console.warn('[re_visits_schedule] status auto-advance failed:', e.message);
+  }
   return { ok: true, id: r.rows[0].id };
 }
 
