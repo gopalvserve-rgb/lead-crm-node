@@ -1279,6 +1279,49 @@ async function api_re_visits_reschedule(token, payload) {
   return { ok: true };
 }
 
+// CEL_VISIT_DELETE_v1 — Delete a single site visit by id. Admin/manager
+// only; only operates on real-estate-pack tenants.
+async function api_re_visits_delete(token, id) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) {
+    throw new Error('Admin or Manager only');
+  }
+  await _requireRealEstate();
+  await _ensureSchemaPhase3();
+  if (!id) throw new Error('id required');
+  await db.query('DELETE FROM re_site_visits WHERE id = $1', [Number(id)]);
+  return { ok: true };
+}
+
+// CEL_VISIT_DEDUPE_v1 — Bulk cleanup of exact-duplicate site visits.
+// "Exact duplicate" = same (lead_id, scheduled_at) — the signature of
+// the double-click bug fixed in CEL_VISIT_DEDUP_v1. Keeps the lowest
+// id (the original) and deletes the rest. Returns the number removed.
+async function api_re_visits_cleanDuplicates(token) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) {
+    throw new Error('Admin or Manager only');
+  }
+  await _requireRealEstate();
+  await _ensureSchemaPhase3();
+  const r = await db.query(`
+    DELETE FROM re_site_visits
+     WHERE id IN (
+       SELECT id FROM (
+         SELECT id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY lead_id, scheduled_at
+                  ORDER BY id ASC
+                ) AS rn
+           FROM re_site_visits
+       ) ranked
+       WHERE rn > 1
+     )
+  `);
+  return { ok: true, removed: r.rowCount || 0 };
+}
+
+
 async function api_re_visits_sendReminder(token, payload) {
   await authUser(token);
   await _requireRealEstate();
@@ -1494,6 +1537,7 @@ module.exports = {
   api_re_requirements_save, api_re_requirements_byLead, api_re_requirements_match, api_re_requirements_recent,
   api_re_visits_schedule, api_re_visits_byLead, api_re_visits_upcoming,
   api_re_visits_markDone, api_re_visits_reschedule, api_re_visits_sendReminder,
+  api_re_visits_delete, api_re_visits_cleanDuplicates,
   api_re_cp_performance,
   /* RE_PAYMENT_PLANS_v1 */
   api_re_paymentPlans_list, api_re_paymentPlans_save,
