@@ -20324,6 +20324,22 @@ VIEWS.rerequirements = async (view) => {
 VIEWS.revisits = async (view) => {
   view.innerHTML = '';
   view.appendChild(h('h2', {}, '📅 Site Visits — Schedule, remind, track outcomes'));
+  // CEL_VISIT_DEDUPE_v1 — admin/manager one-click cleanup of duplicates
+  // left over from the double-click insert bug (now fixed). Removes only
+  // EXACT duplicates: same lead + same scheduled_at minute.
+  if (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager')) {
+    view.appendChild(h('div', { style:{ margin:'.5rem 0', padding:'.5rem .7rem', background:'#fef3c7', border:'1px solid #fcd34d', borderRadius:'6px', display:'flex', alignItems:'center', gap:'.5rem' } },
+      h('span', { style:{ flex:1, fontSize:'.85rem' } }, '🧹 If old double-click duplicates are still listed, run a one-time cleanup. Only removes EXACT (same lead, same time) duplicates.'),
+      h('button', { class:'btn sm', onclick: async () => {
+        if (!await confirmDialog('Clean up exact-duplicate site visits across the whole tenant? This is safe — keeps one row per (lead, scheduled_at).')) return;
+        try {
+          const r = await api('api_re_visits_cleanDuplicates');
+          toast('Removed ' + (r.removed || 0) + ' duplicate visit' + (r.removed === 1 ? '' : 's'));
+          VIEWS.revisits(view);
+        } catch (e) { toast(e.message, 'err'); }
+      } }, '🧹 Clean duplicates')
+    ));
+  }
   const body = h('div', {});
   view.appendChild(body);
 
@@ -20358,7 +20374,18 @@ VIEWS.revisits = async (view) => {
             h('button', { class:'btn xs primary', onclick: () => openLeadModal(v.lead_id) }, 'Open lead'),
             h('button', { class:'btn xs', style:{ marginLeft:'.2rem' }, onclick: async () => {
               try { await api('api_re_visits_sendReminder', { id: v.id }); toast('Reminder sent'); } catch (e) { toast(e.message, 'err'); }
-            } }, '🔔 Remind')
+            } }, '🔔 Remind'),
+            // CEL_VISIT_DELETE_v1 — admin/manager can remove duplicate visits.
+            (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+              ? h('button', { class:'btn xs danger', title:'Delete this visit', onclick: async () => {
+                  if (!await confirmDialog('Delete this site visit? This cannot be undone.')) return;
+                  try {
+                    await api('api_re_visits_delete', v.id);
+                    toast('Visit deleted');
+                    if (typeof VIEWS.revisits === 'function') VIEWS.revisits(document.getElementById('view'));
+                  } catch (e) { toast(e.message, 'err'); }
+                } }, '🗑️ Delete')
+              : null
           )
         )))
       ));
@@ -20625,6 +20652,18 @@ function buildSiteVisitsBlock(leadId) {
                 try { await api('api_re_visits_sendReminder', { id: v.id }); toast('Reminder sent'); }
                 catch (e) { toast(e.message, 'err'); }
               } }, '🔔') : null,
+              // CEL_VISIT_DELETE_v1 — manager-only delete to clean up
+              // duplicate visits left over from the double-click bug.
+              (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+                ? h('button', { class:'btn xs danger', title:'Delete this visit', onclick: async () => {
+                    if (!await confirmDialog('Delete this site visit? This cannot be undone.')) return;
+                    try {
+                      await api('api_re_visits_delete', v.id);
+                      toast('Visit deleted');
+                      refresh();
+                    } catch (e) { toast(e.message, 'err'); }
+                  } }, '🗑️')
+                : null,
               h('span', { style:{ background: statusColor, color:'white', padding:'2px 6px', borderRadius:'3px', fontSize:'.7em' } }, v.status)
             )
           )
