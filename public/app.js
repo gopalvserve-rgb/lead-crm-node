@@ -86,7 +86,7 @@ async function api(fn, ...args) {
     });
     const j = await res.json();
     if (!res.ok || j.error) {
-      if (j.error && /token|User inactive/i.test(j.error)) logout();
+      if (j.error && /^(No token|Invalid or expired token|User inactive or not found)$/.test(String(j.error||'').trim())) logout();
       throw new Error(j.error || 'API error');
     }
     return j.result;
