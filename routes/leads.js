@@ -373,6 +373,24 @@ async function api_leads_list(token, filters) {
       return wanted.some(w => lt.includes(w));
     });
   }
+  // CEL_LEAD_FILTERS_v1 — Campaign filter matches ANY of utm_campaign,
+  // gad_campaignid, or extra_json.campaign_source. Case-insensitive.
+  const _campaigns = _arr(filters.campaigns).map(x => String(x).toLowerCase());
+  if (_campaigns.length) {
+    rows = rows.filter(l => {
+      const bag = [
+        String(l.utm_campaign || ''),
+        String(l.gad_campaignid || ''),
+        String(_parseExtra(l).campaign_source || '')
+      ].map(x => x.toLowerCase()).filter(Boolean);
+      return bag.length && _campaigns.some(c => bag.includes(c));
+    });
+  }
+  // CEL_LEAD_FILTERS_v1 — Channel Partner (broker) filter.
+  const _brokerIds = _arr(filters.broker_ids).map(Number).filter(n => n > 0);
+  if (_brokerIds.length) {
+    rows = rows.filter(l => l.broker_id && _brokerIds.includes(Number(l.broker_id)));
+  }
   // Qualified filter:
   //   '1' / 'only' → only leads marked qualified
   //   '0' / 'unqualified' → only leads NOT marked qualified
@@ -497,6 +515,26 @@ async function api_leads_statusCounts(token) {
   const out = {};
   rows.forEach(l => { const k = Number(l.status_id) || 0; out[k] = (out[k] || 0) + 1; });
   return out;
+}
+
+// CEL_LEAD_FILTERS_v1 — Return the distinct campaign labels currently in
+// use across visible leads. Powers the Campaign multi-select filter on
+// the Leads toolbar. Aggregates utm_campaign, gad_campaignid, and
+// extra_json.campaign_source into one deduped list.
+async function api_leads_distinctCampaigns(token) {
+  const me = await authUser(token);
+  const visible = await getVisibleUserIds(me);
+  const all = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
+  const set = new Set();
+  for (const l of all) {
+    if (l.utm_campaign)   set.add(String(l.utm_campaign));
+    if (l.gad_campaignid) set.add(String(l.gad_campaignid));
+    try {
+      const ex = _parseExtra(l);
+      if (ex && ex.campaign_source) set.add(String(ex.campaign_source));
+    } catch (_) {}
+  }
+  return Array.from(set).sort((a, b) => String(a).localeCompare(String(b)));
 }
 
 async function api_leads_get(token, id) {
@@ -1798,7 +1836,7 @@ async function api_leads_distinctTags(token) {
 }
 
 module.exports = {
-  api_leads_list, api_leads_distinctTags, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
+  api_leads_list, api_leads_distinctTags, api_leads_distinctCampaigns, api_leads_statusCounts, api_leads_get, api_leads_create, api_leads_update,
   api_leads_addRemark, api_leads_pipeline, api_myFollowups, api_followup_done,
   api_leads_bulkUpdate, api_leads_bulkDelete, api_leads_bulkCreate, api_leads_duplicateHistory,
   api_leads_deleteAllDuplicates, api_leads_duplicateAndReassign,
