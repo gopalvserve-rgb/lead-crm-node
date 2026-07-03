@@ -1201,6 +1201,28 @@ VIEWS.leads = async (view) => {
   );
   // Distinct tags — fetched once when the view loads, cached on CRM.cache.
   const _tagOpts = Array.isArray(CRM.cache.tagFilterOpts) ? CRM.cache.tagFilterOpts : [];
+  // CEL_LEAD_FILTERS_v1 — lazy-load Campaign + Broker option lists once per
+  // leads-page mount. Both are cached on CRM.cache so re-renders don't
+  // re-fetch. Fails silently if the tenant has no re-pack or no campaign
+  // attribution — the filter just shows an empty option list.
+  if (!Array.isArray(CRM.cache.campaignOpts)) {
+    (async () => {
+      try {
+        const list = await api('api_leads_distinctCampaigns');
+        CRM.cache.campaignOpts = (list || []).map(x => ({ id: String(x), name: String(x) }));
+      } catch (_) { CRM.cache.campaignOpts = []; }
+    })();
+  }
+  if (!Array.isArray(CRM.cache.brokerOpts)) {
+    (async () => {
+      try {
+        const partners = await api('api_re_channelPartners_list');
+        CRM.cache.brokerOpts = (partners || [])
+          .filter(p => Number(p.is_active))
+          .map(p => ({ id: String(p.id), name: p.name }));
+      } catch (_) { CRM.cache.brokerOpts = []; }
+    })();
+  }
   const toolbar = h('div', { class: 'toolbar' },
     searchInput,
     dateRangeWrap,
@@ -1227,6 +1249,20 @@ VIEWS.leads = async (view) => {
       options: _tagOpts,
       values: (CRM.prefs.filters.tags && CRM.prefs.filters.tags.length) ? CRM.prefs.filters.tags : [],
       onApply: (v) => { CRM.prefs.filters.tags = v; applyFilters(); }
+    }),
+    // CEL_LEAD_FILTERS_v1 — Campaign filter, options fetched below.
+    multiSelectDropdown({
+      label: 'Campaign', allLabel: 'Any campaign',
+      options: Array.isArray(CRM.cache.campaignOpts) ? CRM.cache.campaignOpts : [],
+      values: (CRM.prefs.filters.campaigns && CRM.prefs.filters.campaigns.length) ? CRM.prefs.filters.campaigns : [],
+      onApply: (v) => { CRM.prefs.filters.campaigns = v; applyFilters(); }
+    }),
+    // CEL_LEAD_FILTERS_v1 — Channel Partner (broker) filter.
+    multiSelectDropdown({
+      label: 'Channel Partner', allLabel: 'Any broker',
+      options: Array.isArray(CRM.cache.brokerOpts) ? CRM.cache.brokerOpts : [],
+      values: (CRM.prefs.filters.broker_ids && CRM.prefs.filters.broker_ids.length) ? CRM.prefs.filters.broker_ids.map(String) : [],
+      onApply: (v) => { CRM.prefs.filters.broker_ids = v; applyFilters(); }
     }),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
     wireFilter(selectOpts('f-qualified', [
@@ -1498,6 +1534,9 @@ async function loadLeads(opts) {
   const _sources   = (CRM.prefs.filters.sources    || []).map(String);
   const _assigned  = (CRM.prefs.filters.assigned_tos || []).map(String);
   const _tags      = (CRM.prefs.filters.tags       || []);
+  // CEL_LEAD_FILTERS_v1 — new filter arrays sent to the backend below.
+  const _campaigns = (CRM.prefs.filters.campaigns  || []);
+  const _brokerIds = (CRM.prefs.filters.broker_ids || []).map(String);
   const filters = {
     q:           $('#f-q')?.value || undefined,
     status_ids:  _statusIds.length ? _statusIds : undefined,
@@ -1507,6 +1546,9 @@ async function loadLeads(opts) {
     assigned_tos: _assigned.length ? _assigned : undefined,
     assigned_to:  (_assigned.length === 1) ? _assigned[0] : undefined,
     tags:        _tags.length ? _tags : undefined,
+    // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
+    campaigns:   _campaigns.length ? _campaigns : undefined,
+    broker_ids:  _brokerIds.length ? _brokerIds : undefined,
     from:        $('#f-from')?.value || undefined,
     to:          $('#f-to')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
@@ -2291,6 +2333,9 @@ function _currentLeadsExportFilters() {
   const _sources   = (CRM.prefs.filters.sources    || []).map(String);
   const _assigned  = (CRM.prefs.filters.assigned_tos || []).map(String);
   const _tags      = (CRM.prefs.filters.tags       || []);
+  // CEL_LEAD_FILTERS_v1 — new filter arrays sent to the backend below.
+  const _campaigns = (CRM.prefs.filters.campaigns  || []);
+  const _brokerIds = (CRM.prefs.filters.broker_ids || []).map(String);
   const f = {
     q:           $('#f-q')?.value || undefined,
     status_ids:  _statusIds.length ? _statusIds : undefined,
@@ -2300,6 +2345,9 @@ function _currentLeadsExportFilters() {
     assigned_tos: _assigned.length ? _assigned : undefined,
     assigned_to:  (_assigned.length === 1) ? _assigned[0] : undefined,
     tags:        _tags.length ? _tags : undefined,
+    // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
+    campaigns:   _campaigns.length ? _campaigns : undefined,
+    broker_ids:  _brokerIds.length ? _brokerIds : undefined,
     from:        $('#f-from')?.value || undefined,
     to:          $('#f-to')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
@@ -2907,6 +2955,38 @@ async function ensureXLSX() {
   });
   _xlsxLib = window.XLSX;
   return _xlsxLib;
+}
+
+/**
+ * CEL_EXPORT_XLSX_v1 — Shared XLSX download utility.
+ *
+ * @param {string}   filename  — filename prefix (date+ext appended)
+ * @param {Array[]}  rows      — 2D array of cell values
+ * @param {string[]} headers   — top-row header labels
+ * @param {string}   [sheetName='Data']
+ *
+ * All views that need a single-sheet export use this one function so we
+ * don't copy-paste the XLSX book-building code across 10 different
+ * downloadFoo() functions. See exportLeadsXLSX for the legacy pattern
+ * this replaces for new callers.
+ */
+async function _downloadTableXLSX(filename, rows, headers, sheetName) {
+  try {
+    const XLSX = await ensureXLSX();
+    const aoa  = [headers || [], ...(rows || [])];
+    const ws   = XLSX.utils.aoa_to_sheet(aoa);
+    // Auto-size columns based on the longest cell in each column.
+    ws['!cols'] = (headers || []).map((_, i) => ({
+      wch: Math.min(60, Math.max(10, ...aoa.map(r => String(r[i] || '').length)))
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, (sheetName || 'Data').slice(0, 31));
+    const stamp = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, filename + '_' + stamp + '.xlsx');
+  } catch (e) {
+    console.error('[xlsx export] failed:', e);
+    toast('Export failed: ' + (e && e.message || 'unknown'), 'err');
+  }
 }
 
 /** Normalize a column header into a snake_case key (lowercase, spaces+dashes → _). */
@@ -5486,7 +5566,19 @@ VIEWS.followups = async (view) => {
       ),
       h('input', { class:'input', placeholder:'Tag contains…', value:F.tag, style:{ maxWidth:'140px' },
         oninput: ev => { F.tag = ev.target.value; clearTimeout(window._fuTagTimer); window._fuTagTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
-      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' }; VIEWS.followups(view); } }, 'Clear')
+      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' }; VIEWS.followups(view); } }, 'Clear'),
+      // CEL_EXPORT_XLSX_v1 — Export current follow-up view to Excel.
+      h('button', { class:'btn sm', onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('followups_' + (F.bucket || 'all'), rows, headers, 'Follow-ups');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      } }, '📊 Export Excel')
     )
   );
   view.appendChild(filterCard);
@@ -20323,7 +20415,26 @@ VIEWS.rerequirements = async (view) => {
 
 VIEWS.revisits = async (view) => {
   view.innerHTML = '';
-  view.appendChild(h('h2', {}, '📅 Site Visits — Schedule, remind, track outcomes'));
+  // CEL_EXPORT_XLSX_v1 — header now hosts an Export Excel button.
+  view.appendChild(h('div', { style:{ display:'flex', alignItems:'center', gap:'.5rem', margin:'0 0 .3rem' } },
+    h('h2', { style:{ margin: 0, flex: 1 } }, '📅 Site Visits — Schedule, remind, track outcomes'),
+    h('button', { class:'btn sm', onclick: async () => {
+      try {
+        const r = await api('api_re_visits_upcoming', { days: 14 });
+        const rows = (r || []).map(v => [
+          String(v.scheduled_at || '').slice(0, 16).replace('T', ' '),
+          v.lead_name || '', v.phone || '',
+          v.project_name || '', v.unit_no || '',
+          v.assigned_to_name || '',
+          v.pickup_location || '',
+          v.status || ''
+        ]);
+        _downloadTableXLSX('site_visits', rows,
+          ['When', 'Lead', 'Phone', 'Project', 'Unit', 'Assigned to', 'Pickup', 'Status'],
+          'Site Visits');
+      } catch (e) { toast(e.message || 'Export failed', 'err'); }
+    } }, '📊 Export Excel')
+  ));
   // CEL_VISIT_DEDUPE_v1 — admin/manager one-click cleanup of duplicates
   // left over from the double-click insert bug (now fixed). Removes only
   // EXACT duplicates: same lead + same scheduled_at minute.
@@ -20402,6 +20513,26 @@ VIEWS.recpperf = async (view) => {
   // CEL_BROKER_CRUD_v1 — header with title + Add/Manage broker buttons.
   view.appendChild(h('div', { style:{ display:'flex', alignItems:'center', gap:'.5rem', marginBottom:'.4rem', flexWrap:'wrap' } },
     h('h2', { style:{ margin: 0, flex: 1 } }, '👥 Broker / Channel Partner Performance'),
+    // CEL_EXPORT_XLSX_v1 — Export current performance table to Excel.
+    h('button', { class:'btn sm', onclick: async () => {
+      try {
+        const r = await api('api_re_cp_performance', { start_date: fStart.value, end_date: fEnd.value });
+        const rows = (r.rows || []).map(x => [
+          x.name || '', x.phone || '', x.email || '',
+          Number(x.bookings || 0),
+          Number(x.registered || 0),
+          Number(x.cancelled || 0),
+          Number(x.gmv || 0),
+          Number(x.commission_due || 0),
+          Number(x.commission_paid || 0),
+          Number((x.commission_due || 0) - (x.commission_paid || 0)),
+          x.last_booking_date ? String(x.last_booking_date).slice(0, 10) : ''
+        ]);
+        _downloadTableXLSX('broker_performance', rows,
+          ['Broker', 'Phone', 'Email', '# Bookings', 'Registered', 'Cancelled', 'GMV (₹)', 'Commission Due (₹)', 'Commission Paid (₹)', 'Commission Balance (₹)', 'Last Booking'],
+          'Broker Performance');
+      } catch (e) { toast(e.message || 'Export failed', 'err'); }
+    } }, '📊 Export Excel'),
     h('button', { class:'btn primary', onclick: () => openBrokerEditModal(null, () => VIEWS.recpperf(view)) }, '+ Add Broker'),
     h('button', { class:'btn', onclick: () => openManageBrokersModal(() => VIEWS.recpperf(view)) }, '⚙ Manage Brokers')
   ));
