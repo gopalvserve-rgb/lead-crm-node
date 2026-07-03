@@ -929,6 +929,39 @@ const VIEWS = {};
 /* ---------------- Dashboard ---------------- */
 VIEWS.dashboard = async (view) => {
   await ensureChartJs();
+  // CEL_EXPORT_XLSX_v1 — floating Export Excel button at top-right.
+  // Sweeps every visible <table> on the dashboard into one multi-sheet
+  // workbook (one sheet per table, named by the nearest <h3>/<h4>).
+  setTimeout(() => {
+    if (view.querySelector('.dashboard-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm dashboard-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const XLSX = await ensureXLSX();
+          const wb = XLSX.utils.book_new();
+          let sheetIdx = 0;
+          view.querySelectorAll('table').forEach(table => {
+            const card = table.closest('.card, section, div');
+            const title = (card && (card.querySelector('h3, h4, h2')?.textContent || '')).trim() || ('Sheet ' + (++sheetIdx));
+            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+            const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+              Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+            );
+            const aoa = [headers, ...rows];
+            const ws = XLSX.utils.aoa_to_sheet(aoa);
+            XLSX.utils.book_append_sheet(wb, ws, title.slice(0, 31));
+          });
+          if (!wb.SheetNames.length) { toast('Nothing to export', 'err'); return; }
+          const stamp = new Date().toISOString().slice(0, 10);
+          XLSX.writeFile(wb, 'dashboard_' + stamp + '.xlsx');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 100);
   // Team follow-ups card — admin/manager/team_leader see how each rep is
   // doing on overdue + due-today + TAT violations. Sales/employee don't
   // (it's just their own numbers, already shown in the KPI cards above).
@@ -9069,6 +9102,18 @@ VIEWS.projects = async (view) => {
     h('h3', { style: { margin: 0, flex: 1 } }, '🚚 Projects in delivery'),
     h('span', { class: 'muted', style: { fontSize: '.85rem' } },
       'Every lead that has entered the post-sale stage tracker, grouped by stage. Stalled cards are flagged.'),
+    // CEL_EXPORT_XLSX_v1 — export current project stages table.
+    h('button', { class:'btn sm', style:{ marginLeft:'.4rem' }, onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('projects', rows, headers, 'Projects');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      } }, '📊 Export Excel'),
     ['admin'].includes(CRM.user.role)
       ? h('a', { class: 'btn', href: '#/admin', onclick: () => setTimeout(() => showAdminTab('projstages'), 100) }, '⚙ Edit stages')
       : null
@@ -9139,6 +9184,37 @@ VIEWS.targets = async (view) => {
   const scopeState = filtersState.scope || (isAdmin ? '' : String(CRM.user.id));
 
   view.innerHTML = '';
+  // CEL_EXPORT_XLSX_v1 — floating Export Excel button for the Monthly
+  // Target dashboard. Sweeps visible KPI + user tables into a workbook.
+  setTimeout(() => {
+    if (view.querySelector('.targets-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm targets-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const XLSX = await ensureXLSX();
+          const wb = XLSX.utils.book_new();
+          let sheetIdx = 0;
+          view.querySelectorAll('table').forEach(table => {
+            const card = table.closest('.card, section, div');
+            const title = (card && (card.querySelector('h3, h4, h2')?.textContent || '')).trim() || ('Sheet ' + (++sheetIdx));
+            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+            const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+              Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+            );
+            const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+            XLSX.utils.book_append_sheet(wb, ws, title.slice(0, 31));
+          });
+          if (!wb.SheetNames.length) { toast('Nothing to export', 'err'); return; }
+          const stamp = new Date().toISOString().slice(0, 10);
+          XLSX.writeFile(wb, 'monthly_target_' + monthSel.value + '_' + stamp + '.xlsx');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 200);
 
   // ---- Toolbar -------------------------------------------------------
   const monthSel = h('input', { type: 'month', value: monthInput, style: { width: '160px' } });
@@ -13885,6 +13961,27 @@ function generateTempPasswordClient() {
 
 /* ---------------- HR views ---------------- */
 VIEWS.tasks = async (view) => {
+  // CEL_EXPORT_XLSX_v1 — Export tasks table to Excel.
+  setTimeout(() => {
+    if (view.querySelector('.tasks-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm tasks-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('hr_tasks', rows, headers, 'Hr Tasks');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 300);
   view.innerHTML = '';
   /* CEL_TASKS_BY_EMP_v1 — admins/managers get a "By Employee" subtab that
    * groups every employee's task counts (open/done/this-week/this-month)
@@ -14218,6 +14315,27 @@ async function openTaskModal() {
 }
 
 VIEWS.attendance = async (view) => {
+  // CEL_EXPORT_XLSX_v1 — Export attendance table to Excel.
+  setTimeout(() => {
+    if (view.querySelector('.attendance-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm attendance-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('hr_attendance', rows, headers, 'Hr Attendance');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 300);
   view.innerHTML = '';
   const canReport = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
   const tabs = [{ id: 'mine', label: 'My attendance' }];
@@ -14836,6 +14954,27 @@ function _collectDevice() {
 }
 
 VIEWS.leaves = async (view) => {
+  // CEL_EXPORT_XLSX_v1 — Export leaves table to Excel.
+  setTimeout(() => {
+    if (view.querySelector('.leaves-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm leaves-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('hr_leaves', rows, headers, 'Hr Leaves');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 300);
   view.innerHTML = '';
   const isApprover = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
   const isAdmin = CRM.user.role === 'admin';
@@ -14993,6 +15132,27 @@ function openLeaveModal() {
 }
 
 VIEWS.salary = async (view) => {
+  // CEL_EXPORT_XLSX_v1 — Export salary table to Excel.
+  setTimeout(() => {
+    if (view.querySelector('.salary-export-btn')) return;
+    const btn = h('button', {
+      class: 'btn sm salary-export-btn',
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      onclick: async () => {
+        try {
+          const table = view.querySelector('table');
+          if (!table) { toast('No data to export', 'err'); return; }
+          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
+          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
+            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
+          );
+          _downloadTableXLSX('hr_salary', rows, headers, 'Hr Salary');
+        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+      }
+    }, '📊 Export Excel');
+    view.style.position = 'relative';
+    view.appendChild(btn);
+  }, 300);
   view.innerHTML = '';
   const isAdminOrMgr = ['admin', 'manager'].includes(CRM.user.role);
   const tabs = [{ id: 'my', label: 'My salary' }];
