@@ -391,6 +391,21 @@ async function api_leads_list(token, filters) {
   if (_brokerIds.length) {
     rows = rows.filter(l => l.broker_id && _brokerIds.includes(Number(l.broker_id)));
   }
+  // CEL_LEAD_FILTERS_v1 — Custom field filter. Case-insensitive substring
+  // match against extra_json[cf_key]. Empty cf_value with a cf_key means
+  // "field is set to anything non-empty".
+  const _cfKey = String(filters.cf_key || '').trim();
+  if (_cfKey) {
+    const _cfVal = String(filters.cf_value || '').toLowerCase();
+    rows = rows.filter(l => {
+      try {
+        const ex = _parseExtra(l) || {};
+        const v = String(ex[_cfKey] || '').toLowerCase();
+        if (!v) return false;
+        return _cfVal ? v.includes(_cfVal) : true;
+      } catch (_) { return false; }
+    });
+  }
   // Qualified filter:
   //   '1' / 'only' → only leads marked qualified
   //   '0' / 'unqualified' → only leads NOT marked qualified
