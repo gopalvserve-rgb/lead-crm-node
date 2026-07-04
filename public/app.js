@@ -944,10 +944,15 @@ VIEWS.dashboard = async (view) => {
   // api_reports_tatViolationsByUser) and builds proper sheets from
   // the structured data — no DOM scraping.
   const _addDashboardExportBtn = () => {
-    if (view.querySelector('.dashboard-export-btn')) return;
+    if (document.body.querySelector('.dashboard-export-btn')) return;
     const btn = h('button', {
-      class: 'btn sm dashboard-export-btn',
-      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 100 },
+      class: 'btn dashboard-export-btn',
+      // CEL_EXPORT_XLSX_v1.1 — button was hidden inside the view (which
+      // has overflow/positioning quirks). Fixed to the viewport bottom-
+      // right instead so it's ALWAYS visible while user is on the
+      // Dashboard. Removed automatically when the observer detects the
+      // user navigated away (view is emptied without content).
+      style: { position:'fixed', bottom:'1.2rem', right:'1.2rem', zIndex: 9999, background:'#16a34a', color:'#fff', border:'none', padding:'.6rem 1rem', borderRadius:'8px', boxShadow:'0 4px 12px rgba(22,163,74,.35)', fontWeight:'600' },
       onclick: async () => {
         try {
           toast('Building dashboard workbook…', 'info');
@@ -1056,9 +1061,23 @@ VIEWS.dashboard = async (view) => {
         }
       }
     }, '📊 Export Excel');
-    view.style.position = 'relative';
-    view.appendChild(btn);
+    // Attach to <body> so route changes elsewhere don't accidentally
+    // hide the button behind other elements' stacking contexts.
+    document.body.appendChild(btn);
   };
+  // Auto-remove the button when leaving the dashboard route.
+  const _dashRouteWatcher = () => {
+    // If the current view no longer contains dashboard widgets, remove.
+    setTimeout(() => {
+      if (!document.querySelector('.dashboard-export-btn')) return;
+      // Presence check: if the hash isn't /#/ or /#/dashboard, drop it.
+      const hash = String(location.hash || '').replace(/^#\/?/, '');
+      if (hash && hash !== 'dashboard') {
+        document.querySelectorAll('.dashboard-export-btn').forEach(b => b.remove());
+      }
+    }, 100);
+  };
+  window.addEventListener('hashchange', _dashRouteWatcher, { once: false });
   // Observer catches every render pass (including the innerHTML='' that
   // wipes the button after the async fetch resolves).
   const _dashObserver = new MutationObserver(() => _addDashboardExportBtn());
@@ -1403,6 +1422,30 @@ VIEWS.leads = async (view) => {
       values: (CRM.prefs.filters.broker_ids && CRM.prefs.filters.broker_ids.length) ? CRM.prefs.filters.broker_ids.map(String) : [],
       onApply: (v) => { CRM.prefs.filters.broker_ids = v; applyFilters(); }
     }),
+    // CEL_LEAD_FILTERS_v1 — Custom Field filter (field key + value pair).
+    // Populated from CRM.cache.customFields at leads-page mount. Value
+    // input is a plain text box for text/number fields; server does a
+    // case-insensitive substring match on the raw JSON extra store.
+    (() => {
+      const cfList = (CRM.cache.customFields || []).map(cf => ({ key: cf.key || cf.name, label: cf.label || cf.name }));
+      const fSel = h('select', { style: { minWidth: '140px' } },
+        h('option', { value: '' }, '— Custom field —'),
+        ...cfList.map(cf => h('option', { value: cf.key, selected: CRM.prefs.filters.cf_key === cf.key ? 'selected' : null }, cf.label))
+      );
+      const fVal = h('input', { type: 'text', placeholder: 'value', style: { width: '110px' }, value: CRM.prefs.filters.cf_value || '' });
+      let _cfTimer = null;
+      const _fire = () => {
+        clearTimeout(_cfTimer);
+        _cfTimer = setTimeout(() => {
+          CRM.prefs.filters.cf_key   = fSel.value || '';
+          CRM.prefs.filters.cf_value = fVal.value.trim();
+          applyFilters();
+        }, 350);
+      };
+      fSel.addEventListener('change', _fire);
+      fVal.addEventListener('input',  _fire);
+      return h('span', { style: { display: 'inline-flex', gap: '.25rem', alignItems: 'center' } }, fSel, fVal);
+    })(),
     wireFilter(selectOpts('f-followup', [{ id: '', name: 'All follow-ups' }, { id: 'today', name: 'Due today' }, { id: 'overdue', name: 'Overdue' }], CRM.prefs.filters.followup)),
     wireFilter(selectOpts('f-qualified', [
       { id: '',  name: 'Any qualified' },
@@ -1688,6 +1731,9 @@ async function loadLeads(opts) {
     // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
     campaigns:   _campaigns.length ? _campaigns : undefined,
     broker_ids:  _brokerIds.length ? _brokerIds : undefined,
+    // CEL_LEAD_FILTERS_v1 — Custom field filter payload
+    cf_key:      (CRM.prefs.filters.cf_key || '') || undefined,
+    cf_value:    (CRM.prefs.filters.cf_value || '') || undefined,
     from:        $('#f-from')?.value || undefined,
     to:          $('#f-to')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
@@ -2487,6 +2533,9 @@ function _currentLeadsExportFilters() {
     // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
     campaigns:   _campaigns.length ? _campaigns : undefined,
     broker_ids:  _brokerIds.length ? _brokerIds : undefined,
+    // CEL_LEAD_FILTERS_v1 — Custom field filter payload
+    cf_key:      (CRM.prefs.filters.cf_key || '') || undefined,
+    cf_value:    (CRM.prefs.filters.cf_value || '') || undefined,
     from:        $('#f-from')?.value || undefined,
     to:          $('#f-to')?.value || undefined,
     followup:    $('#f-followup')?.value || undefined,
