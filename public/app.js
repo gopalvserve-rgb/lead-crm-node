@@ -9257,18 +9257,45 @@ VIEWS.projects = async (view) => {
     h('h3', { style: { margin: 0, flex: 1 } }, '🚚 Projects in delivery'),
     h('span', { class: 'muted', style: { fontSize: '.85rem' } },
       'Every lead that has entered the post-sale stage tracker, grouped by stage. Stalled cards are flagged.'),
-    // CEL_EXPORT_XLSX_v1 — export current project stages table.
+    // CEL_EXPORT_XLSX_v1.2 — Projects export rewritten to pull the actual
+    // stages board via api_projectStages_board (view uses cards, not a
+    // <table>, so DOM scraping found nothing). Produces one sheet per
+    // stage with every lead currently in that stage.
     h('button', { class:'btn sm', style:{ marginLeft:'.4rem' }, onclick: async () => {
-        try {
-          const table = view.querySelector('table');
-          if (!table) { toast('No data to export', 'err'); return; }
-          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
-            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
-          );
-          _downloadTableXLSX('projects', rows, headers, 'Projects');
-        } catch (e) { toast(e.message || 'Export failed', 'err'); }
-      } }, '📊 Export Excel'),
+      try {
+        toast('Building projects workbook…', 'info');
+        const XLSX = await ensureXLSX();
+        const board = await api('api_projectStages_board');
+        const stages = (board && board.stages) || [];
+        if (!stages.length) { toast('No stages / leads to export', 'err'); return; }
+        const wb = XLSX.utils.book_new();
+        let anySheet = false;
+        stages.forEach(st => {
+          const leads = st.leads || [];
+          if (!leads.length) return;
+          const rows = [['Lead', 'Phone', 'Assigned to', 'Days in stage', 'Stalled?', 'Expected days', 'Started at']];
+          leads.forEach(l => rows.push([
+            l.name || '',
+            l.phone || '',
+            l.assigned_name || l.assigned_to_name || '',
+            Number(l.days_in_stage || l.days || 0),
+            l.stalled ? 'Yes' : 'No',
+            Number(st.expected_days || 0),
+            l.stage_started_at ? String(l.stage_started_at).slice(0, 16).replace('T', ' ') : ''
+          ]));
+          const ws = XLSX.utils.aoa_to_sheet(rows);
+          ws['!cols'] = [{ wch: 22 }, { wch: 15 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 18 }];
+          XLSX.utils.book_append_sheet(wb, ws, String(st.name || 'Stage').slice(0, 31));
+          anySheet = true;
+        });
+        if (!anySheet) { toast('No leads currently in any stage', 'err'); return; }
+        const stamp = new Date().toISOString().slice(0, 10);
+        XLSX.writeFile(wb, 'projects_' + stamp + '.xlsx');
+      } catch (e) {
+        console.error('[projects export]', e);
+        toast('Export failed: ' + (e && e.message || 'unknown'), 'err');
+      }
+    } }, '📊 Export Excel'),
     ['admin'].includes(CRM.user.role)
       ? h('a', { class: 'btn', href: '#/admin', onclick: () => setTimeout(() => showAdminTab('projstages'), 100) }, '⚙ Edit stages')
       : null
@@ -9339,37 +9366,94 @@ VIEWS.targets = async (view) => {
   const scopeState = filtersState.scope || (isAdmin ? '' : String(CRM.user.id));
 
   view.innerHTML = '';
-  // CEL_EXPORT_XLSX_v1 — floating Export Excel button for the Monthly
-  // Target dashboard. Sweeps visible KPI + user tables into a workbook.
-  setTimeout(() => {
-    if (view.querySelector('.targets-export-btn')) return;
+  // CEL_EXPORT_XLSX_v1.2 — Monthly Target export rewritten. View uses
+  // cards + charts (no <table>), and the button was inside the view
+  // which the render pass wipes. Fixed to viewport bottom-right (like
+  // Dashboard) so it's always visible, and fetches the actual API data.
+  const _addTargetsExportBtn = () => {
+    if (document.body.querySelector('.targets-export-btn')) return;
     const btn = h('button', {
-      class: 'btn sm targets-export-btn',
-      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      class: 'btn targets-export-btn',
+      style: { position:'fixed', bottom:'1.2rem', right:'1.2rem', zIndex: 9999, background:'#2563eb', color:'#fff', border:'none', padding:'.6rem 1rem', borderRadius:'8px', boxShadow:'0 4px 12px rgba(37,99,235,.35)', fontWeight:'600' },
       onclick: async () => {
         try {
+          toast('Building monthly target workbook…', 'info');
           const XLSX = await ensureXLSX();
+          const r = await api('api_targets_dashboard', monthSel.value, scopeSel.value || null);
           const wb = XLSX.utils.book_new();
-          let sheetIdx = 0;
-          view.querySelectorAll('table').forEach(table => {
-            const card = table.closest('.card, section, div');
-            const title = (card && (card.querySelector('h3, h4, h2')?.textContent || '')).trim() || ('Sheet ' + (++sheetIdx));
-            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-            const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
-              Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
-            );
-            const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-            XLSX.utils.book_append_sheet(wb, ws, title.slice(0, 31));
-          });
-          if (!wb.SheetNames.length) { toast('Nothing to export', 'err'); return; }
+
+          // Sheet 1: Overview KPIs
+          const overview = [
+            ['Metric', 'Value'],
+            ['Month',                   r.month || monthSel.value],
+            ['Scope',                   (r.scope && (r.scope.label || r.scope.name)) || ''],
+            ['Days in month',           Number(r.days_in_month || 0)],
+            ['Days passed',             Number(r.days_passed || 0)],
+            ['Days left',               Number(r.days_left || 0)],
+            ['Target revenue (₹)',      Number(r.target_revenue || 0)],
+            ['Revenue achieved (₹)',    Number(r.revenue_achieved || 0)],
+            ['Achievement %',           Number(r.achievement_pct || (r.target_revenue > 0 ? Math.round((r.revenue_achieved / r.target_revenue) * 100) : 0))],
+            ['Forecast revenue (₹)',    Number(r.forecast_revenue || 0)],
+            ['Required daily target (₹)', Number(r.required_daily_target || 0)],
+            ['Target leads',            Number(r.target_leads || 0)],
+            ['Leads received',          Number(r.leads_received || 0)],
+            ['Lead-to-sale conversion %', Number(r.lead_to_sale_pct || 0)]
+          ];
+          const ws1 = XLSX.utils.aoa_to_sheet(overview);
+          ws1['!cols'] = [{ wch: 28 }, { wch: 20 }];
+          XLSX.utils.book_append_sheet(wb, ws1, 'Overview');
+
+          // Sheet 2: Per-user breakdown (if org-wide scope)
+          if (Array.isArray(r.by_user) && r.by_user.length) {
+            const userRows = [['User', 'Target (₹)', 'Achieved (₹)', 'Achievement %', 'Leads', 'Conversion %']];
+            r.by_user.forEach(u => userRows.push([
+              u.user_name || u.name || ('User #' + u.user_id),
+              Number(u.target_revenue || 0),
+              Number(u.revenue_achieved || 0),
+              Number(u.achievement_pct || (u.target_revenue > 0 ? Math.round((u.revenue_achieved / u.target_revenue) * 100) : 0)),
+              Number(u.leads_received || 0),
+              Number(u.lead_to_sale_pct || 0)
+            ]));
+            const ws2 = XLSX.utils.aoa_to_sheet(userRows);
+            ws2['!cols'] = [{ wch: 22 }, { wch: 15 }, { wch: 15 }, { wch: 14 }, { wch: 10 }, { wch: 14 }];
+            XLSX.utils.book_append_sheet(wb, ws2, 'Per User');
+          }
+
+          // Sheet 3: Weekly trend (if present)
+          const trend = Array.isArray(r.weekly_trend) ? r.weekly_trend : [];
+          if (trend.length) {
+            const tRows = [['Week', 'Revenue (₹)', 'Leads']];
+            trend.forEach(w => tRows.push([
+              w.week || w.date || w.label || '',
+              Number(w.revenue || 0),
+              Number(w.leads || 0)
+            ]));
+            const ws3 = XLSX.utils.aoa_to_sheet(tRows);
+            XLSX.utils.book_append_sheet(wb, ws3, 'Weekly Trend');
+          }
+
+          if (!wb.SheetNames.length) { toast('No target data for this month', 'err'); return; }
           const stamp = new Date().toISOString().slice(0, 10);
-          XLSX.writeFile(wb, 'monthly_target_' + monthSel.value + '_' + stamp + '.xlsx');
-        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+          XLSX.writeFile(wb, 'monthly_target_' + (r.month || monthSel.value) + '_' + stamp + '.xlsx');
+        } catch (e) {
+          console.error('[targets export]', e);
+          toast('Export failed: ' + (e && e.message || 'unknown'), 'err');
+        }
       }
     }, '📊 Export Excel');
-    view.style.position = 'relative';
-    view.appendChild(btn);
-  }, 200);
+    document.body.appendChild(btn);
+  };
+  _addTargetsExportBtn();
+  // Auto-remove on hashchange when leaving the Monthly Target view.
+  const _tgtRouteWatcher = () => {
+    setTimeout(() => {
+      const hash = String(location.hash || '').replace(/^#\/?/, '');
+      if (hash !== 'targets') {
+        document.querySelectorAll('.targets-export-btn').forEach(b => b.remove());
+      }
+    }, 100);
+  };
+  window.addEventListener('hashchange', _tgtRouteWatcher, { once: false });
 
   // ---- Toolbar -------------------------------------------------------
   const monthSel = h('input', { type: 'month', value: monthInput, style: { width: '160px' } });
