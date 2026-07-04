@@ -929,39 +929,145 @@ const VIEWS = {};
 /* ---------------- Dashboard ---------------- */
 VIEWS.dashboard = async (view) => {
   await ensureChartJs();
-  // CEL_EXPORT_XLSX_v1 — floating Export Excel button at top-right.
-  // Sweeps every visible <table> on the dashboard into one multi-sheet
-  // workbook (one sheet per table, named by the nearest <h3>/<h4>).
-  setTimeout(() => {
+  // CEL_EXPORT_XLSX_v1 — Dashboard Export Excel button.
+  //
+  // Previous implementation broke for two reasons: (a) it fired at
+  // t=100ms but the widget-render pass calls `view.innerHTML = ''`
+  // AFTER the async fetch, which wiped the button, and (b) the sweep
+  // was DOM-based on <table> elements — the dashboard renders cards
+  // and canvases, not tables, so it found nothing.
+  //
+  // New approach: MutationObserver re-injects the button any time
+  // the view is emptied, and clicking the button fetches the SAME
+  // APIs the dashboard uses (api_reports_summary +
+  // api_notifications_mine + api_reports_followupsByUser +
+  // api_reports_tatViolationsByUser) and builds proper sheets from
+  // the structured data — no DOM scraping.
+  const _addDashboardExportBtn = () => {
     if (view.querySelector('.dashboard-export-btn')) return;
     const btn = h('button', {
       class: 'btn sm dashboard-export-btn',
-      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
+      style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 100 },
       onclick: async () => {
         try {
+          toast('Building dashboard workbook…', 'info');
           const XLSX = await ensureXLSX();
+          const showTeam = ['admin', 'manager', 'team_leader'].includes(CRM.user.role);
+          const [summary, due, teamFu, teamTat] = await Promise.all([
+            api('api_reports_summary', {}).catch(() => ({})),
+            api('api_notifications_mine').catch(() => ({})),
+            showTeam ? api('api_reports_followupsByUser').catch(() => []) : Promise.resolve([]),
+            showTeam ? api('api_reports_tatViolationsByUser').catch(() => []) : Promise.resolve([])
+          ]);
           const wb = XLSX.utils.book_new();
-          let sheetIdx = 0;
-          view.querySelectorAll('table').forEach(table => {
-            const card = table.closest('.card, section, div');
-            const title = (card && (card.querySelector('h3, h4, h2')?.textContent || '')).trim() || ('Sheet ' + (++sheetIdx));
-            const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-            const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
-              Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
-            );
-            const aoa = [headers, ...rows];
-            const ws = XLSX.utils.aoa_to_sheet(aoa);
-            XLSX.utils.book_append_sheet(wb, ws, title.slice(0, 31));
-          });
-          if (!wb.SheetNames.length) { toast('Nothing to export', 'err'); return; }
+
+          // Sheet 1: Top-line KPIs
+          const kpiRows = [
+            ['Metric', 'Value'],
+            ['Total leads',        Number(summary?.totals?.total)     || 0],
+            ['Won',                Number(summary?.totals?.won)       || 0],
+            ['Lost',               Number(summary?.totals?.lost)      || 0],
+            ['Pipeline value (₹)', Number(summary?.totals?.pipeline)  || 0],
+            ['New today',          Number(due?.counts?.new_today)     || 0],
+            ['Overdue follow-ups', Number(due?.counts?.overdue)       || 0],
+            ['Due today',          Number(due?.counts?.due_today)     || 0],
+            ['Upcoming',           Number(due?.counts?.upcoming)      || 0]
+          ];
+          const ws1 = XLSX.utils.aoa_to_sheet(kpiRows);
+          ws1['!cols'] = [{ wch: 25 }, { wch: 18 }];
+          XLSX.utils.book_append_sheet(wb, ws1, 'KPIs');
+
+          // Sheet 2: Status counts
+          const statusList = Array.isArray(summary?.by_status) ? summary.by_status
+                          : (summary?.status_counts ? Object.entries(summary.status_counts).map(([k, v]) => ({ status: k, count: v })) : []);
+          if (statusList.length) {
+            const statusRows = [['Status', 'Count']];
+            statusList.forEach(s => statusRows.push([
+              s.status_name || s.status || s.name || '—',
+              Number(s.count || s.total || 0)
+            ]));
+            const ws2 = XLSX.utils.aoa_to_sheet(statusRows);
+            ws2['!cols'] = [{ wch: 25 }, { wch: 12 }];
+            XLSX.utils.book_append_sheet(wb, ws2, 'By Status');
+          }
+
+          // Sheet 3: Sources breakdown (if present)
+          const sourceList = Array.isArray(summary?.by_source) ? summary.by_source : [];
+          if (sourceList.length) {
+            const srcRows = [['Source', 'Count', 'Won', 'Pipeline value (₹)']];
+            sourceList.forEach(s => srcRows.push([
+              s.source || '—',
+              Number(s.count || 0),
+              Number(s.won || 0),
+              Number(s.pipeline || 0)
+            ]));
+            const ws3 = XLSX.utils.aoa_to_sheet(srcRows);
+            ws3['!cols'] = [{ wch: 25 }, { wch: 10 }, { wch: 10 }, { wch: 20 }];
+            XLSX.utils.book_append_sheet(wb, ws3, 'By Source');
+          }
+
+          // Sheet 4: Weekly trend (if present)
+          const trend = Array.isArray(summary?.weekly_trend) ? summary.weekly_trend
+                     : Array.isArray(summary?.trend) ? summary.trend : [];
+          if (trend.length) {
+            const trendRows = [['Week', 'New leads', 'Won']];
+            trend.forEach(w => trendRows.push([
+              w.week || w.date || w.label || '',
+              Number(w.new || w.count || 0),
+              Number(w.won || 0)
+            ]));
+            const ws4 = XLSX.utils.aoa_to_sheet(trendRows);
+            XLSX.utils.book_append_sheet(wb, ws4, 'Weekly Trend');
+          }
+
+          // Sheet 5: Team follow-ups (admin/manager/TL only)
+          if (showTeam && Array.isArray(teamFu) && teamFu.length) {
+            const teamRows = [['User', 'Overdue', 'Due today', 'Upcoming', 'Total open']];
+            teamFu.forEach(u => teamRows.push([
+              u.user_name || u.name || ('User #' + u.user_id),
+              Number(u.overdue || 0),
+              Number(u.due_today || 0),
+              Number(u.upcoming || 0),
+              Number((u.overdue || 0) + (u.due_today || 0) + (u.upcoming || 0))
+            ]));
+            const ws5 = XLSX.utils.aoa_to_sheet(teamRows);
+            ws5['!cols'] = [{ wch: 22 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }];
+            XLSX.utils.book_append_sheet(wb, ws5, 'Team Follow-ups');
+          }
+
+          // Sheet 6: TAT violations (admin/manager/TL only)
+          if (showTeam && Array.isArray(teamTat) && teamTat.length) {
+            const tatRows = [['User', 'Violations']];
+            teamTat.forEach(u => tatRows.push([
+              u.user_name || u.name || ('User #' + u.user_id),
+              Number(u.violation_count || u.count || 0)
+            ]));
+            const ws6 = XLSX.utils.aoa_to_sheet(tatRows);
+            ws6['!cols'] = [{ wch: 22 }, { wch: 12 }];
+            XLSX.utils.book_append_sheet(wb, ws6, 'TAT Violations');
+          }
+
+          if (!wb.SheetNames.length) { toast('Dashboard data is empty', 'err'); return; }
           const stamp = new Date().toISOString().slice(0, 10);
           XLSX.writeFile(wb, 'dashboard_' + stamp + '.xlsx');
-        } catch (e) { toast(e.message || 'Export failed', 'err'); }
+        } catch (e) {
+          console.error('[dashboard export] failed:', e);
+          toast('Export failed: ' + (e && e.message || 'unknown'), 'err');
+        }
       }
     }, '📊 Export Excel');
     view.style.position = 'relative';
     view.appendChild(btn);
-  }, 100);
+  };
+  // Observer catches every render pass (including the innerHTML='' that
+  // wipes the button after the async fetch resolves).
+  const _dashObserver = new MutationObserver(() => _addDashboardExportBtn());
+  _dashObserver.observe(view, { childList: true });
+  // Initial injection so the button appears immediately.
+  _addDashboardExportBtn();
+  // Auto-cleanup so we don't accumulate observers when the user navigates
+  // away and comes back.
+  setTimeout(() => _dashObserver.disconnect(), 30_000);
   // Team follow-ups card — admin/manager/team_leader see how each rep is
   // doing on overdue + due-today + TAT violations. Sales/employee don't
   // (it's just their own numbers, already shown in the KPI cards above).
