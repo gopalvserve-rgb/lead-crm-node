@@ -1064,6 +1064,8 @@ VIEWS.dashboard = async (view) => {
     // Attach to <body> so route changes elsewhere don't accidentally
     // hide the button behind other elements' stacking contexts.
     document.body.appendChild(btn);
+    // CEL_DRAGGABLE_BTN_v1 — user can now drag the button anywhere.
+    _makeDraggable(btn, 'crm_pos_dashboard_export_btn');
   };
   // Auto-remove the button when leaving the dashboard route.
   const _dashRouteWatcher = () => {
@@ -3175,6 +3177,100 @@ async function _downloadTableXLSX(filename, rows, headers, sheetName) {
     console.error('[xlsx export] failed:', e);
     toast('Export failed: ' + (e && e.message || 'unknown'), 'err');
   }
+}
+
+/**
+ * CEL_DRAGGABLE_BTN_v1 — Make a fixed-position element draggable via mouse
+ * or touch. Position persists to localStorage under `storageKey` so the
+ * button reappears where the user last left it on next page load.
+ *
+ * Distinguishes drag vs. click: if the pointer moved less than 6px total
+ * before release, the underlying `click` fires normally. If it moved
+ * more, we consumed the interaction as a drag and prevent click.
+ *
+ * Clamps to viewport so the button can't get lost off-screen (e.g. after
+ * an orientation change on mobile that shrinks the viewport).
+ */
+function _makeDraggable(el, storageKey) {
+  if (!el) return;
+  // Restore last position if we saved one previously.
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+    if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
+      const maxL = Math.max(0, window.innerWidth  - 80);
+      const maxT = Math.max(0, window.innerHeight - 40);
+      el.style.left   = Math.min(maxL, Math.max(0, saved.left)) + 'px';
+      el.style.top    = Math.min(maxT, Math.max(0, saved.top))  + 'px';
+      el.style.right  = 'auto';
+      el.style.bottom = 'auto';
+    }
+  } catch (_) {}
+
+  // touch-action: none tells the browser not to hijack this element for
+  // scrolling / pinch-zoom on mobile — critical for drag to work at all.
+  el.style.touchAction = 'none';
+  el.style.cursor = 'grab';
+
+  let dragging = false;
+  let startX = 0, startY = 0;
+  let elStartLeft = 0, elStartTop = 0;
+  let moved = 0;
+
+  const onDown = (ev) => {
+    // Left-mouse only for mouse events; touch has no `button` field.
+    if (ev.button !== undefined && ev.button !== 0) return;
+    const r = el.getBoundingClientRect();
+    elStartLeft = r.left;
+    elStartTop  = r.top;
+    startX = ev.clientX;
+    startY = ev.clientY;
+    moved = 0;
+    dragging = true;
+    el.style.cursor = 'grabbing';
+    if (ev.pointerId != null) {
+      try { el.setPointerCapture(ev.pointerId); } catch (_) {}
+    }
+  };
+
+  const onMove = (ev) => {
+    if (!dragging) return;
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    moved = Math.max(moved, Math.abs(dx) + Math.abs(dy));
+    if (moved < 4) return; // still a click, not a drag
+    ev.preventDefault();
+    const maxL = Math.max(0, window.innerWidth  - el.offsetWidth  - 4);
+    const maxT = Math.max(0, window.innerHeight - el.offsetHeight - 4);
+    const newL = Math.min(maxL, Math.max(4, elStartLeft + dx));
+    const newT = Math.min(maxT, Math.max(4, elStartTop  + dy));
+    el.style.left   = newL + 'px';
+    el.style.top    = newT + 'px';
+    el.style.right  = 'auto';
+    el.style.bottom = 'auto';
+  };
+
+  const onUp = (ev) => {
+    if (!dragging) return;
+    dragging = false;
+    el.style.cursor = 'grab';
+    if (moved >= 6) {
+      // Real drag — persist final position and swallow the pending click
+      // (the browser fires a synthetic click after pointerup that would
+      // otherwise trigger the export handler right after the user finished
+      // moving the button).
+      try {
+        const r = el.getBoundingClientRect();
+        localStorage.setItem(storageKey, JSON.stringify({ left: r.left, top: r.top }));
+      } catch (_) {}
+      const swallow = (e) => { e.stopPropagation(); e.preventDefault(); el.removeEventListener('click', swallow, true); };
+      el.addEventListener('click', swallow, true);
+    }
+  };
+
+  el.addEventListener('pointerdown', onDown);
+  el.addEventListener('pointermove', onMove);
+  el.addEventListener('pointerup',   onUp);
+  el.addEventListener('pointercancel', onUp);
 }
 
 /** Normalize a column header into a snake_case key (lowercase, spaces+dashes → _). */
@@ -9442,6 +9538,8 @@ VIEWS.targets = async (view) => {
       }
     }, '📊 Export Excel');
     document.body.appendChild(btn);
+    // CEL_DRAGGABLE_BTN_v1 — user can drag the button anywhere.
+    _makeDraggable(btn, 'crm_pos_targets_export_btn');
   };
   _addTargetsExportBtn();
   // Auto-remove on hashchange when leaving the Monthly Target view.
