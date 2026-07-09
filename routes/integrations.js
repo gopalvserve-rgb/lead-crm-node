@@ -979,7 +979,9 @@ function _adaptLeadSourcePayload(source, body) {
                   'name', 'full_name', 'fullname',
                   'customer_name', 'contact_name', 'lead_name', 'client_name',
                   'sender_name', 'first_name', 'firstname', 'contact_person',
-                  'user_name'
+                  'user_name',
+                  // CEL_WEBHOOK_FIELDS_v1.1 — misspell tolerance
+                  'nam', 'nane', 'custname', 'leadname', 'clientname'
                 ]),
     phone:      _pickCI(r, [
                   'phone', 'mobile',
@@ -987,12 +989,18 @@ function _adaptLeadSourcePayload(source, body) {
                   'contact', 'contact_no', 'contact_number', 'customer_phone',
                   'lead_phone', 'sender_phone', 'sender_mobile', 'whatsapp',
                   'whatsapp_number', 'primary_phone', 'msisdn', 'cellphone',
-                  'client_phone', 'client_mobile'
+                  'client_phone', 'client_mobile',
+                  // CEL_WEBHOOK_FIELDS_v1.1 — misspell tolerance
+                  'phon', 'mobil', 'mobilenumber', 'phonenumber', 'contactnumber'
                 ]),
     email:      _pickCI(r, [
                   'email', 'email_id', 'emailid',
                   'email_address', 'emailaddress', 'sender_email',
-                  'customer_email', 'lead_email', 'user_email', 'primary_email'
+                  'customer_email', 'lead_email', 'user_email', 'primary_email',
+                  // CEL_WEBHOOK_FIELDS_v1.1 — tolerate common misspellings
+                  // that senders configure in field-mapping UIs (real case:
+                  // vserve mapping had 'emial' → typo → email dropped).
+                  'emial', 'emails', 'e_mail', 'e-mail', 'mailid', 'mail'
                 ]),
     company:    _pickCI(r, [
                   'company', 'company_name', 'organization', 'org',
