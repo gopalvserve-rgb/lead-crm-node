@@ -80,6 +80,39 @@ Object.values(routes).forEach(module => {
 
 const app = express();
 app.use(bodyParser.json({ limit: '10mb' }));
+// CEL_WEBHOOK_ERROR_v1 — catch body-parser JSON SyntaxErrors on webhook
+// paths and (a) log them to webhook_log so admin can see the failure
+// even when the body was un-parseable, and (b) return JSON instead of
+// the default HTML error page (which confused the sending system —
+// it saw '<!DOCTYPE html>...' and marked delivery as HTTP 400 with no
+// hint what to fix).
+app.use(async (err, req, res, next) => {
+  if (err && err.type === 'entity.parse.failed' && String(req.path || '').startsWith('/hook/')) {
+    try {
+      const db = require('./db/pg');
+      await db.insert('webhook_log', {
+        source: (String(req.path).split('/hook/')[1] || '').split('/')[0] || 'unknown',
+        payload: {
+          headers: {
+            'content-type': req.header('content-type') || '',
+            'content-length': req.header('content-length') || '',
+            'user-agent': req.header('user-agent') || ''
+          },
+          raw_error: err.message,
+          body_snippet: (err.body ? String(err.body).slice(0, 500) : '')
+        },
+        processed: 0,
+        error: 'BodyParser: ' + err.message
+      });
+    } catch (_) {}
+    return res.status(400).json({
+      ok: false,
+      error: 'Invalid JSON body',
+      hint: 'Check Content-Type header (must be application/json) and ensure body is valid JSON. Full error: ' + err.message
+    });
+  }
+  next(err);
+});
 // Some forwarders / Postman-default-Body-raw send the WhatsApp webhook
 // body as text/plain. Catch those too — the webhook handler attempts
 // JSON.parse on string bodies. Empty content-type also lands here.
