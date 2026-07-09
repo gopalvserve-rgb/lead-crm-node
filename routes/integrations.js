@@ -956,16 +956,64 @@ function _adaptLeadSourcePayload(source, body) {
   }
 
   // ââ Generic fallback ââââââââââââââââââââââââââââââââââââââ
-  const r = body.lead || body;
+  // CEL_WEBHOOK_FIELDS_v1 — greatly expanded field-name coverage +
+  // case-insensitive matching so senders don't silently drop fields
+  // because they used 'Mobile' instead of 'mobile' or 'lead_name'
+  // instead of 'name'. Also unwraps common nested envelopes.
+  const _pickCI = (obj, keys) => {
+    if (!obj || typeof obj !== 'object') return '';
+    const idx = {};
+    Object.keys(obj).forEach(k => { idx[k.toLowerCase()] = k; });
+    for (const k of keys) {
+      const actual = idx[String(k).toLowerCase()];
+      if (actual && obj[actual] != null && String(obj[actual]).trim() !== '') {
+        return String(obj[actual]).trim();
+      }
+    }
+    return '';
+  };
+  // Unwrap common envelope shapes senders use.
+  const r = body.lead || body.data || body.payload || body.record || body.LEAD || body;
   return [{
-    name:       pick(r, ['name', 'full_name', 'customer_name', 'contact_name']),
-    phone:      pick(r, ['phone', 'mobile', 'contact', 'mobile_number', 'contact_number']),
-    email:      pick(r, ['email', 'email_id']),
-    company:    pick(r, ['company', 'organization']),
-    city:       pick(r, ['city', 'location']),
-    notes:      pick(r, ['message', 'enquiry', 'requirement', 'notes']),
-    source:     pick(r, ['source']) || 'Webhook',
-    source_ref: pick(r, ['id', 'lead_id', 'reference'])
+    name:       _pickCI(r, [
+                  'name', 'full_name', 'fullname',
+                  'customer_name', 'contact_name', 'lead_name', 'client_name',
+                  'sender_name', 'first_name', 'firstname', 'contact_person',
+                  'user_name'
+                ]),
+    phone:      _pickCI(r, [
+                  'phone', 'mobile',
+                  'mobile_no', 'mobile_number', 'phone_no', 'phone_number',
+                  'contact', 'contact_no', 'contact_number', 'customer_phone',
+                  'lead_phone', 'sender_phone', 'sender_mobile', 'whatsapp',
+                  'whatsapp_number', 'primary_phone', 'msisdn', 'cellphone',
+                  'client_phone', 'client_mobile'
+                ]),
+    email:      _pickCI(r, [
+                  'email', 'email_id', 'emailid',
+                  'email_address', 'emailaddress', 'sender_email',
+                  'customer_email', 'lead_email', 'user_email', 'primary_email'
+                ]),
+    company:    _pickCI(r, [
+                  'company', 'company_name', 'organization', 'org',
+                  'business_name', 'firm', 'firm_name'
+                ]),
+    city:       _pickCI(r, [
+                  'city', 'town', 'location', 'sender_city',
+                  'customer_city', 'lead_city'
+                ]),
+    notes:      _pickCI(r, [
+                  'message', 'enquiry', 'inquiry', 'query',
+                  'requirement', 'requirements', 'notes', 'note',
+                  'remarks', 'remark', 'comment', 'comments', 'description',
+                  'lead_message', 'user_message', 'body'
+                ]),
+    source:     _pickCI(r, ['source', 'lead_source', 'utm_source', 'referrer']) || 'Webhook',
+    source_ref: _pickCI(r, [
+                  'id', 'lead_id', 'leadid', 'reference', 'ref',
+                  'ticket_id', 'query_id', 'sender_id', 'unique_id',
+                  'external_id'
+                ])
   }];
 }
 
