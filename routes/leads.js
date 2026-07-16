@@ -334,6 +334,12 @@ async function api_leads_list(token, filters) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
   const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
+  // CEL_EXPORT_COLS_v1 — build broker id→name index for export enrichment.
+  const brokersById = {};
+  try {
+    const b = await db.query('SELECT id, name FROM re_channel_partners').catch(() => ({ rows: [] }));
+    (b.rows || []).forEach(x => { brokersById[Number(x.id)] = x.name; });
+  } catch (_) {}
   filters = filters || {};
   let rows = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
 
@@ -560,6 +566,12 @@ async function api_leads_get(token, id) {
   if (!_isVisible(me, visible, lead)) throw new Error('Forbidden');
 
   const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
+  // CEL_EXPORT_COLS_v1 — build broker id→name index for export enrichment.
+  const brokersById = {};
+  try {
+    const b = await db.query('SELECT id, name FROM re_channel_partners').catch(() => ({ rows: [] }));
+    (b.rows || []).forEach(x => { brokersById[Number(x.id)] = x.name; });
+  } catch (_) {}
   const hydrated = _hydrate(lead, usersById, statusesById, productsById, tatByStatusId, finalStatusIds);
 
   const remarks = (await db.getAll('remarks'))
@@ -567,7 +579,10 @@ async function api_leads_get(token, id) {
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
     .map(r => Object.assign({}, r, {
       user_name: usersById[Number(r.user_id)]?.name || 'System',
-      status_name: statusesById[Number(r.status_id)]?.name || ''
+      status_name: statusesById[Number(r.status_id)]?.name || '',
+      // CEL_EXPORT_COLS_v1 — extra fields for Excel export columns.
+      broker_name:     r.broker_id ? (brokersById[Number(r.broker_id)] || '') : '',
+      campaign_source: r.utm_campaign || r.gad_campaignid || (r.extra_json ? (function(){ try { const e = typeof r.extra_json === 'string' ? JSON.parse(r.extra_json) : r.extra_json; return e && (e.campaign_source || e.campaign_name || ''); } catch(_) { return ''; } })() : '')
     }));
   const followups = (await db.getAll('followups'))
     .filter(f => Number(f.lead_id) === Number(id))
@@ -1333,6 +1348,12 @@ async function api_leads_pipeline(token) {
   const me = await authUser(token);
   const visible = await getVisibleUserIds(me);
   const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
+  // CEL_EXPORT_COLS_v1 — build broker id→name index for export enrichment.
+  const brokersById = {};
+  try {
+    const b = await db.query('SELECT id, name FROM re_channel_partners').catch(() => ({ rows: [] }));
+    (b.rows || []).forEach(x => { brokersById[Number(x.id)] = x.name; });
+  } catch (_) {}
   const statuses = (await db.getAll('statuses')).sort((a, b) => Number(a.sort_order) - Number(b.sort_order));
   const leads = (await db.getAll('leads')).filter(l => _isVisible(me, visible, l));
   return statuses.map(s => {
@@ -1675,6 +1696,12 @@ async function api_leads_duplicateHistory(token, leadId) {
     return false;
   });
   const { usersById, statusesById, productsById, tatByStatusId, finalStatusIds } = await _lookups();
+  // CEL_EXPORT_COLS_v1 — build broker id→name index for export enrichment.
+  const brokersById = {};
+  try {
+    const b = await db.query('SELECT id, name FROM re_channel_partners').catch(() => ({ rows: [] }));
+    (b.rows || []).forEach(x => { brokersById[Number(x.id)] = x.name; });
+  } catch (_) {}
   const remarks = await db.getAll('remarks');
   return all
     .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
