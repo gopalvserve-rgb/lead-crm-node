@@ -3618,7 +3618,13 @@ async function openLeadModal(id) {
   // existing leads. Reps can update status/notes/follow-up/etc. but cannot
   // overwrite what the customer typed in the form, the source, the GCLID,
   // or the UTMs. Admin can still change these for legitimate corrections.
-  if (id && !isAdmin) {
+  // CEL_EMPLOYEE_EDIT_v1 — admin toggle. When ALLOW_EMPLOYEE_EDIT_LEAD_IDENTITY
+  // is '1' in tenant config, non-admin roles (manager, team_leader, sales,
+  // employee) can also edit name/phone/whatsapp/email even on campaign-
+  // sourced leads. Default: '0' (only admin can). Admin sets this in
+  // Settings → Permissions.
+  const _allowEmpEdit = String((CRM.cache && CRM.cache.config && CRM.cache.config.ALLOW_EMPLOYEE_EDIT_LEAD_IDENTITY) || '0') === '1';
+  if (id && !isAdmin && !_allowEmpEdit) {
     // Built-in fields that mirror the backend's CAMPAIGN_LOCKED_FIELDS, plus
     // common custom-field keys for campaign attribution. Anything else with
     // "campaign" in the name is also locked via the regex sweep below — that
@@ -5800,7 +5806,12 @@ async function renderNewTodayLeads(view) {
 
 VIEWS.followups = async (view) => {
   /* CEL_4FIX_v1 — follow-up filters */
-  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' };  /* CEL_FU_FILTERS_v2 */
+  if (!window._fuFilter) window._fuFilter = { bucket:'all', q:'', users:[], from:'', to:'', sources:[], products:[], statuses:[], tag:'' };  /* CEL_FU_MULTI_v1 */
+  // Migrate old single-value state so previously-saved prefs don't break.
+  if (typeof window._fuFilter.user === 'string') { window._fuFilter.users = window._fuFilter.user ? [window._fuFilter.user] : []; delete window._fuFilter.user; }
+  if (typeof window._fuFilter.source === 'string') { window._fuFilter.sources = window._fuFilter.source ? [window._fuFilter.source] : []; delete window._fuFilter.source; }
+  if (typeof window._fuFilter.product === 'string') { window._fuFilter.products = window._fuFilter.product ? [window._fuFilter.product] : []; delete window._fuFilter.product; }
+  if (typeof window._fuFilter.status === 'string') { window._fuFilter.statuses = window._fuFilter.status ? [window._fuFilter.status] : []; delete window._fuFilter.status; }
   const F = window._fuFilter;
   const data = await api('api_notifications_mine');
   view.innerHTML = '';
@@ -5818,39 +5829,42 @@ VIEWS.followups = async (view) => {
       ),
       h('input', { class:'input', placeholder:'Search name / phone…', value:F.q, style:{ maxWidth:'220px' },
         oninput: ev => { F.q = ev.target.value; clearTimeout(window._fuTimer); window._fuTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
-      isAdmin ? h('select', { class:'input', style:{ maxWidth:'180px' },
-        onchange: ev => { F.user = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All assignees'),
-        ...users.filter(u => Number(u.is_active) === 1).map(u => h('option', { value:String(u.id), selected: String(F.user)===String(u.id) ? 'selected' : null }, u.name))
-      ) : null,
+      // CEL_FU_MULTI_v1 — every filter is now a multiSelectDropdown so
+      // admin can slice by "these 3 reps + these 2 sources + these 4
+      // statuses" in one view. Rerenders the follow-ups page on apply.
+      isAdmin ? multiSelectDropdown({
+        label: 'Assignees', allLabel: 'All assignees',
+        options: users.filter(u => Number(u.is_active) === 1).map(u => ({ id: String(u.id), name: u.name })),
+        values: (F.users || []).map(String),
+        onApply: (v) => { F.users = v; VIEWS.followups(view); }
+      }) : null,
       h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'From'),
       h('input', { class:'input', type:'date', value:F.from, style:{ maxWidth:'150px' },
         onchange: ev => { F.from = ev.target.value; VIEWS.followups(view); } }),
       h('label', { class:'muted', style:{ fontSize:'.8rem' } }, 'To'),
       h('input', { class:'input', type:'date', value:F.to, style:{ maxWidth:'150px' },
         onchange: ev => { F.to = ev.target.value; VIEWS.followups(view); } }),
-      /* CEL_FU_FILTERS_v2 — Source / Product / Status / Tag */
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.source = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All sources'),
-        ...((CRM.cache && CRM.cache.sources) || []).map(s =>
-          h('option', { value: s.name || s, selected: F.source === (s.name || s) ? 'selected' : null }, s.name || s))
-      ),
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.product = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All products'),
-        ...((CRM.cache && CRM.cache.products) || []).map(p =>
-          h('option', { value: p.name || p, selected: F.product === (p.name || p) ? 'selected' : null }, p.name || p))
-      ),
-      h('select', { class:'input', style:{ maxWidth:'150px' },
-        onchange: ev => { F.status = ev.target.value; VIEWS.followups(view); } },
-        h('option', { value:'' }, 'All statuses'),
-        ...((CRM.cache && CRM.cache.statuses) || []).map(s =>
-          h('option', { value: String(s.id), selected: String(F.status) === String(s.id) ? 'selected' : null }, s.name || ('Status ' + s.id)))
-      ),
+      multiSelectDropdown({
+        label: 'Sources', allLabel: 'All sources',
+        options: ((CRM.cache && CRM.cache.sources) || []).map(s => ({ id: s.name || String(s), name: s.name || String(s) })),
+        values: (F.sources || []),
+        onApply: (v) => { F.sources = v; VIEWS.followups(view); }
+      }),
+      multiSelectDropdown({
+        label: 'Products', allLabel: 'All products',
+        options: ((CRM.cache && CRM.cache.products) || []).map(p => ({ id: p.name || String(p), name: p.name || String(p) })),
+        values: (F.products || []),
+        onApply: (v) => { F.products = v; VIEWS.followups(view); }
+      }),
+      multiSelectDropdown({
+        label: 'Statuses', allLabel: 'All statuses',
+        options: ((CRM.cache && CRM.cache.statuses) || []).map(s => ({ id: String(s.id), name: s.name || ('Status ' + s.id) })),
+        values: (F.statuses || []).map(String),
+        onApply: (v) => { F.statuses = v; VIEWS.followups(view); }
+      }),
       h('input', { class:'input', placeholder:'Tag contains…', value:F.tag, style:{ maxWidth:'140px' },
         oninput: ev => { F.tag = ev.target.value; clearTimeout(window._fuTagTimer); window._fuTagTimer = setTimeout(()=>VIEWS.followups(view), 300); } }),
-      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', user:'', from:'', to:'', source:'', product:'', status:'', tag:'' }; VIEWS.followups(view); } }, 'Clear'),
+      h('button', { class:'btn sm ghost', onclick: () => { window._fuFilter = { bucket:'all', q:'', users:[], from:'', to:'', sources:[], products:[], statuses:[], tag:'' }; VIEWS.followups(view); } }, 'Clear'),
       // CEL_EXPORT_XLSX_v1 — Export current follow-up view to Excel.
       h('button', { class:'btn sm', onclick: async () => {
         try {
@@ -5873,13 +5887,13 @@ VIEWS.followups = async (view) => {
       const hay = ((r.lead_name||'') + ' ' + (r.lead_phone||'') + ' ' + (r.note||'')).toLowerCase();
       if (!hay.includes(q)) return false;
     }
-    if (F.user && String(r.assigned_to) !== String(F.user)) return false;
+    // CEL_FU_MULTI_v1 — array-based filters
+    if ((F.users || []).length && !F.users.map(String).includes(String(r.assigned_to))) return false;
     if (F.from && String(r.due_at || '').slice(0,10) < F.from) return false;
     if (F.to   && String(r.due_at || '').slice(0,10) > F.to)   return false;
-    /* CEL_FU_FILTERS_v2 */
-    if (F.source && String(r.lead_source || '') !== String(F.source)) return false;
-    if (F.product && String(r.lead_product || '') !== String(F.product)) return false;
-    if (F.status && String(r.lead_status_id || '') !== String(F.status)) return false;
+    if ((F.sources || []).length && !F.sources.includes(String(r.lead_source || ''))) return false;
+    if ((F.products || []).length && !F.products.includes(String(r.lead_product || ''))) return false;
+    if ((F.statuses || []).length && !F.statuses.map(String).includes(String(r.lead_status_id || ''))) return false;
     if (F.tag) {
       const tagQ = F.tag.toLowerCase();
       if (!String(r.lead_tags || '').toLowerCase().includes(tagQ)) return false;
@@ -10556,6 +10570,14 @@ const REPORT_EXPORT_COLUMNS = [
   ['utm_campaign',     'UTM Campaign'],
   ['utm_term',         'UTM Term'],
   ['utm_content',      'UTM Content'],
+  // CEL_EXPORT_COLS_v1 — extra columns requested by admin. broker_name
+  // comes from the backend join added below; recent_remark is already
+  // sent by api_leads_list; campaign_source is a merge of the various
+  // campaign fields on the lead.
+  ['broker_name',      'Channel Partner'],
+  ['recent_remark',    'Recent Remark'],
+  ['campaign_source',  'Campaign'],
+  ['gad_campaignid',   'Campaign ID'],
   ['next_followup_at', 'Next Follow-up'],
   ['created_at',       'Created'],
   ['notes',            'Notes']
@@ -20394,10 +20416,28 @@ VIEWS.reinventory = async (view) => {
                    u.status === 'blocked'   ? '#9a3412' :
                    u.status === 'booked'    ? '#991b1b' :
                    u.status === 'registered'? '#5b21b6' : '#374151';
+        // CEL_INVENTORY_DELETE_v1 — admin/manager can remove a unit.
+        const _canDel = CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager');
         grid.appendChild(h('div', {
-          style:{ background:bg, color:fg, padding:'.5rem', borderRadius:'6px', textAlign:'center', border:'1px solid rgba(0,0,0,0.06)', fontSize:'.85em' },
+          style:{ background:bg, color:fg, padding:'.5rem', borderRadius:'6px', textAlign:'center', border:'1px solid rgba(0,0,0,0.06)', fontSize:'.85em', position:'relative' },
           title: (u.type || '') + ' · ' + (u.carpet_sqft || 0) + ' sqft · ₹' + Number(u.price).toLocaleString('en-IN')
         },
+          _canDel ? h('button', {
+            title: 'Delete this unit',
+            style: { position:'absolute', top:'2px', right:'2px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.85em', opacity:0.5, padding:'2px 4px' },
+            onclick: async (ev) => {
+              ev.stopPropagation();
+              if (u.status === 'booked' || u.status === 'registered') {
+                toast('Cannot delete a booked/registered unit', 'err'); return;
+              }
+              if (!await confirmDialog('Delete unit ' + u.unit_no + '? This cannot be undone.')) return;
+              try {
+                await api('api_re_units_delete', u.id);
+                toast('Unit deleted');
+                if (view) VIEWS.reinventory(view);
+              } catch (e) { toast(e.message, 'err'); }
+            }
+          }, '🗑️') : null,
           h('div', { style:{ fontWeight:600 } }, u.unit_no),
           h('div', { style:{ fontSize:'.75em', opacity:0.85 } }, u.type || ''),
           h('div', { style:{ fontSize:'.7em', textTransform:'uppercase', marginTop:'.15rem', opacity:0.8 } }, u.status)
