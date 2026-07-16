@@ -14332,7 +14332,9 @@ function generateTempPasswordClient() {
 
 /* ---------------- HR views ---------------- */
 VIEWS.tasks = async (view) => {
-  // CEL_EXPORT_XLSX_v1 — Export tasks table to Excel.
+  // CEL_EXPORT_XLSX_v1.2 — Export tasks by fetching the FULL data
+  // from api_tasks_all rather than scraping the rendered table (which
+  // truncates because of pagination + cell overflow ellipsis).
   setTimeout(() => {
     if (view.querySelector('.tasks-export-btn')) return;
     const btn = h('button', {
@@ -14340,13 +14342,27 @@ VIEWS.tasks = async (view) => {
       style: { position:'absolute', top:'.6rem', right:'.8rem', zIndex: 5 },
       onclick: async () => {
         try {
-          const table = view.querySelector('table');
-          if (!table) { toast('No data to export', 'err'); return; }
-          const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent.trim());
-          const rows = Array.from(table.querySelectorAll('tbody tr')).map(tr =>
-            Array.from(tr.querySelectorAll('td')).map(td => td.textContent.trim())
-          );
-          _downloadTableXLSX('hr_tasks', rows, headers, 'Hr Tasks');
+          toast('Fetching all tasks…', 'info');
+          const list = await api('api_tasks_all', _taskFilter || {}).catch(async () => {
+            // Fallback if _all endpoint not present — try common alternatives.
+            return await api('api_tasks_list', _taskFilter || {}).catch(() => []);
+          });
+          const arr = Array.isArray(list) ? list : (list && (list.rows || list.tasks) || []);
+          if (!arr.length) { toast('No tasks to export', 'err'); return; }
+          const headers = ['Task', 'Description', 'Assigned to', 'Status', 'Priority', 'Due date', 'Created by', 'Created at', 'Completed at', 'Notes'];
+          const rows = arr.map(t => [
+            t.title || t.subject || t.name || '',
+            t.description || t.details || '',
+            t.assigned_to_name || t.assignee_name || t.assigned_name || '',
+            t.status || '',
+            t.priority || '',
+            t.due_date ? String(t.due_date).slice(0,16).replace('T',' ') : '',
+            t.created_by_name || t.creator_name || '',
+            t.created_at ? String(t.created_at).slice(0,16).replace('T',' ') : '',
+            t.completed_at ? String(t.completed_at).slice(0,16).replace('T',' ') : '',
+            t.notes || ''
+          ]);
+          _downloadTableXLSX('hr_tasks', rows, headers, 'Tasks');
         } catch (e) { toast(e.message || 'Export failed', 'err'); }
       }
     }, '📊 Export Excel');
@@ -20436,7 +20452,9 @@ VIEWS.reinventory = async (view) => {
         },
           _canDel ? h('button', {
             title: 'Delete this unit',
-            style: { position:'absolute', top:'2px', right:'2px', background:'transparent', border:'none', cursor:'pointer', fontSize:'.85em', opacity:0.5, padding:'2px 4px' },
+            // CEL_INVENTORY_DELETE_v1.1 — larger, always-visible red bg
+            // so admin can see the delete affordance without hovering.
+            style: { position:'absolute', top:'-6px', right:'-6px', background:'#dc2626', color:'#fff', border:'2px solid #fff', cursor:'pointer', fontSize:'.75em', width:'20px', height:'20px', borderRadius:'50%', padding:'0', lineHeight:'16px', boxShadow:'0 2px 4px rgba(0,0,0,0.2)', zIndex:2 },
             onclick: async (ev) => {
               ev.stopPropagation();
               if (u.status === 'booked' || u.status === 'registered') {
