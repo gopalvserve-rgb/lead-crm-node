@@ -257,6 +257,26 @@ async function api_re_units_bulkCreate(token, payload) {
   return { ok: true, created: n };
 }
 
+// CEL_INVENTORY_DELETE_v1 — admin/manager can delete a unit.
+// Refuses if the unit is booked or registered (would orphan a booking).
+async function api_re_units_delete(token, id) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) {
+    throw new Error('Admin or Manager only');
+  }
+  await _requireRealEstate();
+  await _ensureSchema();
+  if (!id) throw new Error('id required');
+  const u = await db.query('SELECT id, status FROM re_units WHERE id = $1', [Number(id)]);
+  if (!u.rows.length) throw new Error('Unit not found');
+  if (u.rows[0].status === 'booked' || u.rows[0].status === 'registered') {
+    throw new Error('Cannot delete a booked/registered unit — cancel the booking first');
+  }
+  await db.query('DELETE FROM re_units WHERE id = $1', [Number(id)]);
+  return { ok: true };
+}
+
+
 async function api_re_booking_create(token, payload) {
   await authUser(token);
   await _requireRealEstate();
@@ -1528,7 +1548,7 @@ framework.register({
 module.exports = {
   install, uninstall,
   api_re_projects_list, api_re_projects_save,
-  api_re_units_byProject, api_re_units_save, api_re_units_bulkCreate,
+  api_re_units_byProject, api_re_units_save, api_re_units_bulkCreate, api_re_units_delete,
   api_re_booking_create, api_re_booking_byLead, api_re_booking_cancel,
   api_re_demand_markPaid, api_re_demand_renderHtml, api_re_demand_sendReminder,
   api_re_channelPartners_list, api_re_channelPartners_save,
