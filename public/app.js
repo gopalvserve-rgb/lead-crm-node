@@ -2599,7 +2599,13 @@ async function exportCSV() {
     'product','assigned_to','created_by','address','city','state','pincode','country','company',
     'value','currency','qualified','tags','next_followup_at','notes','created_at',
     'last_status_change_at','gclid','gad_campaignid','utm_source','utm_medium',
-    'utm_campaign','utm_term','utm_content','latest_remark'
+    'utm_campaign','utm_term','utm_content','latest_remark',
+    // CEL_EXPORT_COLS_v1.1 — Channel Partner (broker) + Campaign source in CSV.
+    // The XLSX export was already updated; adding here so users who prefer
+    // CSV also see these columns. Backend api_leads_list joins broker_name
+    // from re_channel_partners and derives campaign_source from
+    // utm_campaign / gad_campaignid / extra_json.campaign_source.
+    'broker_name','campaign_source'
   ];
 
   const PHONE_COLS = new Set(['phone','alt_phone','whatsapp']);
@@ -2708,7 +2714,13 @@ async function exportLeadsXLSX() {
     'product','assigned_to','created_by','address','city','state','pincode','country','company',
     'value','currency','qualified','tags','next_followup_at','notes','created_at',
     'last_status_change_at','gclid','gad_campaignid','utm_source','utm_medium',
-    'utm_campaign','utm_term','utm_content','latest_remark'
+    'utm_campaign','utm_term','utm_content','latest_remark',
+    // CEL_EXPORT_COLS_v1.1 — Channel Partner (broker) + Campaign source in CSV.
+    // The XLSX export was already updated; adding here so users who prefer
+    // CSV also see these columns. Backend api_leads_list joins broker_name
+    // from re_channel_partners and derives campaign_source from
+    // utm_campaign / gad_campaignid / extra_json.campaign_source.
+    'broker_name','campaign_source'
   ];
   const cfKeys = [];
   const seen = new Set();
