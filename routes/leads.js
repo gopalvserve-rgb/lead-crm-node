@@ -524,6 +524,14 @@ async function api_leads_list(token, filters) {
     const r = remarksByLead[Number(l.id)];
     h.recent_remark = r ? r.remark : '';
     h.recent_remark_at = r ? r.created_at : '';
+    // CEL_EXPORT_COLS_v1.2 — enrich EVERY row with broker_name and
+    // campaign_source so the leads-page CSV/XLSX export shows them.
+    // Previous patch attached to the wrong function and never fired.
+    h.broker_name = l.broker_id ? (brokersById[Number(l.broker_id)] || '') : '';
+    try {
+      const ex = typeof l.extra_json === 'string' ? JSON.parse(l.extra_json || '{}') : (l.extra_json || {});
+      h.campaign_source = l.utm_campaign || l.gad_campaignid || (ex && (ex.campaign_source || ex.campaign_name)) || '';
+    } catch (_) { h.campaign_source = l.utm_campaign || l.gad_campaignid || ''; }
     return h;
   });
   return { leads: hydrated, total, page, page_size: pageSize, status_count: statusCount };
