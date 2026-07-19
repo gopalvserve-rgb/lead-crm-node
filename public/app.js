@@ -20423,8 +20423,20 @@ VIEWS.reinventory = async (view) => {
   for (const proj of projects) {
     const wrap = h('div', { class:'card', style:{ marginBottom:'1rem', padding:'.8rem 1rem' } });
     wrap.appendChild(h('div', { style:{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'.5rem' } },
-      h('h3', { style:{ margin:0 } }, proj.name + (proj.tower_code ? ' · Tower ' + proj.tower_code : '')),
-      h('button', { class:'btn sm', onclick: () => openBulkCreateUnitsModal(proj) }, '+ Bulk-create units')
+      h('h3', { style:{ margin:0, flex:1 } }, proj.name + (proj.tower_code ? ' · Tower ' + proj.tower_code : '')),
+      h('button', { class:'btn sm', onclick: () => openBulkCreateUnitsModal(proj) }, '+ Bulk-create units'),
+      // CEL_PROJECT_DELETE_v1 — admin/manager can delete an empty project.
+      // Backend refuses if the project has any units.
+      (CRM.user && (CRM.user.role === 'admin' || CRM.user.role === 'manager'))
+        ? h('button', { class:'btn sm danger', title:'Delete this project', style:{ marginLeft:'.4rem' }, onclick: async () => {
+            if (!await confirmDialog('Delete project "' + proj.name + '"?\n\nBackend will refuse if the project has any units.')) return;
+            try {
+              await api('api_re_projects_delete', proj.id);
+              toast('Project deleted');
+              if (view) VIEWS.reinventory(view);
+            } catch (e) { toast(e.message || 'Delete failed', 'err'); }
+          } }, '🗑️ Delete')
+        : null
     ));
     if (proj.location) wrap.appendChild(h('div', { class:'muted', style:{ marginBottom:'.5rem' } }, '📍 ' + proj.location));
 
@@ -21050,6 +21062,10 @@ VIEWS.revisits = async (view) => {
           h('td', {}, h('span', { style:{ background:'#dbeafe', color:'#1e40af', padding:'2px 6px', borderRadius:'3px', fontSize:'.75em' } }, v.status)),
           h('td', {},
             h('button', { class:'btn xs primary', onclick: () => openLeadModal(v.lead_id) }, 'Open lead'),
+            // CEL_VISIT_MARKDONE_v1 — Mark Done button on the sidebar Site
+            // Visits page so reps can close visits without opening the lead.
+            v.status !== 'done' ? h('button', { class:'btn xs', style:{ marginLeft:'.2rem', background:'#16a34a', color:'#fff' }, onclick: () => openMarkVisitDoneModal(v, () => VIEWS.revisits(document.getElementById('view'))) }, '✓ Done') : null,
+            v.status !== 'done' ? h('button', { class:'btn xs', style:{ marginLeft:'.2rem' }, onclick: () => openRescheduleModal(v, () => VIEWS.revisits(document.getElementById('view'))) }, '↻ Reschedule') : null,
             h('button', { class:'btn xs', style:{ marginLeft:'.2rem' }, onclick: async () => {
               try { await api('api_re_visits_sendReminder', { id: v.id }); toast('Reminder sent'); } catch (e) { toast(e.message, 'err'); }
             } }, '🔔 Remind'),
