@@ -195,6 +195,26 @@ async function api_re_projects_save(token, payload) {
   return { ok: true, id: r.rows[0].id };
 }
 
+// CEL_PROJECT_DELETE_v1 — admin/manager can delete a project.
+// Refuses if the project has any units (would orphan them). Delete
+// all units first, then the project.
+async function api_re_projects_delete(token, id) {
+  const me = await authUser(token);
+  if (!['admin', 'manager'].includes(me.role)) {
+    throw new Error('Admin or Manager only');
+  }
+  await _requireRealEstate();
+  await _ensureSchema();
+  if (!id) throw new Error('id required');
+  const u = await db.query('SELECT COUNT(*)::int AS c FROM re_units WHERE project_id = $1', [Number(id)]);
+  if (Number(u.rows[0].c) > 0) {
+    throw new Error('Cannot delete a project with units. Delete or move ' + u.rows[0].c + ' unit(s) first.');
+  }
+  await db.query('DELETE FROM re_projects WHERE id = $1', [Number(id)]);
+  return { ok: true };
+}
+
+
 async function api_re_units_byProject(token, projectId) {
   await authUser(token);
   await _requireRealEstate();
@@ -1547,7 +1567,7 @@ framework.register({
 
 module.exports = {
   install, uninstall,
-  api_re_projects_list, api_re_projects_save,
+  api_re_projects_list, api_re_projects_save, api_re_projects_delete,
   api_re_units_byProject, api_re_units_save, api_re_units_bulkCreate, api_re_units_delete,
   api_re_booking_create, api_re_booking_byLead, api_re_booking_cancel,
   api_re_demand_markPaid, api_re_demand_renderHtml, api_re_demand_sendReminder,
