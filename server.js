@@ -422,6 +422,15 @@ app.post('/api/recordings', upload.single('audio'), async (req, res) => {
          req.body.started_at || db.nowIso(), db.nowIso(), _dedupKey, (req.body.filename || (req.file && req.file.originalname) || null)]
       );
       id = _ins.rows[0] ? _ins.rows[0].id : null;
+      // R2 offload: push the audio to Cloudflare R2 and drop the BYTEA.
+      try {
+        const _r2 = require('./utils/r2');
+        if (id && _r2.enabled() && _audioBuf && _audioBuf.length) {
+          const _k = _r2.key('recordings', me.id + '-' + (_audioSize || 0), _devicePath || 'audio.m4a');
+          await _r2.put(_k, _audioBuf, _finalMime || 'audio/mp4');
+          await db.query('UPDATE lead_recordings SET r2_key=$1, audio_bytes=NULL WHERE id=$2', [_k, id]);
+        }
+      } catch (_e) { console.warn('[/api/recordings] r2 offload failed:', _e.message); }
     } catch (e) {
       // REC_DEDUP_v2_HOTFIX — used to be silently swallowed. The actual SQL
       // error (e.g. 'no unique constraint matching ON CONFLICT') must bubble
@@ -509,12 +518,17 @@ app.get('/api/recordings/:id/audio', async (req, res) => {
     await authUser(token);
     const id = Number(req.params.id);
     const r = await db.query(
-      'SELECT mime_type, audio_bytes, size_bytes FROM lead_recordings WHERE id = $1',
+      'SELECT mime_type, audio_bytes, size_bytes, r2_key FROM lead_recordings WHERE id = $1',
       [id]
     );
     const row = r.rows[0];
     if (!row) return res.status(404).json({ error: 'recording not found', requested_id: id });
     let buf = row.audio_bytes;
+    // R2 offload: legacy rows keep BYTEA; offloaded rows have r2_key + NULL bytes.
+    if (!buf && row.r2_key) {
+      try { buf = await require('./utils/r2').getBuffer(row.r2_key); }
+      catch (e) { console.warn('[/audio] r2 fetch failed for ' + id + ':', e.message); }
+    }
     if (!buf) return res.status(410).json({ error: 'recording has no audio bytes (zero-byte upload — re-sync after the dialer finishes writing)' });
     if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
     const total = buf.length;
