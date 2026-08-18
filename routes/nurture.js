@@ -46,7 +46,6 @@ async function _ensureSchema() {
   await db.query(`ALTER TABLE nurture_sequences ADD COLUMN IF NOT EXISTS trigger_filter_product_id INTEGER`);
   await db.query(`ALTER TABLE nurture_sequences ADD COLUMN IF NOT EXISTS trigger_on_tag TEXT NOT NULL DEFAULT ''`);
   await db.query(`ALTER TABLE nurture_sequences ADD COLUMN IF NOT EXISTS trigger_filter_tags TEXT NOT NULL DEFAULT ''`);
-  await db.query(`ALTER TABLE nurture_steps ADD COLUMN IF NOT EXISTS skip_if_status_id INTEGER`);
 
   await db.query(`CREATE TABLE IF NOT EXISTS nurture_steps (
     id SERIAL PRIMARY KEY,
@@ -65,6 +64,7 @@ async function _ensureSchema() {
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
   await db.query(`CREATE INDEX IF NOT EXISTS idx_nurture_steps_seq ON nurture_steps(sequence_id, step_no)`);
+  await db.query(`ALTER TABLE nurture_steps ADD COLUMN IF NOT EXISTS skip_if_status_id INTEGER`);
 
   await db.query(`CREATE TABLE IF NOT EXISTS nurture_enrollments (
     id SERIAL PRIMARY KEY,
