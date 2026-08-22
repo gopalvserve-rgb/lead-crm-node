@@ -1424,6 +1424,14 @@ VIEWS.leads = async (view) => {
       values: (CRM.prefs.filters.broker_ids && CRM.prefs.filters.broker_ids.length) ? CRM.prefs.filters.broker_ids.map(String) : [],
       onApply: (v) => { CRM.prefs.filters.broker_ids = v; applyFilters(); }
     }),
+    // CEL_PRODUCT_FILTER_v1 — Product filter. Options come from CRM.cache.products
+    // (loaded at boot); backend matches on leads.product_id.
+    multiSelectDropdown({
+      label: 'Product', allLabel: 'Any product',
+      options: ((CRM.cache && CRM.cache.products) || []).map(p => ({ id: String(p.id), name: p.name })),
+      values: (CRM.prefs.filters.product_ids && CRM.prefs.filters.product_ids.length) ? CRM.prefs.filters.product_ids.map(String) : [],
+      onApply: (v) => { CRM.prefs.filters.product_ids = v; applyFilters(); }
+    }),
     // CEL_LEAD_FILTERS_v1 — Custom Field filter (field key + value pair).
     // Populated from CRM.cache.customFields at leads-page mount. Value
     // input is a plain text box for text/number fields; server does a
@@ -1721,6 +1729,7 @@ async function loadLeads(opts) {
   // CEL_LEAD_FILTERS_v1 — new filter arrays sent to the backend below.
   const _campaigns = (CRM.prefs.filters.campaigns  || []);
   const _brokerIds = (CRM.prefs.filters.broker_ids || []).map(String);
+  const _productIds = (CRM.prefs.filters.product_ids || []).map(String);  /* CEL_PRODUCT_FILTER_v1 */
   const filters = {
     q:           $('#f-q')?.value || undefined,
     status_ids:  _statusIds.length ? _statusIds : undefined,
@@ -1733,6 +1742,8 @@ async function loadLeads(opts) {
     // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
     campaigns:   _campaigns.length ? _campaigns : undefined,
     broker_ids:  _brokerIds.length ? _brokerIds : undefined,
+    product_ids: _productIds.length ? _productIds : undefined,  /* CEL_PRODUCT_FILTER_v1 */
+    product_id:  (_productIds.length === 1) ? _productIds[0] : undefined,
     // CEL_LEAD_FILTERS_v1 — Custom field filter payload
     cf_key:      (CRM.prefs.filters.cf_key || '') || undefined,
     cf_value:    (CRM.prefs.filters.cf_value || '') || undefined,
@@ -2523,6 +2534,7 @@ function _currentLeadsExportFilters() {
   // CEL_LEAD_FILTERS_v1 — new filter arrays sent to the backend below.
   const _campaigns = (CRM.prefs.filters.campaigns  || []);
   const _brokerIds = (CRM.prefs.filters.broker_ids || []).map(String);
+  const _productIds = (CRM.prefs.filters.product_ids || []).map(String);  /* CEL_PRODUCT_FILTER_v1 */
   const f = {
     q:           $('#f-q')?.value || undefined,
     status_ids:  _statusIds.length ? _statusIds : undefined,
@@ -2535,6 +2547,8 @@ function _currentLeadsExportFilters() {
     // CEL_LEAD_FILTERS_v1 — new attribution + partner filters
     campaigns:   _campaigns.length ? _campaigns : undefined,
     broker_ids:  _brokerIds.length ? _brokerIds : undefined,
+    product_ids: _productIds.length ? _productIds : undefined,  /* CEL_PRODUCT_FILTER_v1 */
+    product_id:  (_productIds.length === 1) ? _productIds[0] : undefined,
     // CEL_LEAD_FILTERS_v1 — Custom field filter payload
     cf_key:      (CRM.prefs.filters.cf_key || '') || undefined,
     cf_value:    (CRM.prefs.filters.cf_value || '') || undefined,
@@ -3765,7 +3779,7 @@ async function openLeadModal(id) {
     // (Not Pick, Not Interested, Junk, Does Not Exist, Broker) — pointless
     // to demand custom-field detail for leads that aren't progressing.
     const _skipRequired = _statusSkipsRequired(statusName);
-    if (CRM.user.role !== 'admin' && !_skipRequired) {
+    if (!['admin','manager'].includes(CRM.user.role) && !_skipRequired) {
       for (const cf of (customFields || [])) {
         if (!cf.is_required) continue;
         const key = 'cf_' + cf.key;
@@ -4347,8 +4361,8 @@ function customFieldInput(cf, val) {
   // Required fields are also tagged with data-cf-required="1" so the lead
   // form can dynamically toggle the `required` attribute when the user
   // picks a "dead-end" status (Not Pick / Not Interested / Junk / etc.).
-  const reqAttr = (cf.is_required && CRM.user?.role !== 'admin') ? { required: true } : {};
-  if (cf.is_required && CRM.user?.role !== 'admin') reqAttr['data-cf-required'] = '1';
+  const reqAttr = (cf.is_required && !['admin','manager'].includes(CRM.user?.role)) ? { required: true } : {};
+  if (cf.is_required && !['admin','manager'].includes(CRM.user?.role)) reqAttr['data-cf-required'] = '1';
   let input;
   if (cf.field_type === 'textarea') input = h('textarea', Object.assign({ name }, reqAttr), val || '');
   else if (cf.field_type === 'select') input = h('select', Object.assign({ name }, reqAttr),

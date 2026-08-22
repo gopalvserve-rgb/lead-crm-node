@@ -356,6 +356,14 @@ async function api_leads_list(token, filters) {
   if (filters.source)        rows = rows.filter(l => l.source === filters.source);
   if (_sources.length)       rows = rows.filter(l => _sources.includes(String(l.source || '')));
   if (filters.product_id)    rows = rows.filter(l => Number(l.product_id) === Number(filters.product_id));
+  /* CEL_PRODUCT_FILTER_v1 — multi-select product filter. Self-contained normaliser
+     so it works in every function regardless of whether _arr() is in scope. */
+  {
+    const _raw = filters.product_ids;
+    const _pids = (Array.isArray(_raw) ? _raw : String(_raw == null ? '' : _raw).split(','))
+      .map(x => Number(String(x).trim())).filter(n => n > 0);
+    if (_pids.length) rows = rows.filter(l => _pids.includes(Number(l.product_id)));
+  }
   if (filters.assigned_to)   rows = rows.filter(l => Number(l.assigned_to) === Number(filters.assigned_to));
   if (_assignedTos.length)   rows = rows.filter(l => _assignedTos.map(Number).includes(Number(l.assigned_to)));
   // CEL_LEADS_XLSX_v1.1 (2026-05-31): explicit lead_ids filter so the
