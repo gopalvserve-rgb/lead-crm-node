@@ -123,7 +123,12 @@ async function _logActivity(payload) {
         payload.response ? JSON.stringify(payload.response) : null
       ]
     );
-  } catch (_) {}
+  } catch (e) {
+    // CEL_WA_ACTIVITY_v1 — was `catch (_) {}`. A silent catch here meant the
+    // activity log could stop recording with no trace anywhere. Warn instead;
+    // still never throw, since logging must not break a send.
+    console.warn('[wb] _logActivity failed:', e.message);
+  }
 }
 
 /** Make an authenticated POST to the Meta Graph API. */
@@ -629,6 +634,19 @@ async function _sendTemplate({ to, templateName, language, variables, imageUrl, 
   const waMsgId = r.body?.messages?.[0]?.id || null;
   const errorText = r.body?.error?.message || null;
 
+  // CEL_WA_ACTIVITY_v1 — record the send in the Activity Log. Outbound sends
+  // previously only hit whatsapp_messages, so the Activity Log screen (which
+  // claims to show "every send to Meta") stayed empty on send-only days.
+  await _logActivity({
+    category: 'template_send',
+    name: String(body.to || ''),
+    template_name: templateName,
+    response_code: r.status,
+    type: 'leads',
+    request: body,
+    response: r.body
+  });
+
   // Reconstruct a human-readable preview of the template (for the chat log).
   // Pulls the template's body_text from the cache and substitutes {{N}}.
   let preview = JSON.stringify({ template: templateName, variables });
@@ -678,6 +696,15 @@ async function _sendText({ to, text, replyTo, leadId, userId }, cfg) {
   const r = await _graphPost(`${c.phoneId}/messages`, body, c);
   const waMsgId = r.body?.messages?.[0]?.id || null;
   const errorText = r.body?.error?.message || null;
+  // CEL_WA_ACTIVITY_v1 — record the send in the Activity Log (see _sendTemplate).
+  await _logActivity({
+    category: 'chat',
+    name: String(body.to || ''),
+    response_code: r.status,
+    type: 'leads',
+    request: body,
+    response: r.body
+  });
   try {
     await db.query(
       `INSERT INTO whatsapp_messages (lead_id, user_id, direction, from_number, to_number, body, wa_message_id, status, message_type, reply_to, error_text)
@@ -1606,7 +1633,11 @@ async function api_wb_activity_clear(token) {
 }
 
 /**
- * Background trim: drop wa_activity_log rows older than 24 h.
+ * Background trim: drop wa_activity_log rows older than 7 days.
+ * CEL_WA_ACTIVITY_v1 — was 24 h, which made the Activity Log look broken:
+ * anything more than a day old vanished. At Celeste's volume (<100 sends/day)
+ * 7 days is a few hundred rows. Note utils/dataRetention.js ALSO purges this
+ * table at RETENTION_DAYS (default 30), so this 7-day trim is the tighter one.
  * Called every 60 min by a setInterval in server.js. The table grows
  * fast (every Meta delivery / read receipt / inbound message + every
  * outbound send all log here), so without this it bloats and slows
@@ -1616,9 +1647,9 @@ async function api_wb_activity_clear(token) {
 async function trimActivityLog() {
   try {
     const r = await db.query(
-      `DELETE FROM wa_activity_log WHERE recorded_on < NOW() - INTERVAL '24 hours'`
+      `DELETE FROM wa_activity_log WHERE recorded_on < NOW() - INTERVAL '7 days'`
     );
-    if (r && r.rowCount) console.log('[wb] activity-log trim: deleted', r.rowCount, 'rows older than 24h');
+    if (r && r.rowCount) console.log('[wb] activity-log trim: deleted', r.rowCount, 'rows older than 7d');
   } catch (e) {
     console.error('[wb] activity-log trim failed:', e.message);
   }
