@@ -2304,5 +2304,11 @@ module.exports = {
   trimActivityLog,
   // Helpers exported for the file-upload Express route in server.js
   _cfg, _uploadMediaToWhatsApp, _findLeadByPhoneDigits, _canSeeThread,
+  // CEL_WA_EXPORTS_v1 — these were called by utils/nurtureWorker.js,
+  // routes/aiBot.js and routes/recordings.js as wb._sendTemplate / wb._sendText /
+  // wb._sendInteractiveButtons / wb._cfgForPhone but were never exported, so every
+  // one of those call sites threw "is not a function" at runtime. That silently
+  // broke the nurture wa_template + ai_bot channels and AI Bot replies.
+  _sendTemplate, _sendText, _sendInteractiveButtons, _logActivity,
   getVisibleUserIds
 };
